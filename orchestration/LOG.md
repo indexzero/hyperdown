@@ -29,3 +29,6 @@
 - 2026-07-03T23:36Z DISPATCH D-008 (surgical fix R1..R4 -> spec v5, model=Fable 5, scratch=sslop/008) — synchronous.
 - 2026-07-03T23:42Z RESULT D-008 DONE: spec v5 + P2-4-DISPOSITIONS.md — R1 relocated seen/ out of ctx/, R2/R3/R4 applied; author self-verified diff scope v4->v5 limited to the four fixes.
 - 2026-07-03T23:42Z DISPATCH D-009 (final closure verifier on v5, scope=R1..R4 deltas, model=Fable 5, scratch=sslop/009) — synchronous.
+- 2026-07-03T23:48Z RESULT D-009 DONE: orchestration/results/P2-4-CLOSURE.md — R1..R4 all CLOSED, no delta regressions, VERDICT: G1-PASS.
+- 2026-07-03T23:48Z GATE G1 PASS. SPEC-FINAL pinned = prompts/01-implementation-spec-prompt.v5.md. Checklist item 1 checked. Phase -> P3.
+- 2026-07-03T23:49Z ENV pnpm 10.34.0, node v24.16.0 (spec requires Node 20+: satisfied).

@@ -7,26 +7,26 @@
 
 ## Phase
 
-- **Current phase:** P2 (spec remediation, loop 3/3 — FINAL iteration)
-- **Next action:** dispatch D-006 (author: v3 + P2-2-SPEC-REVIEW.md → v4, apply majors F1/F2/F3/M-a + minors m1..m5/n2 + narrowed novelty text) then D-007 (fresh reviewer, closure-scoped). On D-007 confirming closure: G1 PASS, pin SPEC-FINAL=v4. On failure: write BLOCKED.md (ceiling).
+- **Current phase:** P3 (implementation)
+- **Next action:** dispatch D-010 (build packages/core + invariant unit suite + workspace scaffolding, branch 2/core), then store → faces → cli, each with SPEC-FINAL + built interfaces only. Then G3 verification (clean-clone install + unit run).
 
 ## Gates
 
 | Gate | Status | Evidence |
 |------|--------|----------|
-| G1 (spec: zero open blockers) | BLOCKERS CLEARED iter3; majors pending disposition | iter1: P1-1 (6 blockers). iter2: P2-1 (3 blockers). iter3: P2-2-SPEC-REVIEW.md — ship-with-changes, ZERO blockers, B1..B3 CLOSED; majors F1 (seq ordinal + hold-buffer fallback), F2 (optimistic replay bounding), F3 (I6/I10 carve-out text), M-a (layer partition via path) pending FIXED-in-v4 disposition |
+| G1 (spec: zero open blockers) | **PASS** (2026-07-03) | orchestration/results/P2-4-CLOSURE.md — "VERDICT: G1-PASS". Chain: P1-1 (v1, 6 blockers) → P2-1 (v2, 3 blockers) → P2-2 (v3, 0 blockers + 4 majors) → P2-3 (v4, majors closed, regression R1) → P2-4 (v5, all closed). All majors FIXED (dispositions: P2-1/2/3/4-DISPOSITIONS.md), zero waivers. |
 | G3 (clean install, unit green, DEVIATIONS.md, acceptance mapped) | OPEN | — |
 | G4 (code review: zero blockers, S1..S10 green x3 profiles) | OPEN | — |
 | G6 (independent final verification) | OPEN | — |
 
 ## Loop counters (ceiling 3 each)
 
-- P2 spec remediation: 3/3 (iterations 1 and 2 failed on blockers; iteration 3 review found ZERO blockers — final author pass applies remaining majors' reviewer-supplied text; a failed closure check here means BLOCKED.md)
+- P2 spec remediation: CLOSED at 2/3 failed iterations (A: v2 blockers, C: v4 regression; B and final D passed). Total author passes: 4 (v2..v5); total reviews: 5 (D-001,3,5,7,9).
 - P5 code remediation: 0/3
 
 ## Goal checklist (from /goal; evidence paths required)
 
-- [ ] SPEC-FINAL pinned — evidence: —
+- [x] SPEC-FINAL pinned — evidence: prompts/01-implementation-spec-prompt.v5.md; orchestration/results/P2-4-CLOSURE.md ("VERDICT: G1-PASS"); dispositions P2-1..P2-4-DISPOSITIONS.md (zero waivers)
 - [ ] Clean-clone install; unit green; I1..I10 mapped — evidence: —
 - [ ] Harness real (multi-process, seeded fault proxy, barriers, permutation replay, hash oracle) — evidence: —
 - [ ] S1..S10 green at clean/lossy/partitioned — evidence: —
@@ -37,7 +37,7 @@
 
 ## Pinned decisions
 
-- SPEC-FINAL: not yet pinned (P1/P2 pending). All phases after P2 MUST reference SPEC-FINAL, never the v1 file, once pinned.
+- **SPEC-FINAL = `prompts/01-implementation-spec-prompt.v5.md`** (pinned 2026-07-03, G1-PASS evidence P2-4-CLOSURE.md). All later phases reference this file and never v1..v4.
 - Branch/PR model: stacked PRs off `0/initial` (user's branch naming `n/name` adopted); NO PR is ever merged by the supervisor (user-confirmed). G3/G6 clean-clone verification targets the stack tip branch.
 - Dependency manager: pnpm; monorepo via pnpm-workspace.yaml approved.
 - Test runner: node:test only (user mandate; deviation vs spec's brittle-compat SHOULD — record in DEVIATIONS.md at P3).
@@ -59,4 +59,7 @@
 | D-003 | P2 | prompts/02 | spec v2 + P1-1-FINDINGS-TABLE.md | orchestration/results/P2-1-SPEC-REVIEW.md | DONE — 3 blockers, G1 FAIL (stalled once, resumed in place) |
 | D-004 | P2 | (author instr) | spec v2 + P2-1-SPEC-REVIEW.md | prompts/01-implementation-spec-prompt.v3.md + orchestration/results/P2-2-DISPOSITIONS.md | DONE |
 | D-005 | P2 | prompts/02 | spec v3 + P2-1-FINDINGS-TABLE.md | orchestration/results/P2-2-SPEC-REVIEW.md | DONE — 0 blockers, 4 majors, ship-with-changes |
-| D-006 | P2 | (author instr) | spec v3 + P2-2-SPEC-REVIEW.md | prompts/01-implementation-spec-prompt.v4.md + orchestration/results/P2-3-DISPOSITIONS.md | PREPARING |
+| D-006 | P2 | (author instr) | spec v3 + P2-2-SPEC-REVIEW.md | prompts/01-implementation-spec-prompt.v4.md + orchestration/results/P2-3-DISPOSITIONS.md | DONE |
+| D-007 | P2 | (closure instr) | spec v4 + P2-2-SPEC-REVIEW.md | orchestration/results/P2-3-CLOSURE.md | DONE — G1-FAIL (regression R1) |
+| D-008 | P2 | (surgical fix) | spec v4 + P2-3-CLOSURE.md | prompts/01-implementation-spec-prompt.v5.md + P2-4-DISPOSITIONS.md | DONE |
+| D-009 | P2 | (closure instr) | spec v5 + P2-3-CLOSURE.md | orchestration/results/P2-4-CLOSURE.md | DONE — **G1-PASS** |
