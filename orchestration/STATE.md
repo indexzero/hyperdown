@@ -7,21 +7,21 @@
 
 ## Phase
 
-- **Current phase:** P1 (spec adversarial review)
-- **Next action:** dispatch D-001 (reviewer: prompt=02, artifact=01) → result `orchestration/results/P1-1-SPEC-REVIEW.md`
+- **Current phase:** P2 (spec remediation, loop 1/3)
+- **Next action:** dispatch D-002 (author: apply F1..F6 blocker replacement text, disposition F7..F16 majors → `prompts/01-implementation-spec-prompt.v2.md`), then D-003 (fresh reviewer verifies closure)
 
 ## Gates
 
 | Gate | Status | Evidence |
 |------|--------|----------|
-| G1 (spec: zero open blockers) | OPEN | — |
+| G1 (spec: zero open blockers) | FAIL (2026-07-03) | orchestration/results/P1-1-SPEC-REVIEW.md — 6 blockers F1..F6, 10 majors F7..F16, 3 minors, 1 nit |
 | G3 (clean install, unit green, DEVIATIONS.md, acceptance mapped) | OPEN | — |
 | G4 (code review: zero blockers, S1..S10 green x3 profiles) | OPEN | — |
 | G6 (independent final verification) | OPEN | — |
 
 ## Loop counters (ceiling 3 each)
 
-- P2 spec remediation: 0/3
+- P2 spec remediation: 1/3 (iteration 1 in progress)
 - P5 code remediation: 0/3
 
 ## Goal checklist (from /goal; evidence paths required)
@@ -48,10 +48,11 @@
 
 | # | Branch | Base | PR | Contents |
 |---|--------|------|----|----------|
-| 1 | 0/initial | main | pending | bootstrap: prompts, ledger, gitignore, /goal command |
+| 1 | 0/initial | main | https://github.com/indexzero/hyperwiki2/pull/1 | bootstrap: prompts, ledger, gitignore |
 
 ## Dispatch registry
 
 | ID | Phase | Prompt | Artifact(s) | Result | Status |
 |----|-------|--------|-------------|--------|--------|
-| D-001 | P1 | prompts/02 | prompts/01 | orchestration/results/P1-1-SPEC-REVIEW.md | PREPARING |
+| D-001 | P1 | prompts/02 | prompts/01 | orchestration/results/P1-1-SPEC-REVIEW.md | DONE — 6 blockers, G1 FAIL |
+| D-002 | P2 | (author instr) | prompts/01 + P1-1-SPEC-REVIEW.md | prompts/01-implementation-spec-prompt.v2.md + orchestration/results/P2-1-DISPOSITIONS.md | PREPARING |
