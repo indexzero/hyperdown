@@ -9,3 +9,6 @@
 - 2026-07-03T21:57Z GATE G1 FAIL (6 open blockers). Phase -> P2, loop counter 1/3.
 - 2026-07-03T21:58Z BRANCH 1/spec-review created off 0/initial (stack PR #2).
 - 2026-07-03T21:58Z DISPATCH D-002 (P2 author, inputs=01+P1-1 findings, outputs=spec v2 + dispositions, model=Fable 5, scratch=sslop/002) — synchronous.
+- 2026-07-03T22:02Z RESULT D-002 DONE: spec v2 (299 lines) + P2-1-DISPOSITIONS.md — F1..F6 applied, F7..F16 all FIXED (no waivers), F17..F20 applied, I4 preserved via F4 Option B. v1 untouched.
+- 2026-07-03T22:03Z PREP D-003: extracted findings table only -> orchestration/results/P1-1-FINDINGS-TABLE.md (context hygiene: fresh reviewer gets v2 + table, no prior reasoning).
+- 2026-07-03T22:03Z DISPATCH D-003 (P2 closure reviewer, prompt=02, artifact=spec v2 + findings table, model=Fable 5, scratch=sslop/003) — synchronous.
