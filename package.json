@@ -1,0 +1,12 @@
+{
+  "name": "hyperwiki2",
+  "version": "0.0.0",
+  "description": "a wiki implementatin on top of autobee ",
+  "license": "Apache-2.0",
+  "author": "Charlie Robbins <npm@charlie.dev>",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
