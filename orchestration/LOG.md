@@ -27,3 +27,5 @@
 - 2026-07-03T23:35Z RESULT D-007 DONE: orchestration/results/P2-3-CLOSURE.md — all 11 items CLOSED; VERDICT G1-FAIL on regression R1 (F1's ctx/gov/seen fallback contradicts I10 "never mutate ctx/" + §8.0 test) plus minors R2..R4.
 - 2026-07-03T23:36Z LOOP-ACCOUNTING P2 ceiling counts FAILED iterations per supervisor §0.4 ("On the third failed iteration"). Failed: cycle A (v2, 3 blockers), cycle C (v4, regression R1). Cycle B (v3) met the zero-blocker bar. 2/3 failures spent; one surgical remediation cycle (D-008 fix + D-009 verify) is within ceiling. If it fails: BLOCKED.md.
 - 2026-07-03T23:36Z DISPATCH D-008 (surgical fix R1..R4 -> spec v5, model=Fable 5, scratch=sslop/008) — synchronous.
+- 2026-07-03T23:42Z RESULT D-008 DONE: spec v5 + P2-4-DISPOSITIONS.md — R1 relocated seen/ out of ctx/, R2/R3/R4 applied; author self-verified diff scope v4->v5 limited to the four fixes.
+- 2026-07-03T23:42Z DISPATCH D-009 (final closure verifier on v5, scope=R1..R4 deltas, model=Fable 5, scratch=sslop/009) — synchronous.
