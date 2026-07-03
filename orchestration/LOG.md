@@ -12,3 +12,5 @@
 - 2026-07-03T22:02Z RESULT D-002 DONE: spec v2 (299 lines) + P2-1-DISPOSITIONS.md — F1..F6 applied, F7..F16 all FIXED (no waivers), F17..F20 applied, I4 preserved via F4 Option B. v1 untouched.
 - 2026-07-03T22:03Z PREP D-003: extracted findings table only -> orchestration/results/P1-1-FINDINGS-TABLE.md (context hygiene: fresh reviewer gets v2 + table, no prior reasoning).
 - 2026-07-03T22:03Z DISPATCH D-003 (P2 closure reviewer, prompt=02, artifact=spec v2 + findings table, model=Fable 5, scratch=sslop/003) — synchronous.
+- 2026-07-03T22:20Z INCIDENT D-003 stalled mid-stream (API error) after fetching all primary sources, before writing result. Continuing same agent (a2beaa6cb099bb8da) via SendMessage to preserve its fetched-source context; not a re-dispatch, no prompt change.
+- 2026-07-03T22:22Z PR-2 opened: https://github.com/indexzero/hyperwiki2/pull/2 (1/spec-review -> 0/initial); assumptions comment posted.
