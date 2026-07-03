@@ -17,3 +17,5 @@
 - 2026-07-03T22:45Z RESULT D-003 DONE: orchestration/results/P2-1-SPEC-REVIEW.md — verdict do-not-ship; closure 18/20 (F6 reopened as B1, F8 reopened as M1); fresh blockers B2 (governance-op issuer authority: 4 ops capture the vault) and B3 (rate-window vs I10 reorg stability); 10 majors, 7 minors, 2 nits; conformance 12 PASS / 5 PARTIAL / 5 FAIL; novelty claim survives with "engineering composition" qualifier.
 - 2026-07-03T22:46Z GATE G1 FAIL iteration 2 (3 open blockers). Loop counter 2/3.
 - 2026-07-03T22:46Z DISPATCH D-004 (P2 author iter2, inputs=v2+P2-1 findings, outputs=spec v3 + dispositions, model=Fable 5, scratch=sslop/004) — synchronous.
+- 2026-07-03T22:52Z RESULT D-004 DONE: spec v3 (379 lines) + P2-2-DISPOSITIONS.md — B1..B3 applied (clock-in-op revocation, §8.0 governance authority, token-bucket rate + I10 scoped per B3), M1..M10 all FIXED, minors/nits applied, 0 waivers.
+- 2026-07-03T22:53Z DISPATCH D-005 (P2 closure reviewer iter2, prompt=02, artifact=spec v3 + findings table, model=Fable 5, scratch=sslop/005) — synchronous.
