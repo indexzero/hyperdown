@@ -32,3 +32,5 @@
 - 2026-07-03T23:48Z RESULT D-009 DONE: orchestration/results/P2-4-CLOSURE.md — R1..R4 all CLOSED, no delta regressions, VERDICT: G1-PASS.
 - 2026-07-03T23:48Z GATE G1 PASS. SPEC-FINAL pinned = prompts/01-implementation-spec-prompt.v5.md. Checklist item 1 checked. Phase -> P3.
 - 2026-07-03T23:49Z ENV pnpm 10.34.0, node v24.16.0 (spec requires Node 20+: satisfied).
+- 2026-07-03T23:52Z BRANCH 2/core created off 1/spec-review (stack PR #3).
+- 2026-07-03T23:52Z DISPATCH D-010 (P3 build: core + invariant unit suite + workspace scaffolding, input=SPEC-FINAL v5 only, model=Fable 5, scratch=sslop/010, branch=2/core) — synchronous.
