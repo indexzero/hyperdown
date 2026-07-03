@@ -24,3 +24,6 @@
 - 2026-07-03T23:13Z DISPATCH D-006 (P2 author iter3/final, inputs=v3+P2-2 findings, outputs=spec v4 + dispositions, model=Fable 5, scratch=sslop/006) — synchronous.
 - 2026-07-03T23:20Z RESULT D-006 DONE: spec v4 + P2-3-DISPOSITIONS.md — F1/F2/F3/M-a + m1..m5 + n2 + narrowed novelty applied; all FIXED, none waived.
 - 2026-07-03T23:20Z DISPATCH D-007 (P2 closure verifier, scope=deltas+regressions only, artifact=v4+P2-2 findings, model=Fable 5, scratch=sslop/007) — synchronous.
+- 2026-07-03T23:35Z RESULT D-007 DONE: orchestration/results/P2-3-CLOSURE.md — all 11 items CLOSED; VERDICT G1-FAIL on regression R1 (F1's ctx/gov/seen fallback contradicts I10 "never mutate ctx/" + §8.0 test) plus minors R2..R4.
+- 2026-07-03T23:36Z LOOP-ACCOUNTING P2 ceiling counts FAILED iterations per supervisor §0.4 ("On the third failed iteration"). Failed: cycle A (v2, 3 blockers), cycle C (v4, regression R1). Cycle B (v3) met the zero-blocker bar. 2/3 failures spent; one surgical remediation cycle (D-008 fix + D-009 verify) is within ceiling. If it fails: BLOCKED.md.
+- 2026-07-03T23:36Z DISPATCH D-008 (surgical fix R1..R4 -> spec v5, model=Fable 5, scratch=sslop/008) — synchronous.
