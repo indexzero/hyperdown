@@ -7,21 +7,21 @@
 
 ## Phase
 
-- **Current phase:** P2 (spec remediation, loop 1/3)
-- **Next action:** dispatch D-002 (author: apply F1..F6 blocker replacement text, disposition F7..F16 majors → `prompts/01-implementation-spec-prompt.v2.md`), then D-003 (fresh reviewer verifies closure)
+- **Current phase:** P2 (spec remediation, loop 2/3)
+- **Next action:** dispatch D-004 (author: v2 + P2-1-SPEC-REVIEW.md → v3, apply B1..B3, disposition M1..M10) then D-005 (fresh closure reviewer). If iteration 3 fails G1 → BLOCKED.md per ceiling.
 
 ## Gates
 
 | Gate | Status | Evidence |
 |------|--------|----------|
-| G1 (spec: zero open blockers) | FAIL (2026-07-03) | orchestration/results/P1-1-SPEC-REVIEW.md — 6 blockers F1..F6, 10 majors F7..F16, 3 minors, 1 nit |
+| G1 (spec: zero open blockers) | FAIL iter2 (2026-07-03) | iter1: P1-1-SPEC-REVIEW.md (6 blockers). iter2: P2-1-SPEC-REVIEW.md — 18/20 closed, B1 (F6 reopened: causal clock unimplementable in apply), B2 (fresh: no issuer-authority on AddWriter/RemoveWriter), B3 (rate-window not reorg-stable vs I10), M1..M10, m1..m7, n1..n2 |
 | G3 (clean install, unit green, DEVIATIONS.md, acceptance mapped) | OPEN | — |
 | G4 (code review: zero blockers, S1..S10 green x3 profiles) | OPEN | — |
 | G6 (independent final verification) | OPEN | — |
 
 ## Loop counters (ceiling 3 each)
 
-- P2 spec remediation: 1/3 (iteration 1 in progress)
+- P2 spec remediation: 2/3 (iteration 2 in progress; iteration 1 closed 18/20 but reopened F6→B1, F8→M1, plus fresh B2/B3)
 - P5 code remediation: 0/3
 
 ## Goal checklist (from /goal; evidence paths required)
@@ -55,4 +55,6 @@
 | ID | Phase | Prompt | Artifact(s) | Result | Status |
 |----|-------|--------|-------------|--------|--------|
 | D-001 | P1 | prompts/02 | prompts/01 | orchestration/results/P1-1-SPEC-REVIEW.md | DONE — 6 blockers, G1 FAIL |
-| D-002 | P2 | (author instr) | prompts/01 + P1-1-SPEC-REVIEW.md | prompts/01-implementation-spec-prompt.v2.md + orchestration/results/P2-1-DISPOSITIONS.md | PREPARING |
+| D-002 | P2 | (author instr) | prompts/01 + P1-1-SPEC-REVIEW.md | prompts/01-implementation-spec-prompt.v2.md + orchestration/results/P2-1-DISPOSITIONS.md | DONE |
+| D-003 | P2 | prompts/02 | spec v2 + P1-1-FINDINGS-TABLE.md | orchestration/results/P2-1-SPEC-REVIEW.md | DONE — 3 blockers, G1 FAIL (stalled once, resumed in place) |
+| D-004 | P2 | (author instr) | spec v2 + P2-1-SPEC-REVIEW.md | prompts/01-implementation-spec-prompt.v3.md + orchestration/results/P2-2-DISPOSITIONS.md | PREPARING |
