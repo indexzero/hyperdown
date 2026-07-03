@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "offset": 0,
+  "schema": [
+    {
+      "id": 0,
+      "name": "@vault/set-field",
+      "requestType": "@vault/set-field",
+      "version": 1
+    },
+    {
+      "id": 1,
+      "name": "@vault/add-member",
+      "requestType": "@vault/add-member",
+      "version": 1
+    },
+    {
+      "id": 2,
+      "name": "@vault/rem-member",
+      "requestType": "@vault/rem-member",
+      "version": 1
+    },
+    {
+      "id": 3,
+      "name": "@vault/unset-field",
+      "requestType": "@vault/unset-field",
+      "version": 1
+    },
+    {
+      "id": 4,
+      "name": "@vault/set-body",
+      "requestType": "@vault/set-body",
+      "version": 1
+    },
+    {
+      "id": 5,
+      "name": "@vault/set-path",
+      "requestType": "@vault/set-path",
+      "version": 1
+    },
+    {
+      "id": 6,
+      "name": "@vault/delete-subject",
+      "requestType": "@vault/delete-subject",
+      "version": 1
+    },
+    {
+      "id": 7,
+      "name": "@vault/resolve-conflict",
+      "requestType": "@vault/resolve-conflict",
+      "version": 1
+    },
+    {
+      "id": 8,
+      "name": "@vault/clear-flag",
+      "requestType": "@vault/clear-flag",
+      "version": 1
+    },
+    {
+      "id": 9,
+      "name": "@vault/define-term",
+      "requestType": "@vault/define-term",
+      "version": 1
+    },
+    {
+      "id": 10,
+      "name": "@vault/define-scope",
+      "requestType": "@vault/define-scope",
+      "version": 1
+    },
+    {
+      "id": 11,
+      "name": "@vault/add-writer",
+      "requestType": "@vault/add-writer",
+      "version": 1
+    },
+    {
+      "id": 12,
+      "name": "@vault/remove-writer",
+      "requestType": "@vault/remove-writer",
+      "version": 1
+    },
+    {
+      "id": 13,
+      "name": "@vault/set-writer-policy",
+      "requestType": "@vault/set-writer-policy",
+      "version": 1
+    },
+    {
+      "id": 14,
+      "name": "@vault/prune-revisions",
+      "requestType": "@vault/prune-revisions",
+      "version": 1
+    }
+  ]
+}

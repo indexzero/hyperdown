@@ -1,0 +1,461 @@
+{
+  "version": 1,
+  "schema": [
+    {
+      "name": "set-field",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 4,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "p",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "o",
+          "required": true,
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "tag",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "ctxKind",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "add-member",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 4,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "p",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "o",
+          "required": true,
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "tag",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "ctxKind",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "rem-member",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "p",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "tags",
+          "required": true,
+          "array": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "ctxKind",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "unset-field",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "p",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "tag",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "set-body",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "base",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "text",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "set-path",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 2,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "path",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "scope",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "delete-subject",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 2,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "tag",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "resolve-conflict",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "keep",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "supersede",
+          "required": true,
+          "array": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "clear-flag",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "flagKey",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "define-term",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "scope",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "term",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "def",
+          "required": true,
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "define-scope",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "scope",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "base",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "prefix",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "add-writer",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "indexer",
+          "required": false,
+          "type": "bool",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "remove-writer",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "set-writer-policy",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "namespacePrefixes",
+          "required": true,
+          "array": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "rateCeiling",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "prune-revisions",
+      "namespace": "vault",
+      "compact": false,
+      "flagsPosition": 2,
+      "fields": [
+        {
+          "name": "s",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "before",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        }
+      ]
+    }
+  ]
+}
