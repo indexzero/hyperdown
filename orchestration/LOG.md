@@ -72,3 +72,5 @@
 - 2026-07-04T06:56Z DISPATCH D-020 (M2 append backpressure, scratch=sslop/020) — synchronous.
 - 2026-07-04T08:35Z RESULT D-020 DONE: M2 fixed (5ae8147) — opt-in two-gate append backpressure; 114/114, two balanced 6-min soaks, 17/17 clean matrix. Flagged: post-load quiesce stall is PRE-EXISTING (control-run proven), handed to re-review.
 - 2026-07-04T08:36Z DISPATCH D-021 (P5 fresh re-reviewer: prompt 03 scoped to full S1..S10 matrix x3 profiles + re-attack touched paths (apply.js revocation/SetBody, vault.js append/backpressure) + adjudicate quiesce stall; model=Fable 5, scratch=sslop/021) — synchronous.
+- 2026-07-04T09:50Z RESULT D-021 DONE: CODE-REVIEW-2.md — VERDICT: G4-PASS. Matrix 17/17 x3 profiles (seed 591324767, log sslop/021/matrix-run1.log); fuzz 10-iter + regressions 5/5 + unit 114/114 green; 5 adversarial probes on touched paths all pass; quiesce stall adjudicated minor L1 (pre-existing, liveness-only). No new findings; nothing committed by reviewer.
+- 2026-07-04T09:51Z GATE G4 PASS. P5 loop spent 1/3. L1 + stale harness README line batched to BACKLOG. Checklist items 3,4,5 checked. Phase -> P6.

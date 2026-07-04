@@ -7,8 +7,8 @@
 
 ## Phase
 
-- **Current phase:** P5 (code remediation, loop 1/3)
-- **Next action:** D-018 fix B1 (revocation race, blocker) → D-019 fix M1 (SetBody quadratic) → D-020 fix M2 (append backpressure) → D-021 fresh reviewer re-runs matrix + re-attacks touched paths. O1 (sole-indexer self-removal guard) batched to BACKLOG (minor).
+- **Current phase:** P6 (final verification)
+- **Next action:** dispatch D-022 (independent verifier, no prior artifacts except SPEC-FINAL + repo): clean clone of 6/harness, install, full unit + scenario matrix at all 3 profiles, materialize structural check (frontmatter parses, links resolve), Turtle parsed by standard parser, byte-determinism across two peers → orchestration/results/final-verification.md. Then DELIVERY.md, COMPLETE.
 - **Standing user directives:** autobee only / autobase forbidden; package + top-level READMEs usage-first; never delete from sslop/; DEVIATIONS.md terse; registry-tuple framing in docs.
 
 ## Gates
@@ -17,21 +17,21 @@
 |------|--------|----------|
 | G1 (spec: zero open blockers) | **PASS** (2026-07-03) | orchestration/results/P2-4-CLOSURE.md — "VERDICT: G1-PASS". Chain: P1-1 (v1, 6 blockers) → P2-1 (v2, 3 blockers) → P2-2 (v3, 0 blockers + 4 majors) → P2-3 (v4, majors closed, regression R1) → P2-4 (v5, all closed). All majors FIXED (dispositions: P2-1/2/3/4-DISPOSITIONS.md), zero waivers. |
 | G3 (clean install, unit green, DEVIATIONS.md, acceptance mapped) | **PASS** (2026-07-04) | orchestration/results/G3-verification.md — independent clean clone of 5/cli: install clean, 111/111, example byte-deterministic, §15 items all mapped (unit-level or deferred-to-P4), none MISSING |
-| G4 (code review: zero blockers, S1..S10 green x3 profiles) | FAIL iter1 (2026-07-04) | orchestration/results/CODE-REVIEW.md — B1 blocker (revocation race view divergence, repro verified failing by supervisor: test/regressions/revocation-race-divergence.test.js), M1 (SetBody O(R²)+flag blowup), M2 (multi-writer flood stall), O1 minor. Soak clean: no mem/FD leak over 30.5 min. Harness + S1..S10 + fuzz delivered. |
+| G4 (code review: zero blockers, S1..S10 green x3 profiles) | **PASS** (2026-07-04) | iter1: CODE-REVIEW.md (B1 blocker + M1/M2 majors, all FIXED: 8ff981b, 7222bf0, 5ae8147; each verified by supervisor). iter2: CODE-REVIEW-2.md — "VERDICT: G4-PASS": matrix 17/17 at clean+lossy+partitioned (seed 591324767), fuzz+regressions+unit green, no divergence any seed, touched paths survive re-attack, quiesce stall = minor L1 (pre-existing, liveness-only, proven non-divergent). Unproven-concerns appendix present. Loop spent: 1/3. |
 | G6 (independent final verification) | OPEN | — |
 
 ## Loop counters (ceiling 3 each)
 
 - P2 spec remediation: CLOSED at 2/3 failed iterations (A: v2 blockers, C: v4 regression; B and final D passed). Total author passes: 4 (v2..v5); total reviews: 5 (D-001,3,5,7,9).
-- P5 code remediation: 0/3
+- P5 code remediation: CLOSED at 1/3 (single iteration: 3 fixes + fresh re-review passed)
 
 ## Goal checklist (from /goal; evidence paths required)
 
 - [x] SPEC-FINAL pinned — evidence: prompts/01-implementation-spec-prompt.v5.md; orchestration/results/P2-4-CLOSURE.md ("VERDICT: G1-PASS"); dispositions P2-1..P2-4-DISPOSITIONS.md (zero waivers)
 - [x] Clean-clone install; unit green; I1..I10 mapped — evidence: orchestration/results/G3-verification.md (VERDICT: G3-PASS; 111/111; I1..I10 each ≥1 test per P3-1-core.md §3)
-- [ ] Harness real (multi-process, seeded fault proxy, barriers, permutation replay, hash oracle) — evidence: —
-- [ ] S1..S10 green at clean/lossy/partitioned — evidence: —
-- [ ] CODE-REVIEW.md zero open blockers; fuzz repros committed — evidence: —
+- [x] Harness real (multi-process, seeded fault proxy, barriers, permutation replay, hash oracle) — evidence: /harness (commits 5f463e2, 53c1361, 06c9fc3); CODE-REVIEW.md §5
+- [x] S1..S10 green at clean/lossy/partitioned — evidence: CODE-REVIEW-2.md matrix section (17/17 x3 profiles, seed 591324767; log sslop/021/matrix-run1.log)
+- [x] CODE-REVIEW.md zero open blockers; fuzz repros committed — evidence: CODE-REVIEW.md + CODE-REVIEW-2.md (G4-PASS); repros test/regressions/ (5 named tests, all green)
 - [ ] DEVIATIONS.md current; minors in BACKLOG.md — evidence: —
 - [ ] Independent clean-clone verification, raw output — evidence: —
 - [ ] DELIVERY.md written — evidence: —
