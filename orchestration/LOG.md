@@ -58,3 +58,4 @@
 - 2026-07-04T03:12Z RESULT D-014 DONE: packages/faces (materialize/ingest/exportTurtle) — supervisor re-ran full suite: 104/104 confirmed. Report: orchestration/results/P3-3-faces.md. encodeName percent-encoding verified against fetched vault-ld §4.5 (UNVERIFIED item 2 settled; see DEVIATIONS.md cc931cb).
 - 2026-07-04T03:20Z PR-5 opened + assumptions comment. BRANCH 5/cli created off 4/faces (stack PR #6).
 - 2026-07-04T03:20Z DISPATCH D-015 (P3 cli + recipe-book example (4 agent writers) + top-level README, model=Fable 5, scratch=sslop/015, branch=5/cli) — synchronous.
+- 2026-07-04T03:55Z RESULT D-015 DONE: packages/cli (8 commands), examples/recipe-book (4 agent writers; committed out/ regenerates byte-identically — supervisor re-ran the script and confirmed no git diff), top-level README (usage-first, on autobee). Supervisor re-ran full suite: 111/111 confirmed. Report: orchestration/results/P3-4-cli.md.
