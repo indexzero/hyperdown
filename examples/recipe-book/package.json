@@ -1,0 +1,22 @@
+{
+  "name": "hyperwiki-example-recipe-book",
+  "version": "0.0.0",
+  "description": "Four agent writers co-author a recipe-book knowledge graph on one shared hyperwiki vault, then dump it as Markdown + Turtle",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hyperwiki/core": "workspace:*",
+    "@hyperwiki/faces": "workspace:*",
+    "@hyperwiki/store": "workspace:*",
+    "b4a": "^1.8.1",
+    "hypercore-crypto": "^3.6.1"
+  }
+}

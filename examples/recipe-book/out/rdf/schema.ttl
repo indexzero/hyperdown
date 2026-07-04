@@ -1,0 +1,11 @@
+@prefix cul: <https://recipes.example/culinary#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://recipes.example/culinary#Ingredient> a owl:Class .
+<https://recipes.example/culinary#Ingredient> rdfs:comment "Something a recipe is made of." .
+<https://recipes.example/culinary#Recipe> a owl:Class .
+<https://recipes.example/culinary#Recipe> rdfs:comment "A dish somebody can actually cook." .
+<https://recipes.example/culinary#hasIngredient> a owl:ObjectProperty .
+<https://recipes.example/culinary#hasIngredient> rdfs:domain cul:Recipe .
+<https://recipes.example/culinary#hasIngredient> rdfs:range cul:Ingredient .
