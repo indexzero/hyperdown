@@ -40,3 +40,5 @@
 - 2026-07-04T01:02Z PR-3 opened: https://github.com/indexzero/hyperwiki2/pull/3 (2/core -> 1/spec-review); assumptions comment posted.
 - 2026-07-04T01:03Z BRANCH 3/store created off 2/core (stack PR #4).
 - 2026-07-04T01:03Z DISPATCH D-011 (P3 build: store, inputs=SPEC-FINAL v5 + core README, model=Fable 5, scratch=sslop/011, branch=3/store) — synchronous.
+- 2026-07-04T01:20Z USER CORRECTION: autobee is MANDATORY for the store layer (spec's MAY resolved by user; package.json description was the signal originally under-weighted). D-011 addendum written; store agent redirected mid-flight. Core unaffected (apply targets hyperbee-surface view = autobee's view).
+- 2026-07-04T01:20Z USER INSTRUCTIONS (same exchange): (1) cohesive usage-first README + API docs per "How to write a README" (example first, install, API, tests, license); (2) working multi-writer example framed for LLM agents (e.g. four agents co-write a recipe book -> knowledge graph -> materialized markdown, roundtrip shown) — planned as dedicated dispatch after faces; (3) NEVER delete anything from sslop/ (all agents, all dispatches).
