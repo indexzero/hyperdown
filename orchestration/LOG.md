@@ -55,3 +55,4 @@
 - 2026-07-04T02:30Z PR-4 opened: https://github.com/indexzero/hyperwiki2/pull/4 (3/store -> 2/core); assumptions comment posted (incl. on-record supervisor correction re autobase).
 - 2026-07-04T02:32Z BRANCH 4/faces created off 3/store (stack PR #5).
 - 2026-07-04T02:32Z DISPATCH D-014 (P3 faces: materialize/ingest/exportTurtle, inputs=SPEC-FINAL+core README+store README, model=Fable 5, scratch=sslop/014, branch=4/faces) — synchronous.
+- 2026-07-04T03:12Z RESULT D-014 DONE: packages/faces (materialize/ingest/exportTurtle) — supervisor re-ran full suite: 104/104 confirmed. Report: orchestration/results/P3-3-faces.md. encodeName percent-encoding verified against fetched vault-ld §4.5 (UNVERIFIED item 2 settled; see DEVIATIONS.md cc931cb).
