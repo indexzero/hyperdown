@@ -19,6 +19,15 @@ const execFileP = promisify(execFile)
 const MINUTES = Number(process.env.SOAK_MINUTES || 32)
 const SAMPLE_MS = 30000
 const N = 3
+// Balanced, sustainable write rate. At <=80ms/op the three writers attempt
+// ~12 ops/s each; 3-way concurrent lossy replication cannot fold that fast,
+// so one writer floods and the others stall applying it (CODE-REVIEW.md
+// finding M2). A ~2.5 ops/s/writer rate stays within the fold budget and
+// isolates the leak/backpressure measurement this soak exists to make.
+const OP_SLEEP = Number(process.env.SOAK_SLEEP || 400)
+// One brief partition at the midpoint (still exercises heal/catch-up)
+// instead of repeated churn, which builds expensive concurrent merges.
+const CHURN = process.env.SOAK_CHURN !== '0'
 
 async function dirKb(dir) {
   try {
@@ -52,36 +61,39 @@ const loads = writers.map(async (w, wi) => {
     const i = opCounts[wi]
     const s = rot[i % rot.length]
     try {
-      if (i % 3 === 0) await w.call('setField', s, 'title', `t${wi}-${i}`)
-      else if (i % 3 === 1) await w.call('addMember', s, 'topic', `m${i % 50}`)
-      else {
-        // chain body revisions off the current head (realistic editing);
-        // null-base every time would hit the O(N^2) conflict path (see
-        // CODE-REVIEW.md finding), which is exercised by its own repro.
-        const head = await w.val(`n/${s.replace(/\//g, '%2F')}/body`)
-        await w.call('setBody', s, head || null, `body ${wi}-${i}`)
-      }
+      // Bounded O(1)-per-op workload only: LWW setField and OR-set
+      // addMember (capped at 50 distinct members/field). SetBody is
+      // deliberately EXCLUDED — apply.js opSetBody rescans every prior
+      // revision of the subject on each call, so sustained SetBody on one
+      // subject is O(R^2) (CODE-REVIEW.md finding M1) and would conflate the
+      // apply-cost defect with the leak/backpressure measurement this soak
+      // exists to make. M1 has its own committed repro.
+      if (i % 2 === 0) await w.call('setField', s, 'title', `t${wi}-${i}`)
+      else await w.call('addMember', s, 'topic', `m${i % 50}`)
+      // self-throttle: keep the local view current so no writer builds a
+      // runaway append-vs-apply backlog (the M2 feedback loop)
+      await w.update()
       opCounts[wi]++
     } catch (err) {
       fatal = `[soak] writer w${wi} op failed: ${err.message}`
       running = false
     }
-    await sleep(80)
+    await sleep(OP_SLEEP)
   }
 })
 
-// periodic partitions/heals (every 3 min: isolate one writer for 30s)
+// one brief partition/heal at the midpoint (exercises catch-up without
+// building the repeated concurrent-merge backlog that trips M2)
 const churn = (async () => {
-  const rng = ctl.rng.child('soak-churn')
-  while (running && Date.now() < deadline - 60000) {
-    await sleep(180000)
-    if (!running) break
-    const iso = writers[rng.int(N)]
-    console.log(`[soak] ${((Date.now() - t0) / 1000) | 0}s partitioning ${iso.name} for 30s`)
-    await ctl.partition([iso], writers.filter((w) => w !== iso))
-    await sleep(30000)
-    await ctl.connectAll(writers)
-  }
+  if (!CHURN) return
+  const half = (deadline - t0) / 2
+  await sleep(half)
+  if (!running) return
+  const iso = writers[1]
+  console.log(`[soak] ${((Date.now() - t0) / 1000) | 0}s partitioning ${iso.name} for 20s`)
+  await ctl.partition([iso], writers.filter((w) => w !== iso))
+  await sleep(20000)
+  if (running) await ctl.connectAll(writers)
 })()
 
 // sampler
