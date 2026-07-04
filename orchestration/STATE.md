@@ -7,8 +7,8 @@
 
 ## Phase
 
-- **Current phase:** P6 (final verification)
-- **Next action:** dispatch D-022 (independent verifier, no prior artifacts except SPEC-FINAL + repo): clean clone of 6/harness, install, full unit + scenario matrix at all 3 profiles, materialize structural check (frontmatter parses, links resolve), Turtle parsed by standard parser, byte-determinism across two peers → orchestration/results/final-verification.md. Then DELIVERY.md, COMPLETE.
+- **Current phase:** **COMPLETE** (2026-07-04)
+- **Next action:** none. All gates passed; DELIVERY.md written. Human follow-ups live in the PR stack (#1..#7, none merged, per owner instruction) and orchestration/BACKLOG.md.
 - **Standing user directives:** autobee only / autobase forbidden; package + top-level READMEs usage-first; never delete from sslop/; DEVIATIONS.md terse; registry-tuple framing in docs.
 
 ## Gates
@@ -18,7 +18,7 @@
 | G1 (spec: zero open blockers) | **PASS** (2026-07-03) | orchestration/results/P2-4-CLOSURE.md — "VERDICT: G1-PASS". Chain: P1-1 (v1, 6 blockers) → P2-1 (v2, 3 blockers) → P2-2 (v3, 0 blockers + 4 majors) → P2-3 (v4, majors closed, regression R1) → P2-4 (v5, all closed). All majors FIXED (dispositions: P2-1/2/3/4-DISPOSITIONS.md), zero waivers. |
 | G3 (clean install, unit green, DEVIATIONS.md, acceptance mapped) | **PASS** (2026-07-04) | orchestration/results/G3-verification.md — independent clean clone of 5/cli: install clean, 111/111, example byte-deterministic, §15 items all mapped (unit-level or deferred-to-P4), none MISSING |
 | G4 (code review: zero blockers, S1..S10 green x3 profiles) | **PASS** (2026-07-04) | iter1: CODE-REVIEW.md (B1 blocker + M1/M2 majors, all FIXED: 8ff981b, 7222bf0, 5ae8147; each verified by supervisor). iter2: CODE-REVIEW-2.md — "VERDICT: G4-PASS": matrix 17/17 at clean+lossy+partitioned (seed 591324767), fuzz+regressions+unit green, no divergence any seed, touched paths survive re-attack, quiesce stall = minor L1 (pre-existing, liveness-only, proven non-divergent). Unproven-concerns appendix present. Loop spent: 1/3. |
-| G6 (independent final verification) | OPEN | — |
+| G6 (independent final verification) | **PASS** (2026-07-04) | orchestration/results/final-verification.md — "VERDICT: FINAL-PASS": clean clone, 114/114 unit, 5/5 regressions, matrix 17/17 x3 profiles + fuzz, vault structural check per-file, Turtle parses (n3, 0 errors), two-peer byte-identical materialize+export |
 
 ## Loop counters (ceiling 3 each)
 
@@ -32,9 +32,9 @@
 - [x] Harness real (multi-process, seeded fault proxy, barriers, permutation replay, hash oracle) — evidence: /harness (commits 5f463e2, 53c1361, 06c9fc3); CODE-REVIEW.md §5
 - [x] S1..S10 green at clean/lossy/partitioned — evidence: CODE-REVIEW-2.md matrix section (17/17 x3 profiles, seed 591324767; log sslop/021/matrix-run1.log)
 - [x] CODE-REVIEW.md zero open blockers; fuzz repros committed — evidence: CODE-REVIEW.md + CODE-REVIEW-2.md (G4-PASS); repros test/regressions/ (5 named tests, all green)
-- [ ] DEVIATIONS.md current; minors in BACKLOG.md — evidence: —
-- [ ] Independent clean-clone verification, raw output — evidence: —
-- [ ] DELIVERY.md written — evidence: —
+- [x] DEVIATIONS.md current; minors in BACKLOG.md — evidence: DEVIATIONS.md (gutted per owner directive, updated by B1 fix); orchestration/BACKLOG.md (O1, L1, lint sweep, stale S6 line, d.ts stubs)
+- [x] Independent clean-clone verification, raw output — evidence: orchestration/results/final-verification.md (VERDICT: FINAL-PASS, raw output per step)
+- [x] DELIVERY.md written — evidence: DELIVERY.md (artifacts, zero waived majors, loop counters: P2 2/3 failed iters, P5 1/3, incidents)
 
 ## Pinned decisions
 
