@@ -1,0 +1,23 @@
+{
+  "name": "@hyperwiki/cli",
+  "version": "0.0.0",
+  "description": "hyperwiki command line: init/join vaults, writer governance, materialize, Turtle export, flag queue, foreground ingest watcher",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "lib/run.js",
+  "bin": {
+    "hyperwiki": "bin/hyperwiki.js"
+  },
+  "exports": {
+    ".": "./lib/run.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hyperwiki/core": "workspace:*",
+    "@hyperwiki/faces": "workspace:*",
+    "@hyperwiki/store": "workspace:*",
+    "b4a": "^1.8.1"
+  }
+}
