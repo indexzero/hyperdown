@@ -34,3 +34,4 @@
 - 2026-07-03T23:49Z ENV pnpm 10.34.0, node v24.16.0 (spec requires Node 20+: satisfied).
 - 2026-07-03T23:52Z BRANCH 2/core created off 1/spec-review (stack PR #3).
 - 2026-07-03T23:52Z DISPATCH D-010 (P3 build: core + invariant unit suite + workspace scaffolding, input=SPEC-FINAL v5 only, model=Fable 5, scratch=sslop/010, branch=2/core) — synchronous.
+- 2026-07-04T00:30Z INCIDENT D-010 terminated by API 529 Overloaded mid-task (after ~51 tool uses; core ops/apply/keyspace written, test suite partially written). Resuming same agent (a94044ce369304e3a) via SendMessage to preserve context; not a re-dispatch, no prompt change.
