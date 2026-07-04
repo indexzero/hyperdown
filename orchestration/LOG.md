@@ -68,3 +68,5 @@
 - 2026-07-04T06:06Z GATE G4 FAIL iteration 1. Phase -> P5 loop 1/3. O1 batched to BACKLOG.
 - 2026-07-04T06:35Z RESULT D-018 DONE: B1 fixed (8ff981b) — revocation by in-log clock rule only; repro + S6 x3 profiles + 111/111 + clean matrix 17/17 green; supervisor re-ran test:regressions: 2/2 pass. DEVIATIONS §13(d) corrected.
 - 2026-07-04T06:36Z DISPATCH D-019 (M1 SetBody quadratic fix, scratch=sslop/019) — synchronous.
+- 2026-07-04T06:55Z RESULT D-019 DONE: M1 fixed (7222bf0) — revbybase index + bounded conflict fan-out; regressions 5/5, 111/111, clean matrix 17/17; supervisor re-ran regressions: pass.
+- 2026-07-04T06:56Z DISPATCH D-020 (M2 append backpressure, scratch=sslop/020) — synchronous.
