@@ -64,3 +64,5 @@
 - 2026-07-04T04:10Z GATE G3 PASS (independent clean-clone verification). Checklist item 2 checked. Phase -> P4.
 - 2026-07-04T04:11Z BRANCH 6/harness created off 5/cli (stack PR #7).
 - 2026-07-04T04:11Z DISPATCH D-017 (P4: prompt=03 harness+review, autobee ground adjustments, soak mandated, model=Fable 5, scratch=sslop/017, branch=6/harness) — synchronous, generous runtime.
+- 2026-07-04T06:05Z RESULT D-017 DONE (~110 min incl. 30.5-min soak): harness + S1..S10 + fuzz + CODE-REVIEW.md. G4 FAIL: B1 blocker (revocation race divergence; supervisor re-ran repro — fails as claimed, hashes diverge), M1, M2, O1. Soak: no memory/FD leak. UNVERIFIED item 1 (removeable) resolved as CONFIRMED FINDING (B1); DEVIATIONS §13(d) claim disproven.
+- 2026-07-04T06:06Z GATE G4 FAIL iteration 1. Phase -> P5 loop 1/3. O1 batched to BACKLOG.

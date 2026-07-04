@@ -7,8 +7,8 @@
 
 ## Phase
 
-- **Current phase:** P4 (code review + multi-process fault-injection harness)
-- **Next action:** dispatch D-017 (prompt=03, input=repo at G3 tip 5/cli, branch 6/harness): build harness + S1..S10 at 3 fault profiles, then adversarial review → CODE-REVIEW.md. Gate G4: zero blockers, all scenarios green x3 profiles, unproven-concerns appendix.
+- **Current phase:** P5 (code remediation, loop 1/3)
+- **Next action:** D-018 fix B1 (revocation race, blocker) → D-019 fix M1 (SetBody quadratic) → D-020 fix M2 (append backpressure) → D-021 fresh reviewer re-runs matrix + re-attacks touched paths. O1 (sole-indexer self-removal guard) batched to BACKLOG (minor).
 - **Standing user directives:** autobee only / autobase forbidden; package + top-level READMEs usage-first; never delete from sslop/; DEVIATIONS.md terse; registry-tuple framing in docs.
 
 ## Gates
@@ -17,7 +17,7 @@
 |------|--------|----------|
 | G1 (spec: zero open blockers) | **PASS** (2026-07-03) | orchestration/results/P2-4-CLOSURE.md — "VERDICT: G1-PASS". Chain: P1-1 (v1, 6 blockers) → P2-1 (v2, 3 blockers) → P2-2 (v3, 0 blockers + 4 majors) → P2-3 (v4, majors closed, regression R1) → P2-4 (v5, all closed). All majors FIXED (dispositions: P2-1/2/3/4-DISPOSITIONS.md), zero waivers. |
 | G3 (clean install, unit green, DEVIATIONS.md, acceptance mapped) | **PASS** (2026-07-04) | orchestration/results/G3-verification.md — independent clean clone of 5/cli: install clean, 111/111, example byte-deterministic, §15 items all mapped (unit-level or deferred-to-P4), none MISSING |
-| G4 (code review: zero blockers, S1..S10 green x3 profiles) | OPEN | — |
+| G4 (code review: zero blockers, S1..S10 green x3 profiles) | FAIL iter1 (2026-07-04) | orchestration/results/CODE-REVIEW.md — B1 blocker (revocation race view divergence, repro verified failing by supervisor: test/regressions/revocation-race-divergence.test.js), M1 (SetBody O(R²)+flag blowup), M2 (multi-writer flood stall), O1 minor. Soak clean: no mem/FD leak over 30.5 min. Harness + S1..S10 + fuzz delivered. |
 | G6 (independent final verification) | OPEN | — |
 
 ## Loop counters (ceiling 3 each)
