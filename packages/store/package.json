@@ -1,0 +1,25 @@
+{
+  "name": "@hyperwiki/store",
+  "version": "0.0.0",
+  "description": "Vault-LD on autobee: multiwriter vault lifecycle, metadata pinning, writer governance plumbing, swarm replication",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./vault": "./lib/vault.js",
+    "./metadata": "./lib/metadata.js",
+    "./hash": "./lib/hash.js",
+    "./view": "./lib/view.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hyperwiki/core": "workspace:*",
+    "autobee": "^1.0.10",
+    "b4a": "^1.8.1",
+    "corestore": "^7.11.0",
+    "hyperswarm": "^4.17.0"
+  }
+}
