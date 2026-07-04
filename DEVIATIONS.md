@@ -41,6 +41,52 @@ partition is honored only when an authored path is present; absent a path,
 layer is inferred from the `@type` element set, which MAY diverge from a
 folder-only vault-ld tool for locally-typed schema notes.
 
+**§13 store: SPEC-FINAL→autobee port mappings.** Verified against the
+installed autobee@1.0.10 source. (a) Apply node shape: autobee hands
+`{ key, value, length, optimistic }` (key = writer core key); the store
+wraps each node as `{ from: { key }, value, length }` before core's apply.
+(b) Host surface: core's `host.addWriter(key, { indexer })` maps to
+autobee's `host.addWriter(key, { isIndexer, weight })`; `removeable(key)`
+is autobee's (always true in 1.0.10). (c) `signedLength`-scoped clauses:
+autobee has no separate signing pipeline (`views()` reports
+`signedLength === length`; finality is flush/anchor —
+`host.createAnchor()` is the checkpoint primitive), so §8.5's
+"at or below signedLength" rate-partition scope and §11's quorum-signed
+snapshots have no 1:1 substrate; view convergence is asserted by full-scan
+hash equality and §11 snapshot machinery stays future work (P4 harness
+territory). (d) §8.3: once a peer has *seen* its own removal, autobee
+refuses to linearize further non-optimistic local nodes at all
+(lib/writers.js "Not writable", surfaced as an `'error'` event that tears
+the revoked instance down) — strictly stronger containment than the spec's
+reject-in-apply; the in-log clock rule still governs ops that raced the
+revocation.
+
+**§8.2 optimistic onboarding on autobee (ackWriter port).** Autobee's
+optimistic path requires the batch to anchor in its system during apply or
+it is rolled back and the writer dropped from pending; the store's apply
+wrapper therefore calls `host.ackWriter(node.key)` for optimistic nodes
+("acknowledge a writer without changing their permissions"). This is
+DAG-level only and deterministic (same apply, same nodes on every peer):
+core's §8.2 hold buffer (`n/hold/` + `flag/optimistic/`) remains the sole
+view-effect gate until an in-log `AddWriter` from a confirmed indexer
+linearizes and core folds the held range. Because the hold defers the op's
+*effect* to the ack position, peers converge to identical views even when
+the raw optimistic node linearized at different positions on different
+peers (observed and asserted in test/store-convergence.test.js).
+
+**Uniform autobee topo weight for all writers.** autobee@1.0.10's
+linearization comparators disagree for concurrent nodes of unequal weight
+(lib/topo.js: `isOrderedBefore` breaks its walk on
+`node.weight < link.weight` while `cmp` sorts higher weight first), so
+peers that receive concurrent indexer/non-indexer (weight 2/1) nodes in
+different arrival orders keep permanently divergent linearizations —
+observed empirically, fatal for I2 under core's order-sensitive apply (the
+reference codebases sidestep it with order-independent first-seen-wins
+applies). The store therefore admits every writer with weight 2 (the
+genesis auto-add weight), keeping the `isIndexer` bit for autobee's
+bookkeeping; §8.0 governance authority is decided from `ctx/gov` by core,
+never from autobee writer state, so spec semantics are unaffected.
+
 **UNVERIFIED.** (1) `host.removeWriter` is guarded by `host.removeable(key)`;
 the autobase README does not state whether `removeable` is exact under all
 quorum states. (2) The exact reserved-character set of vault-ld §4.5
