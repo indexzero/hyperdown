@@ -1,0 +1,23 @@
+{
+  "name": "@hyperwiki/faces",
+  "version": "0.0.0",
+  "description": "Vault-LD generated faces: Obsidian-compatible vault materialization, human-edit ingest watcher, deterministic Turtle export",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./materialize": "./lib/materialize.js",
+    "./ingest": "./lib/ingest.js",
+    "./turtle": "./lib/turtle.js",
+    "./note": "./lib/note.js",
+    "./placement": "./lib/placement.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hyperwiki/core": "workspace:*",
+    "yaml": "^2.8.0"
+  }
+}

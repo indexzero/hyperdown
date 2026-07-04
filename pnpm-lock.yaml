@@ -6,7 +6,11 @@ settings:
 
 importers:
 
-  .: {}
+  .:
+    devDependencies:
+      n3:
+        specifier: ^2.1.1
+        version: 2.1.1
 
   packages/core:
     dependencies:
@@ -22,6 +26,15 @@ importers:
       hyperschema:
         specifier: ^1.21.0
         version: 1.21.0
+
+  packages/faces:
+    dependencies:
+      '@hyperwiki/core':
+        specifier: workspace:*
+        version: link:../core
+      yaml:
+        specifier: ^2.8.0
+        version: 2.9.0
 
   packages/store:
     dependencies:
@@ -45,6 +58,10 @@ packages:
 
   '@hyperswarm/secret-stream@6.9.1':
     resolution: {integrity: sha512-xb0S5y3YJwBakD77JOGBHlBxdp63mHClZoXBYoLv+9wH8e054ESKlmQptWqjJK5dv5VMUIVYOJB4MaOpB0JdGw==}
+
+  abort-controller@3.0.0:
+    resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
+    engines: {node: '>=6.5'}
 
   adaptive-timeout@1.0.1:
     resolution: {integrity: sha512-+seGiBtHqbnyZ0Quq/ZGxxwP66153WBABawa07/QeyuPFzbduPBjiGQAyCiriiLDzt3dkbMBskSlfqtRwblK8Q==}
@@ -145,6 +162,9 @@ packages:
   bare-url@2.4.5:
     resolution: {integrity: sha512-K+y9xF1tN+CdPu4qWwr0QiK1Al07eFPGYK5M2pDXcmHdMdgC/tT/bpmMe1hrmRHaidKLkXrC+cRNYf3XVDUhSQ==}
 
+  base64-js@1.5.1:
+    resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
+
   big-sparse-array@1.0.3:
     resolution: {integrity: sha512-6RjV/3mSZORlMdpUaQ6rUSpG637cZm0//E54YYGtQg1c1O+AbZP8UTdJ/TchsDZcTVLmyWZcseBfp2HBeXUXOQ==}
 
@@ -156,6 +176,9 @@ packages:
 
   bogon@1.3.0:
     resolution: {integrity: sha512-04tu0G/v0f2HPuQlSfhO635WwHDBCaITJ490rhxH9ttUlgPqOirZVKV02YB6NvPf5VkmbqJCm3bnZwrPk/eDSg==}
+
+  buffer@6.0.3:
+    resolution: {integrity: sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA==}
 
   compact-encoding-bitfield@1.1.0:
     resolution: {integrity: sha512-F6wliSKHi50BsBStmnsRJAzJgYSIYzdfSe3M0oHj4uQ1RcctJK/NQVD7wF51bj/DBMne2i5gUxrGUFkNZQns5w==}
@@ -181,8 +204,16 @@ packages:
   dht-rpc@6.27.0:
     resolution: {integrity: sha512-NsfgRlFDQnkA2+H+hJXMPLmBOn/TSIIc0cRMV8q42M4xc1uAXWtpvIIQsONF5tYcYC6px0bslrUGideN1h4S4A==}
 
+  event-target-shim@5.0.1:
+    resolution: {integrity: sha512-i/2XbnSz/uxRCU6+NdVJgKWDTM427+MqYbkQzD321DuCQJUqOuJKIA0IM2+W2xtYHdKOmZ4dR6fExsd4SXL+WQ==}
+    engines: {node: '>=6'}
+
   events-universal@1.0.1:
     resolution: {integrity: sha512-LUd5euvbMLpwOF8m6ivPCbhQeSiYVNb8Vs0fQ8QjXo0JTkEHpz8pxdQf0gStltaPpw0Cca8b39KxvK9cfKRiAw==}
+
+  events@3.3.0:
+    resolution: {integrity: sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==}
+    engines: {node: '>=0.8.x'}
 
   fast-fifo@1.3.2:
     resolution: {integrity: sha512-/d9sfos4yxzpwkDkuN7k2SqFKtYNmCTzgfEpz82x34IM9/zc8KGxQoXg1liNC/izpRM/MBdt44Nmx41ZWqk+FQ==}
@@ -236,6 +267,9 @@ packages:
   hyperswarm@4.17.0:
     resolution: {integrity: sha512-oe86sK961Ueg7rvDN/veFwG8xH+Iv6vObPhGDkPJcDVxk/NduW41ZhAcVDnHzRbm7S0eLU7WaDUvehOYoKSpRQ==}
 
+  ieee754@1.2.1:
+    resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
+
   index-encoder@3.5.0:
     resolution: {integrity: sha512-idZ1cxtZz2dRV6rUiaP9Xo99UjXbSzjcMacoQmxUMu/A7fEQcNPngvwDJYeWelQUS5XFlY71/or70lKn6XnwbQ==}
 
@@ -248,6 +282,10 @@ packages:
   kademlia-routing-table@1.0.6:
     resolution: {integrity: sha512-Ve6jwIlUCYvUzBnXnzVRHDZCFgXURW9gmF3r7n05kZs/2rNbLHXwGdcq0qIaSwdmJCvtosgR4JensnVU65hzNQ==}
 
+  n3@2.1.1:
+    resolution: {integrity: sha512-kqg8ers6Lc+uAmHeS+ycd3b8mC4x8wr8V8Fi6+w7l4hX6b0KZ5bT05Tf49qM2mujwaqZT3+08zcgtXgfxivbVQ==}
+    engines: {node: '>=12.0'}
+
   nanoassert@2.0.0:
     resolution: {integrity: sha512-7vO7n28+aYO4J+8w96AzhmU8G+Y/xpPDJz/se19ICsqj/momRbb9mh9ZUtkoJ5X3nTnPdhEJyc0qnM6yAsHBaA==}
 
@@ -259,6 +297,10 @@ packages:
 
   noise-handshake@4.2.0:
     resolution: {integrity: sha512-9O/VTNX/E2/AToyMTTDU0J/4WhaXMTdqc2DHs9vf+snoZ0cenSBq0dNYTVV1snYYEkmo6QeRrYMxtqtoYnY+LA==}
+
+  process@0.11.10:
+    resolution: {integrity: sha512-cdGef/drWFoydD1JsMzuFf8100nZl+GT+yacc2bEced5f9Rjk4z+WtFUTBu9PhOi9j/jfmBPu0mMEY4wIdAF8A==}
+    engines: {node: '>= 0.6.0'}
 
   protocol-buffers-encodings@1.2.0:
     resolution: {integrity: sha512-daeNPuKh1NlLD1uDfbLpD+xyUTc07nEtfHwmBZmt/vH0B7VOM+JOCOpDcx9ZRpqHjAiIkGqyTDi+wfGSl17R9w==}
@@ -280,6 +322,10 @@ packages:
 
   random-array-iterator@1.0.0:
     resolution: {integrity: sha512-u7xCM93XqKEvPTP6xZp2ehttcAemKnh73oKNf1FvzuVCfpt6dILDt1Kxl1LeBjm2iNIeR49VGFhy4Iz3yOun+Q==}
+
+  readable-stream@4.7.0:
+    resolution: {integrity: sha512-oIGGmcpTLwPga8Bn6/Z75SVaH1z5dUut2ibSyAMVhmUggWpmDn2dapB0n7f8nwaSiRtepAsfJyfXIO5DCVAODg==}
+    engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
 
   ready-guard@1.0.0:
     resolution: {integrity: sha512-B9M3FQjxgsjfqMJYvZUmXwz48vQGzpioh7t+GhDOvkF2g2WrnJfevRKFFfjYyR16T5ywqFiLlX2V/11RdPhcbg==}
@@ -306,6 +352,9 @@ packages:
   rocksdb-native@3.17.1:
     resolution: {integrity: sha512-33hbNSx57vbdM/kyP6dozy1eRLeiN69kTNcbPZ6AMkOjFtSY3G6O94TxKNgUIq53IQzFP6kClriKHeu4mu1q6w==}
     engines: {bare: '>=1.16.0'}
+
+  safe-buffer@5.2.1:
+    resolution: {integrity: sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ==}
 
   safety-catch@1.0.3:
     resolution: {integrity: sha512-Zq+J1TefpoEq/HTUabo0YXX5MNvttjWYODGohgPBO2jfko8Wqx3JYMgE823szDFVamdH5PlpByvfiWScTdSYDA==}
@@ -346,6 +395,9 @@ packages:
   streamx@2.28.0:
     resolution: {integrity: sha512-1Yowhzjf0ivGMrTIkY9hav5TxobO9qIVqUE41fiCGMGgc3CLlf4MY+9AHmZqBWgDTue0fY9zWjYFVyf6Diuobw==}
 
+  string_decoder@1.3.0:
+    resolution: {integrity: sha512-hkRX8U1WjJFd8LsDJ2yQ/wWWxaopEsABU1XfkM8A+j0+85JAGppt16cr1Whg6KIbb4okU6Mql6BOj+uup/wKeA==}
+
   teex@1.0.1:
     resolution: {integrity: sha512-eYE6iEI62Ni1H8oIa7KlDU6uQBtqr4Eajni3wX7rpfXD8ysFx8z0+dri+KWEPWpBsxXfxu58x/0jvTVT1ekOSg==}
 
@@ -377,6 +429,11 @@ packages:
   xache@1.2.1:
     resolution: {integrity: sha512-igRS6jPreJ54ABdzhh4mCDXcz+XMaWO2q1ABRV2yWYuk29jlp8VT7UBdCqNkX7rpYBbXsebVVKkwIuYZjyZNqA==}
 
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
   z32@1.1.0:
     resolution: {integrity: sha512-1WUHy+VS6d0HPNspDxvLssBbeQjXMjSnpv0vH82vRAUfg847NmX3OXozp/hRP5jPhxBbrVzrgvAt+UsGNzRFQQ==}
 
@@ -400,6 +457,10 @@ snapshots:
       - bare-url
       - react-native-b4a
       - sodium-javascript
+
+  abort-controller@3.0.0:
+    dependencies:
+      event-target-shim: 5.0.1
 
   adaptive-timeout@1.0.1:
     dependencies:
@@ -535,6 +596,8 @@ snapshots:
     dependencies:
       bare-path: 3.0.1
 
+  base64-js@1.5.1: {}
+
   big-sparse-array@1.0.3: {}
 
   bits-to-bytes@1.3.0:
@@ -566,6 +629,11 @@ snapshots:
       compact-encoding-net: 1.3.0
     transitivePeerDependencies:
       - react-native-b4a
+
+  buffer@6.0.3:
+    dependencies:
+      base64-js: 1.5.1
+      ieee754: 1.2.1
 
   compact-encoding-bitfield@1.1.0:
     dependencies:
@@ -649,11 +717,15 @@ snapshots:
       - react-native-b4a
       - sodium-javascript
 
+  event-target-shim@5.0.1: {}
+
   events-universal@1.0.1:
     dependencies:
       bare-events: 2.9.1
     transitivePeerDependencies:
       - bare-abort-controller
+
+  events@3.3.0: {}
 
   fast-fifo@1.3.2: {}
 
@@ -858,6 +930,8 @@ snapshots:
       - react-native-b4a
       - sodium-javascript
 
+  ieee754@1.2.1: {}
+
   index-encoder@3.5.0:
     dependencies:
       b4a: 1.8.1
@@ -877,6 +951,11 @@ snapshots:
       bare-events: 2.9.1
     transitivePeerDependencies:
       - bare-abort-controller
+
+  n3@2.1.1:
+    dependencies:
+      buffer: 6.0.3
+      readable-stream: 4.7.0
 
   nanoassert@2.0.0: {}
 
@@ -907,6 +986,8 @@ snapshots:
       - bare-url
       - react-native-b4a
       - sodium-javascript
+
+  process@0.11.10: {}
 
   protocol-buffers-encodings@1.2.0:
     dependencies:
@@ -961,6 +1042,14 @@ snapshots:
 
   random-array-iterator@1.0.0: {}
 
+  readable-stream@4.7.0:
+    dependencies:
+      abort-controller: 3.0.0
+      buffer: 6.0.3
+      events: 3.3.0
+      process: 0.11.10
+      string_decoder: 1.3.0
+
   ready-guard@1.0.0:
     dependencies:
       resolve-reject-promise: 1.1.0
@@ -1002,6 +1091,8 @@ snapshots:
       - bare-abort-controller
       - bare-url
       - react-native-b4a
+
+  safe-buffer@5.2.1: {}
 
   safety-catch@1.0.3: {}
 
@@ -1078,6 +1169,10 @@ snapshots:
       - bare-abort-controller
       - react-native-b4a
 
+  string_decoder@1.3.0:
+    dependencies:
+      safe-buffer: 5.2.1
+
   teex@1.0.1:
     dependencies:
       streamx: 2.28.0
@@ -1119,6 +1214,8 @@ snapshots:
   which-runtime@1.4.0: {}
 
   xache@1.2.1: {}
+
+  yaml@2.9.0: {}
 
   z32@1.1.0:
     dependencies:
