@@ -53,6 +53,10 @@ STATE.md for pipeline state).
     representation to keep in mind.
   - **NEVER delete anything from sslop/** — all agents, all dispatches,
     including test temp dirs (close handles, leave files).
+  - **Registry framing (user, 2026-07-04):** conceptually this system is the
+    attempt-opus-1 registry with more members in the tuple — [name, version]
+    grown into [subject, predicate, value, tag] on the same autobee
+    substrate. The top-level README's narrative should use this framing.
   - No AI/Claude attribution footers on any PR body or commit (global rule).
 - **Out of scope:** merging any PR; spec §12 non-goals (text CRDT, HTTP API,
   SPARQL engine, Obsidian plugin); gold-plating beyond the `/goal` checklist
