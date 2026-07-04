@@ -448,13 +448,14 @@ class Applier {
         await this.view.put(K.rate(target), rrec)
       }
     }
-    // https://github.com/holepunchto/autobase README: host.removeWriter throws
-    // if the writer cannot be removed (last indexer); host.removeable guards.
-    if (this.host && this.host.removeWriter) {
-      if (!this.host.removeable || this.host.removeable(keyBuf(op.key))) {
-        await this.host.removeWriter(keyBuf(op.key))
-      }
-    }
+    // §8.3 "causal, not positional": host.removeWriter is deliberately NOT
+    // called. Substrate-positional removal records the writer's length as
+    // known to the remover and drops the writer's concurrent (in-flight)
+    // nodes from the remover's linearization, while peers that already
+    // linearized those nodes keep them — a permanent view divergence
+    // (I2/I10; review finding B1). The writer stays admitted at the
+    // substrate level so every one of its nodes linearizes on every peer
+    // and is judged uniformly by the clock rule above (applyNode, §8.3).
     return null
   }
 

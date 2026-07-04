@@ -46,7 +46,7 @@ import Corestore from 'corestore'
 import Autobee from 'autobee'
 import Hyperswarm from 'hyperswarm'
 import b4a from 'b4a'
-import { createApply, encodeOp, makeTag, keyspace as K, canonical } from '@hyperwiki/core'
+import { createApply, encodeOp, makeTag, normalizeClock, keyspace as K, canonical } from '@hyperwiki/core'
 import { ViewAdapter } from './view.js'
 import { viewHash } from './hash.js'
 import {
@@ -322,21 +322,64 @@ export class Vault extends EventEmitter {
    */
   async append(type, payload = {}, { optimistic = false } = {}) {
     await this.ready()
+    // §8.3 app-level containment (see DEVIATIONS.md §13(d)): once this
+    // peer's own revocation record is in the view, any new local op is
+    // uniformly rejected 'revoked' by every peer's apply — refuse the
+    // append instead of growing the log with dead ops.
+    await this._guardRevoked(payload.clock)
     const seq = this._nextSeq++
     const op = { ...payload }
-    if (op.clock === undefined) op.clock = this.clock()
+    if (op.clock === undefined) op.clock = this.clock(seq)
     if (AUTO_TAG.has(type) && op.tag === undefined) op.tag = makeTag(this.db.local.key, seq)
     const buf = encodeOp(type, op)
     await this.db.append(buf, { optimistic })
     return { seq, tag: op.tag || null }
   }
 
-  /** The §3.2 clock payload: [[writerKeyHex, seq], ...], sorted. */
-  clock() {
+  /**
+   * The §3.2 clock payload: [[writerKeyHex, seq], ...], sorted. `seq` is
+   * the local seq of the op being appended, when called for one: §8.3's
+   * consumer reads a writer's own entry as "delivered through this op"
+   * (the I10 unit convention), so the self entry must count the op itself
+   * (seq + 1) — the DAG heads alone give the length *before* the op, which
+   * a RemoveWriter that never saw the op can dominate, wrongly accepting a
+   * racing op everywhere.
+   */
+  clock(seq = null) {
     const heads = (this.db && this.db.system && this.db.system.heads) || []
-    return heads
-      .map((h) => [b4a.toString(h.key, 'hex'), h.length])
-      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    const entries = new Map(heads.map((h) => [b4a.toString(h.key, 'hex'), h.length]))
+    if (seq !== null && this.db && this.db.local) {
+      const self = b4a.toString(this.db.local.key, 'hex')
+      entries.set(self, Math.max(entries.get(self) || 0, seq + 1))
+    }
+    return [...entries].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  }
+
+  /**
+   * §8.3 revocation containment, app-level (replaces autobee's positional
+   * "Not writable" teardown — see DEVIATIONS.md §13(d)): refuse a local
+   * append once `ctx/gov/removed/<self>` exists and the op's clock does
+   * not causally precede the recorded revocation. A store-emitted clock
+   * always carries this op's own new position, which the revocation cannot
+   * have observed, so any default-clock append from a revoked writer is
+   * refused; a caller-crafted clock is judged by core's exact §8.3 rule.
+   */
+  async _guardRevoked(clock) {
+    if (!this.db || !this.db.local) return
+    const self = b4a.toString(this.db.local.key, 'hex')
+    const removed = await this.val(K.govRemoved(self))
+    if (removed === undefined) return
+    if (clock !== undefined) {
+      const c = normalizeClock(clock)
+      if (c) {
+        const entries = Object.entries(c)
+        const dominated =
+          entries.length > 0 &&
+          entries.every(([w, s]) => removed[w] !== undefined && s <= removed[w])
+        if (dominated) return // causally precedes the revocation: apply accepts it
+      }
+    }
+    throw vaultError('VAULT_REVOKED', `local writer ${self} has been removed (§8.3)`)
   }
 
   // Governance ops (§8.0: apply rejects these unless the ISSUER is a
@@ -450,8 +493,10 @@ export class Vault extends EventEmitter {
  * Adapts autobee's host (lib/apply-calls.js: addWriter(key, { isIndexer,
  * weight }), removeWriter, ackWriter, removeable, interrupt, createAnchor)
  * to the surface @hyperwiki/core's apply invokes: addWriter(key,
- * { indexer }) and removeWriter(key) guarded by removeable(key) — only ever
- * for governance ops that passed the §8.0 authority check.
+ * { indexer }) — only ever for governance ops that passed the §8.0
+ * authority check. autobee's positional removeWriter is deliberately NOT
+ * exposed: §8.3 revocation is decided purely by core's in-log clock rule
+ * (DEVIATIONS.md §13(d); review finding B1).
  */
 class HostAdapter {
   constructor(host) {
@@ -472,16 +517,8 @@ class HostAdapter {
     return this.host.addWriter(key, { isIndexer: indexer, weight: 2 })
   }
 
-  removeWriter(key) {
-    return this.host.removeWriter(key)
-  }
-
   ackWriter(key) {
     return this.host.ackWriter(key)
-  }
-
-  removeable(key) {
-    return typeof this.host.removeable === 'function' ? this.host.removeable(key) : true
   }
 }
 

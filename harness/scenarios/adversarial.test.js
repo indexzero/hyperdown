@@ -5,8 +5,9 @@
 //   writer must be flagged per-op and skipped, never halting apply)
 // - quiescence definition (after reported quiescence, forced update rounds
 //   must not move the hash)
-// - host.removeable exactness (DEVIATIONS.md UNVERIFIED item 1): sole-
-//   indexer self-removal, exercised against real autobee
+// - sole-indexer self-removal, exercised against real autobee (revocation
+//   is in-log/causal per §8.3 — DEVIATIONS.md §13(d) — so the removal
+//   itself applies uniformly and the ex-indexer is contained app-level)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { setupVaultCluster } from '../lib/setup.js'
@@ -120,7 +121,7 @@ test('ADV3: reported quiescence is real — forced update rounds do not move the
   }
 })
 
-test('ADV4: sole-indexer self-removal (host.removeable exactness, DEVIATIONS UNVERIFIED #1)', async (t) => {
+test('ADV4: sole-indexer self-removal is deterministic and non-fatal', async (t) => {
   const { ctl, writers } = await setupVaultCluster('adv4', 2)
   t.after(() => ctl.stop())
   const [a, b] = writers
@@ -129,12 +130,13 @@ test('ADV4: sole-indexer self-removal (host.removeable exactness, DEVIATIONS UNV
   await a.call('setField', 'Home', 'title', 'before self-removal')
   await ctl.quiesce(writers)
 
-  // the genesis (sole indexer) removes ITSELF; autobee 1.0.10's
-  // host.removeable is `always true`, so nothing guards this
+  // the genesis (sole indexer) removes ITSELF; §8.3 revocation is in-log
+  // (ctx/gov/removed/<a>) and never touches autobee's writer set, so the
+  // removal op applies uniformly and nothing guards a self-target
   await a.call('removeWriter', a.info.localKey)
 
-  // whatever autobee does, it must be deterministic and non-fatal for
-  // readers: both peers settle on one hash and reads still work
+  // it must be deterministic and non-fatal for readers: both peers settle
+  // on one hash and reads still work
   const hash = await ctl.quiesce(writers)
   assert.ok(hash, 'peers agree after sole-indexer self-removal')
   for (const w of writers) {
@@ -142,10 +144,15 @@ test('ADV4: sole-indexer self-removal (host.removeable exactness, DEVIATIONS UNV
     assert.deepEqual(rec.reg.values, ['before self-removal'], `${w.name}: reads intact`)
   }
 
-  // and the vault is now headless: the ex-indexer's later governance ops
-  // are rejected (its own clock can no longer dominate the removal clock)
-  await a.call('setField', 'Home', 'title', 'after self-removal')
-  await ctl.quiesce(writers).catch(() => {})
-  const errsA = await a.errors()
-  await ctl.note(`ADV4 outcome: post-removal write errors on a: ${JSON.stringify(errsA)}`)
+  // and the vault is now headless: once ctx/gov/removed/<self> is in the
+  // view the store refuses the ex-indexer's local appends outright
+  // (VAULT_REVOKED — every peer's apply would reject them 'revoked')
+  await assert.rejects(
+    () => a.call('setField', 'Home', 'title', 'after self-removal'),
+    /VAULT_REVOKED/,
+    'post-self-removal append refused at the store'
+  )
+  const hash2 = await ctl.quiesce(writers)
+  assert.equal(hash2, hash, 'view hash unchanged by the refused write')
+  await ctl.note('ADV4 outcome: self-removed sole indexer contained by VAULT_REVOKED append guard')
 })

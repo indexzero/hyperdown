@@ -46,20 +46,33 @@ installed autobee@1.0.10 source. (a) Apply node shape: autobee hands
 `{ key, value, length, optimistic }` (key = writer core key); the store
 wraps each node as `{ from: { key }, value, length }` before core's apply.
 (b) Host surface: core's `host.addWriter(key, { indexer })` maps to
-autobee's `host.addWriter(key, { isIndexer, weight })`; `removeable(key)`
-is autobee's (always true in 1.0.10). (c) `signedLength`-scoped clauses:
+autobee's `host.addWriter(key, { isIndexer, weight })`; autobee's
+`removeWriter`/`removeable` are not exposed at all (see (d)).
+(c) `signedLength`-scoped clauses:
 autobee has no separate signing pipeline (`views()` reports
 `signedLength === length`; finality is flush/anchor —
 `host.createAnchor()` is the checkpoint primitive), so §8.5's
 "at or below signedLength" rate-partition scope and §11's quorum-signed
 snapshots have no 1:1 substrate; view convergence is asserted by full-scan
 hash equality and §11 snapshot machinery stays future work (P4 harness
-territory). (d) §8.3: once a peer has *seen* its own removal, autobee
-refuses to linearize further non-optimistic local nodes at all
-(lib/writers.js "Not writable", surfaced as an `'error'` event that tears
-the revoked instance down) — strictly stronger containment than the spec's
-reject-in-apply; the in-log clock rule still governs ops that raced the
-revocation.
+territory). (d) §8.3: revocation is decided solely by core's in-log clock
+rule; `opRemoveWriter` records `ctx/gov/removed/<W>` and deliberately never
+invokes autobee's positional `host.removeWriter` (positional removal cut
+W's concurrent nodes out of the remover's linearization while peers that
+had already linearized them kept them — permanent divergence; review
+finding B1). The removed writer stays admitted at the substrate level, so
+every node linearizes on every peer: ops linearized after the RemoveWriter
+are uniformly accepted/rejected (`revoked`) by the clock rule, and a racing
+op that linearizes before it (autobee orders concurrent nodes by node
+timestamp) is uniformly applied — either way one convergent view (I2), the
+partition a pure function of the final log (I10). Two store-side
+consequences: the emitted §3.2 clock counts the appending op itself in the
+writer's own entry (`seq + 1`; DAG heads alone give the pre-append length,
+which a removal that never delivered the op would dominate, mis-accepting
+racing ops), and containment of a revoked peer is app-level —
+`Vault.append` refuses new local ops (`VAULT_REVOKED`) once
+`ctx/gov/removed/<self>` exists and the op's clock does not causally
+precede it.
 
 **§8.2 optimistic onboarding on autobee (ackWriter port).** Autobee's
 optimistic path requires the batch to anchor in its system during apply or

@@ -50,25 +50,25 @@ test('writer add/remove round trip', async (t) => {
     }),
     'ctx/gov/removed/<b> recorded on both peers (§8.3)'
   )
-  assert.ok(
-    await until(async () => {
-      await b.update()
-      return !b.writable
-    }),
-    'b unwritable at the autobee level (host.removeWriter went through)'
-  )
+  // b stays admitted at the autobee level: §8.3 revocation is causal, in
+  // core's log — never the substrate's positional removeWriter (see
+  // DEVIATIONS.md §13(d), review finding B1) — so every node of b's keeps
+  // linearizing on every peer and is judged by the clock rule in apply.
+  await b.update()
+  assert.ok(b.writable, 'b remains autobee-writable after the in-log revocation')
 
   // --- containment after revocation ---
   const before = await converged([a, b])
   assert.ok(before, 'peers converged post-removal')
 
-  // b appends after having SEEN its own removal: autobee refuses to
-  // linearize a non-optimistic node from an unwritable local writer
-  // (lib/writers.js "Not writable", surfaced as an 'error' event that tears
-  // the revoked instance down) — the op never reaches any peer's view (I10).
-  const bErrors = []
-  b.on('error', (err) => bErrors.push(err))
-  await b.setField('agents/b/Note', 'title', 'zombie write').catch(() => {})
+  // b appends after having SEEN its own removal: the store's app-level
+  // guard refuses the local append (every peer's apply would reject the op
+  // 'revoked', §8.3), so it never enters the log (I10).
+  await assert.rejects(
+    () => b.setField('agents/b/Note', 'title', 'zombie write'),
+    /VAULT_REVOKED/,
+    'local append refused once ctx/gov/removed/<self> is in the view'
+  )
   await sleep(500)
   await a.update()
   assert.deepEqual(

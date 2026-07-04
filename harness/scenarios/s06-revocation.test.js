@@ -1,8 +1,11 @@
-// S6 (I10) revocation race. The genesis indexer removes writer C while C
-// has unreplicated ops in flight behind a partition. Heal. C's
-// post-revocation-point ops (clock not dominated by the recorded
-// revocation clock, §8.3) must have touched nothing outside flag/, and
-// all peers must agree on exactly which of C's ops landed.
+// S6 (I10) revocation race. The genesis indexer removes writer C behind a
+// partition while C, not yet knowing, keeps writing. Heal. C's
+// post-revocation-point ops (linearized after the RemoveWriter — it
+// carries the earlier node timestamp — with clocks not dominated by the
+// recorded revocation clock, §8.3) must have touched nothing outside
+// flag/, and all peers must agree on exactly which of C's ops landed.
+// The mirror arm (C's op linearizes BEFORE the removal and is uniformly
+// applied) is covered by test/regressions/revocation-race-divergence.test.js.
 // Also (assignment §3 "governance plumbing"): the indexer set keeps making
 // progress while the revoked agent is offline.
 import { test } from 'node:test'
@@ -19,12 +22,17 @@ test('S6: ops racing their revocation are contained to flag/ (I10)', async (t) =
   await ctl.quiesce(writers)
   const cKey = c.info.localKey
 
-  // partition C, then race: C keeps writing while the indexer revokes it
+  // partition C, then race: the indexer revokes C while C — which has not
+  // seen the removal — keeps writing. The removal's earlier node timestamp
+  // puts it before C's in-flight ops in the final linearization on every
+  // peer (autobee topo order), so §8.3's clock rule judges both racing ops
+  // uniformly; the sleep keeps the timestamps strictly ordered.
   await ctl.partition([a, b], [c])
+  await a.call('removeWriter', cKey)
+  await new Promise((r) => setTimeout(r, 25))
   await c.call('setField', 'agents/c/InFlight1', 'title', 'in flight 1')
   await c.call('setField', 'agents/c/InFlight2', 'title', 'in flight 2')
   await c.update()
-  await a.call('removeWriter', cKey)
   await ctl.quiesce([a, b])
 
   // indexer-set progress with the agent offline (assignment §3)
@@ -32,18 +40,13 @@ test('S6: ops racing their revocation are contained to flag/ (I10)', async (t) =
   const duoHash = await ctl.quiesce([a, b])
   assert.ok(duoHash, 'indexer set makes progress with the agent partitioned')
 
-  // heal: C's in-flight ops replicate; autobee tears the revoked C down
-  // once it sees its own removal ('error' event) — the harness records it.
-  //
-  // KNOWN BLOCKER B1 (see orchestration/results/CODE-REVIEW.md and
-  // test/regressions/revocation-race-divergence.test.js): the indexer's
-  // linearization drops C's in-flight node while C's own view (and any
-  // fresh peer) applies it, so this quiesce does NOT converge. The
-  // assertion below is the invariant the system must satisfy; it fails
-  // today, which is the committed repro.
+  // heal: C's in-flight ops replicate everywhere. C stays admitted at the
+  // autobee level (§8.3 is causal, in core's log — never the substrate's
+  // positional removal; DEVIATIONS.md §13(d), review finding B1), so its
+  // nodes linearize on every peer and the clock rule rejects them uniformly.
   await ctl.connectAll(writers)
   const hash = await ctl.quiesce(writers, { timeout: 15000 })
-  assert.ok(hash, 'all peers converge after the heal (I2) — FAILS today, blocker B1')
+  assert.ok(hash, 'all peers converge after the heal (I2)')
 
   for (const w of writers) {
     // the racing ops never mutated n/ (I10)
