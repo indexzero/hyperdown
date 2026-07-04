@@ -4,7 +4,7 @@
 // Given a full view dump ({ key: value }), rederives from n/* and ctx/t/*
 // what idx/*, bl/*, fidx/*, hostidx/*, unmapped-idx/*, iri/* and scopeidx/*
 // must contain, and reports every discrepancy. Nothing here imports
-// @hyperwiki/core: escaping, byte forms and derivation rules are
+// @autovault-ld/core: escaping, byte forms and derivation rules are
 // reimplemented from SPEC-FINAL §4/§9.2/§10.2 and the packages' READMEs.
 
 // --- §4 keyspace escaping (reimplemented) ---

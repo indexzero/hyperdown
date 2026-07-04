@@ -1,4 +1,4 @@
-// Shared harness for the @hyperwiki/store integration tests: real autobee +
+// Shared harness for the @autovault-ld/store integration tests: real autobee +
 // corestore instances on disk. Test dirs are unique per run under
 // sslop/013/tmp/ (never /tmp, never cleaned up — handles are closed, files
 // are left for post-mortem).

@@ -1,17 +1,17 @@
-# hyperwiki
+# AutoVault-LD
 
 A multi-writer wiki on [autobee](https://github.com/holepunchto/autobee):
 Markdown vaults as linked data, agents and humans co-writing one knowledge
 graph.
 
 ```js
-import { Vault } from '@hyperwiki/store'
-import { materialize } from '@hyperwiki/faces'
+import { Vault } from '@autovault-ld/store'
+import { materialize } from '@autovault-ld/faces'
 
 const vault = await Vault.init('./storage')                     // the op log is the source of truth
 await vault.defineScope('wiki', 'https://my.wiki/terms#', 'w')  // the schema is ordinary content…
 await vault.defineTerm('wiki', 'title', { '@id': 'w:title' })   // …in the same log as the data
-await vault.setField('Home', 'title', 'Hello, hyperwiki')       // a semantic op, never a file write
+await vault.setField('Home', 'title', 'Hello, AutoVault-LD')       // a semantic op, never a file write
 await materialize(vault, './wiki')                              // ./wiki/Home.md + context.jsonld
 await vault.close()
 ```
@@ -28,8 +28,8 @@ pnpm install            # workspace: packages/{core,store,faces,cli} + examples
 ```
 
 Node.js ≥ 20, [pnpm](https://pnpm.io). Per package:
-`pnpm add @hyperwiki/store @hyperwiki/faces` (and `@hyperwiki/cli` for the
-`hyperwiki` binary).
+`pnpm add @autovault-ld/store @autovault-ld/faces` (and `@autovault-ld/cli` for the
+`autovault-ld` binary).
 
 ## The flagship example: four agents write a recipe book
 
@@ -76,7 +76,7 @@ findings, determinations, RFCs — as sibling ontologies of the recipe book.
 
 One way to see it: **this is a registry with more members in the tuple** —
 `[name, version]` grown to `[subject, predicate, value, tag]`. A package
-registry maps a name to versions of a blob; hyperwiki maps a subject to
+registry maps a name to versions of a blob; AutoVault-LD maps a subject to
 per-predicate, per-element tagged values, so concurrent writers merge at
 the level of *statements* instead of overwriting files. The `@context`
 that decides each predicate's merge policy (LWW register vs OR-set) is
@@ -95,10 +95,10 @@ linearization + in-log mutable context), not a new merge theory.
 
 | package | entry point | what it is |
 | --- | --- | --- |
-| [`@hyperwiki/core`](./packages/core) | `import { createApply, encodeOp, keyspace, canonical, revHash } from '@hyperwiki/core'` | the op wire contract, the pure deterministic `apply`, the view keyspace, canonical forms |
-| [`@hyperwiki/store`](./packages/store) | `import { Vault } from '@hyperwiki/store'` | vault lifecycle on autobee: op emission, writer governance plumbing, metadata pinning, hyperswarm replication |
-| [`@hyperwiki/faces`](./packages/faces) | `import { materialize, createIngestWatcher, exportTurtle } from '@hyperwiki/faces'` | the generated faces: Obsidian-compatible vault, human-edit ingest watcher, deterministic Turtle export |
-| [`@hyperwiki/cli`](./packages/cli) | `hyperwiki init/join/add-writer/remove-writer/materialize/export/flags/watch` | thin command-line veneer over the three packages |
+| [`@autovault-ld/core`](./packages/core) | `import { createApply, encodeOp, keyspace, canonical, revHash } from '@autovault-ld/core'` | the op wire contract, the pure deterministic `apply`, the view keyspace, canonical forms |
+| [`@autovault-ld/store`](./packages/store) | `import { Vault } from '@autovault-ld/store'` | vault lifecycle on autobee: op emission, writer governance plumbing, metadata pinning, hyperswarm replication |
+| [`@autovault-ld/faces`](./packages/faces) | `import { materialize, createIngestWatcher, exportTurtle } from '@autovault-ld/faces'` | the generated faces: Obsidian-compatible vault, human-edit ingest watcher, deterministic Turtle export |
+| [`@autovault-ld/cli`](./packages/cli) | `autovault-ld init/join/add-writer/remove-writer/materialize/export/flags/watch` | thin command-line veneer over the three packages |
 
 Each package README is usage-first with the full API surface.
 

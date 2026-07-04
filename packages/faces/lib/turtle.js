@@ -12,7 +12,7 @@
 // STRING_LITERAL_QUOTE escapes are emitted in fixed codepoint order per
 // §10.2). vld: is Vault-LD's own namespace,
 // https://github.com/The-Knowledge-Graph-Guys/vault-ld# (SPEC.md §5.4).
-import { keyspace as K, canonical } from '@hyperwiki/core'
+import { keyspace as K, canonical } from '@autovault-ld/core'
 import { readVaultState, faceMetadata } from './state.js'
 import { defaultRelPath } from './placement.js'
 import { rootRegistry, atomicWrite } from './fsatomic.js'

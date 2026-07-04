@@ -1,4 +1,4 @@
-// Shared harness for the @hyperwiki/faces tests: real @hyperwiki/store
+// Shared harness for the @autovault-ld/faces tests: real @autovault-ld/store
 // vaults (autobee + corestore on disk) plus on-disk face directories.
 // Test dirs are unique per run under sslop/014/tmp/ (never /tmp, never
 // cleaned up — handles are closed, files are left for post-mortem).

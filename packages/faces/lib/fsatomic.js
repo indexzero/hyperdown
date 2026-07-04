@@ -24,7 +24,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, open, readFile, realpath, rename, stat } from 'node:fs/promises'
 import { dirname, join, resolve, sep, basename } from 'node:path'
-import { canonical } from '@hyperwiki/core'
+import { canonical } from '@autovault-ld/core'
 
 export const MANIFEST_FILE = '.vld-manifest.json'
 

@@ -26,7 +26,7 @@ import { EventEmitter } from 'node:events'
 import { watch } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, sep } from 'node:path'
-import { keyspace as K, canonical, isSafePath } from '@hyperwiki/core'
+import { keyspace as K, canonical, isSafePath } from '@autovault-ld/core'
 import { faceMetadata } from './state.js'
 import { parseNote, yamlToValues } from './note.js'
 import { defaultRelPath, scopeFromPath, layerFromPath } from './placement.js'
@@ -46,7 +46,7 @@ const { nfc, canonicalArray, canonicalValue, byteForm, stableStringify } = canon
 /**
  * Create (and start) the ingest watcher for `dir`.
  *
- * `vault` must expose the @hyperwiki/store Vault read surface (`val`,
+ * `vault` must expose the @autovault-ld/store Vault read surface (`val`,
  * `scan`, `update`, `metadata`) and op emission (`append(type, payload)` —
  * the store fills the §3.2 clock and opId tag). Options:
  *

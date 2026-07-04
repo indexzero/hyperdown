@@ -1,4 +1,4 @@
-// @hyperwiki/core — Vault-LD on Autobase, core package (SPEC-FINAL §14):
+// @autovault-ld/core — Vault-LD on Autobase, core package (SPEC-FINAL §14):
 // ops, encodings (hyperdispatch), deterministic apply, view keyspace codec,
 // canonical forms, revHash. Pure: apply operates only on the view interface
 // autobase hands it; no wall clock, no randomness (I1).

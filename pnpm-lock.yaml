@@ -8,16 +8,16 @@ importers:
 
   .:
     devDependencies:
-      '@hyperwiki/cli':
+      '@autovault-ld/cli':
         specifier: workspace:*
         version: link:packages/cli
-      '@hyperwiki/core':
+      '@autovault-ld/core':
         specifier: workspace:*
         version: link:packages/core
-      '@hyperwiki/faces':
+      '@autovault-ld/faces':
         specifier: workspace:*
         version: link:packages/faces
-      '@hyperwiki/store':
+      '@autovault-ld/store':
         specifier: workspace:*
         version: link:packages/store
       n3:
@@ -26,13 +26,13 @@ importers:
 
   examples/recipe-book:
     dependencies:
-      '@hyperwiki/core':
+      '@autovault-ld/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@hyperwiki/faces':
+      '@autovault-ld/faces':
         specifier: workspace:*
         version: link:../../packages/faces
-      '@hyperwiki/store':
+      '@autovault-ld/store':
         specifier: workspace:*
         version: link:../../packages/store
       b4a:
@@ -44,13 +44,13 @@ importers:
 
   packages/cli:
     dependencies:
-      '@hyperwiki/core':
+      '@autovault-ld/core':
         specifier: workspace:*
         version: link:../core
-      '@hyperwiki/faces':
+      '@autovault-ld/faces':
         specifier: workspace:*
         version: link:../faces
-      '@hyperwiki/store':
+      '@autovault-ld/store':
         specifier: workspace:*
         version: link:../store
       b4a:
@@ -74,7 +74,7 @@ importers:
 
   packages/faces:
     dependencies:
-      '@hyperwiki/core':
+      '@autovault-ld/core':
         specifier: workspace:*
         version: link:../core
       yaml:
@@ -83,7 +83,7 @@ importers:
 
   packages/store:
     dependencies:
-      '@hyperwiki/core':
+      '@autovault-ld/core':
         specifier: workspace:*
         version: link:../core
       autobee:

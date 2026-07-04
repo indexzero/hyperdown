@@ -1,7 +1,7 @@
 {
-  "name": "hyperwiki2",
+  "name": "autovault-ld",
   "version": "0.0.0",
-  "description": "a wiki implementatin on top of autobee ",
+  "description": "AutoVault-LD: multi-writer Vault-LD knowledge graphs on autobee — markdown vaults as linked data",
   "license": "Apache-2.0",
   "author": "Charlie Robbins <npm@charlie.dev>",
   "type": "module",
@@ -19,10 +19,10 @@
     "test:harness:soak": "node harness/soak/soak.js"
   },
   "devDependencies": {
-    "@hyperwiki/cli": "workspace:*",
-    "@hyperwiki/core": "workspace:*",
-    "@hyperwiki/faces": "workspace:*",
-    "@hyperwiki/store": "workspace:*",
+    "@autovault-ld/cli": "workspace:*",
+    "@autovault-ld/core": "workspace:*",
+    "@autovault-ld/faces": "workspace:*",
+    "@autovault-ld/store": "workspace:*",
     "n3": "^2.1.1"
   }
 }

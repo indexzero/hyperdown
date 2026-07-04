@@ -1,4 +1,4 @@
-// The hyperwiki flagship example: FOUR AGENT WRITERS co-author a recipe
+// The AutoVault-LD flagship example: FOUR AGENT WRITERS co-author a recipe
 // book as a knowledge graph, from scratch, on ONE shared multi-writer
 // vault — then a human operator dumps the result of the session as a
 // readable Markdown vault and a Turtle export (the committed out/ tree).
@@ -38,9 +38,9 @@ import { join, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
-import { Vault } from '@hyperwiki/store'
-import { materialize, exportTurtle } from '@hyperwiki/faces'
-import { keyspace as K, revHash } from '@hyperwiki/core'
+import { Vault } from '@autovault-ld/store'
+import { materialize, exportTurtle } from '@autovault-ld/faces'
+import { keyspace as K, revHash } from '@autovault-ld/core'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = join(HERE, '..', '..')
@@ -52,7 +52,7 @@ const STORAGE = process.env.RECIPE_BOOK_STORAGE
   ? resolve(process.env.RECIPE_BOOK_STORAGE)
   : join(REPO, 'sslop', '015', 'tmp', 'recipe-book', `run-${process.pid}-${Date.now()}`)
 
-const seed = (name) => createHash('sha256').update(`hyperwiki/recipe-book/${name}`).digest()
+const seed = (name) => createHash('sha256').update(`autovault-ld/recipe-book/${name}`).digest()
 const say = (who, msg) => console.log(`[${who.padEnd(5)}] ${msg}`)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 

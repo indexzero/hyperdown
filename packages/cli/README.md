@@ -1,34 +1,34 @@
-# @hyperwiki/cli
+# @autovault-ld/cli
 
-The `hyperwiki` command line (SPEC-FINAL §13): a thin veneer over
-[`@hyperwiki/store`](../store) (vault lifecycle, governance ops) and
-[`@hyperwiki/faces`](../faces) (materialize, ingest watcher, Turtle export).
+The `autovault-ld` command line (SPEC-FINAL §13): a thin veneer over
+[`@autovault-ld/store`](../store) (vault lifecycle, governance ops) and
+[`@autovault-ld/faces`](../faces) (materialize, ingest watcher, Turtle export).
 The CLI never writes the view or the face itself — every effect flows
 through the packages, so anything it does is exactly what library callers do.
 
 ```sh
 # create a vault; this peer's key is the vault key AND the genesis indexer
-$ hyperwiki init ./storage
+$ autovault-ld init ./storage
 vault key:   6671cacb…
 writer key:  6671cacb…
 
 # a second machine joins by vault key and reports its writer key
-$ hyperwiki join ./peer 6671cacb…
+$ autovault-ld join ./peer 6671cacb…
 writer key:  c3392ab9…
 
 # the indexer admits it (an ordinary logged AddWriter op, §8.0)
-$ hyperwiki add-writer ./storage c3392ab9…
+$ autovault-ld add-writer ./storage c3392ab9…
 writer added: c3392ab9… (indexer: false)
 
 # project the Obsidian-readable Markdown face, export the RDF
-$ hyperwiki materialize ./storage ./wiki
+$ autovault-ld materialize ./storage ./wiki
 materialized ./wiki: 14 written, 0 unchanged
-$ hyperwiki export ./storage ./rdf --roundtrip
+$ autovault-ld export ./storage ./rdf --roundtrip
 schema.ttl: 7 triple(s) (schema.ttl)
 data.ttl:   40 triple(s) (data.ttl)
 
 # stay in the foreground: ingest human edits, replicate over hyperswarm
-$ hyperwiki watch ./storage ./wiki --swarm
+$ autovault-ld watch ./storage ./wiki --swarm
 watching ./wiki (foreground; Ctrl-C to stop)
 ingested Home.md: set-field
 ```
@@ -36,7 +36,7 @@ ingested Home.md: set-field
 ## Install
 
 ```sh
-pnpm add @hyperwiki/cli    # or run the repo-local bin: packages/cli/bin/hyperwiki.js
+pnpm add @autovault-ld/cli    # or run the repo-local bin: packages/cli/bin/autovault-ld.js
 ```
 
 ## Commands
@@ -53,7 +53,7 @@ pnpm add @hyperwiki/cli    # or run the repo-local bin: packages/cli/bin/hyperwi
 | `watch <storage> <dir> [--swarm] [--confirm-deletes] [--debounce <ms>]` | foreground ingest watcher: human edits under `<dir>` re-enter the log as minimal semantic ops (§9.2); `--swarm` joins the vault's hyperswarm topic for replication; `--confirm-deletes` allows deleted files to emit `DeleteSubject` (without it, deletions are skipped and reported). No daemon — stop with Ctrl-C |
 
 There is no content-write command: content flows in through the ingest
-watcher (edit the Markdown) or through the `@hyperwiki/store` API (agents).
+watcher (edit the Markdown) or through the `@autovault-ld/store` API (agents).
 
 ## Exit codes
 

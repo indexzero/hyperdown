@@ -1,5 +1,5 @@
 {
-  "name": "@hyperwiki/core",
+  "name": "@autovault-ld/core",
   "version": "0.0.0",
   "description": "Vault-LD on Autobase: op schema, encodings, deterministic apply, view keyspace codec, canonical forms",
   "license": "Apache-2.0",

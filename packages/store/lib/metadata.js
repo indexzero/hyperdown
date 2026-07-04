@@ -14,7 +14,7 @@
 // verified in autobee@1.0.10 lib/boot.js).
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
-import { canonical } from '@hyperwiki/core'
+import { canonical } from '@autovault-ld/core'
 
 export const METADATA_VERSION = 1
 export const METADATA_FILE = 'vault-ld.json'

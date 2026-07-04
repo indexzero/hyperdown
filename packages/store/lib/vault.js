@@ -1,5 +1,5 @@
 // Vault (SPEC-FINAL §13, ported to autobee): multiwriter vault lifecycle —
-// corestore in, Autobee up, @hyperwiki/core's deterministic apply wired
+// corestore in, Autobee up, @autovault-ld/core's deterministic apply wired
 // through the ViewAdapter into autobee's apply — plus §8 op-emission
 // helpers, vault-metadata pinning, and hyperswarm replication.
 //
@@ -36,7 +36,7 @@
 // ackWriter reality (recorded in DEVIATIONS.md): nodes flagged optimistic
 // are acked at the autobee level (host.ackWriter) inside apply so the
 // speculative batch anchors durably in autobee's system on every peer
-// (deterministic: same apply, same nodes), while @hyperwiki/core's hold
+// (deterministic: same apply, same nodes), while @autovault-ld/core's hold
 // buffer (n/hold/ + flag/optimistic) remains the only VIEW-effect gate: a
 // held op takes effect only when an in-log AddWriter from a confirmed
 // indexer linearizes and core folds the hold range (§8.2).
@@ -46,7 +46,7 @@ import Corestore from 'corestore'
 import Autobee from 'autobee'
 import Hyperswarm from 'hyperswarm'
 import b4a from 'b4a'
-import { createApply, encodeOp, decodeOp, makeTag, normalizeClock, keyspace as K, canonical } from '@hyperwiki/core'
+import { createApply, encodeOp, decodeOp, makeTag, normalizeClock, keyspace as K, canonical } from '@autovault-ld/core'
 import { ViewAdapter } from './view.js'
 import { viewHash } from './hash.js'
 import {
@@ -617,7 +617,7 @@ export class Vault extends EventEmitter {
 /**
  * Adapts autobee's host (lib/apply-calls.js: addWriter(key, { isIndexer,
  * weight }), removeWriter, ackWriter, removeable, interrupt, createAnchor)
- * to the surface @hyperwiki/core's apply invokes: addWriter(key,
+ * to the surface @autovault-ld/core's apply invokes: addWriter(key,
  * { indexer }) — only ever for governance ops that passed the §8.0
  * authority check. autobee's positional removeWriter is deliberately NOT
  * exposed: §8.3 revocation is decided purely by core's in-log clock rule

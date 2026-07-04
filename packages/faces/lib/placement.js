@@ -14,7 +14,7 @@
 // Paths handled here are context-relative and carry NO '.md' extension;
 // n/<s>/path stores the extensionless form and the faces add '.md' at the
 // file boundary (§10.4 emits `vld:path "<path>.md"` by appending it).
-import { isSafePath, canonical } from '@hyperwiki/core'
+import { isSafePath, canonical } from '@autovault-ld/core'
 
 const { nfc } = canonical
 

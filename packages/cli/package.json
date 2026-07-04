@@ -1,12 +1,12 @@
 {
-  "name": "@hyperwiki/cli",
+  "name": "@autovault-ld/cli",
   "version": "0.0.0",
-  "description": "hyperwiki command line: init/join vaults, writer governance, materialize, Turtle export, flag queue, foreground ingest watcher",
+  "description": "autovault-ld command line: init/join vaults, writer governance, materialize, Turtle export, flag queue, foreground ingest watcher",
   "license": "Apache-2.0",
   "type": "module",
   "main": "lib/run.js",
   "bin": {
-    "hyperwiki": "bin/hyperwiki.js"
+    "autovault-ld": "bin/autovault-ld.js"
   },
   "exports": {
     ".": "./lib/run.js"
@@ -15,9 +15,9 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@hyperwiki/core": "workspace:*",
-    "@hyperwiki/faces": "workspace:*",
-    "@hyperwiki/store": "workspace:*",
+    "@autovault-ld/core": "workspace:*",
+    "@autovault-ld/faces": "workspace:*",
+    "@autovault-ld/store": "workspace:*",
     "b4a": "^1.8.1"
   }
 }

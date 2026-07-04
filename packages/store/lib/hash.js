@@ -1,6 +1,6 @@
 // Full-range-scan view hash — the I2 convergence / I3 rebuild-equality
 // check at store level (SPEC-FINAL §12). Byte construction matches
-// @hyperwiki/core's MemView.hash() (key, 0x00, JSON value, '\n') so a view
+// @autovault-ld/core's MemView.hash() (key, 0x00, JSON value, '\n') so a view
 // folded over a real autobee hashes identically to the same linearized
 // sequence folded over MemView in the unit suite.
 import { createHash } from 'node:crypto'

@@ -73,7 +73,7 @@ recipes (§8.0).
 ```
 
 The Markdown face is not a rendering — it is a full citizen: edit
-`out/vault/Tomato Soup.md` under `hyperwiki watch` and the edit re-enters
+`out/vault/Tomato Soup.md` under `autovault-ld watch` and the edit re-enters
 the log as minimal semantic ops (§9), converging with whatever the agents
 write next.
 
