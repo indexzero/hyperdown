@@ -61,3 +61,6 @@
 - 2026-07-04T03:55Z RESULT D-015 DONE: packages/cli (8 commands), examples/recipe-book (4 agent writers; committed out/ regenerates byte-identically — supervisor re-ran the script and confirmed no git diff), top-level README (usage-first, on autobee). Supervisor re-ran full suite: 111/111 confirmed. Report: orchestration/results/P3-4-cli.md.
 - 2026-07-04T04:00Z PR-6 opened + assumptions comment.
 - 2026-07-04T04:01Z DISPATCH D-016 (G3 independent verifier: clean clone of 5/cli into sslop/016, install, full suite, example byte-determinism, §15 acceptance mapping; model=Fable 5) — synchronous.
+- 2026-07-04T04:10Z GATE G3 PASS (independent clean-clone verification). Checklist item 2 checked. Phase -> P4.
+- 2026-07-04T04:11Z BRANCH 6/harness created off 5/cli (stack PR #7).
+- 2026-07-04T04:11Z DISPATCH D-017 (P4: prompt=03 harness+review, autobee ground adjustments, soak mandated, model=Fable 5, scratch=sslop/017, branch=6/harness) — synchronous, generous runtime.

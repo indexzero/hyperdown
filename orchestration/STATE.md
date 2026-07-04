@@ -7,16 +7,16 @@
 
 ## Phase
 
-- **Current phase:** P3 (implementation; core DONE + supervisor-verified 59/59)
-- **Next action:** core README (D-010 supplemental, running) → open PR #3 → dispatch D-011 (packages/store, branch 3/store, inputs: SPEC-FINAL + core README/interfaces) → faces → cli. Then G3 verification (clean-clone install + unit run).
-- **USER INSTRUCTION (2026-07-04):** every package gets an appropriate README.md, plus a top-level repo README (already a SPEC-FINAL §13 deliverable). Added to every subsequent build dispatch.
+- **Current phase:** P4 (code review + multi-process fault-injection harness)
+- **Next action:** dispatch D-017 (prompt=03, input=repo at G3 tip 5/cli, branch 6/harness): build harness + S1..S10 at 3 fault profiles, then adversarial review → CODE-REVIEW.md. Gate G4: zero blockers, all scenarios green x3 profiles, unproven-concerns appendix.
+- **Standing user directives:** autobee only / autobase forbidden; package + top-level READMEs usage-first; never delete from sslop/; DEVIATIONS.md terse; registry-tuple framing in docs.
 
 ## Gates
 
 | Gate | Status | Evidence |
 |------|--------|----------|
 | G1 (spec: zero open blockers) | **PASS** (2026-07-03) | orchestration/results/P2-4-CLOSURE.md — "VERDICT: G1-PASS". Chain: P1-1 (v1, 6 blockers) → P2-1 (v2, 3 blockers) → P2-2 (v3, 0 blockers + 4 majors) → P2-3 (v4, majors closed, regression R1) → P2-4 (v5, all closed). All majors FIXED (dispositions: P2-1/2/3/4-DISPOSITIONS.md), zero waivers. |
-| G3 (clean install, unit green, DEVIATIONS.md, acceptance mapped) | OPEN | — |
+| G3 (clean install, unit green, DEVIATIONS.md, acceptance mapped) | **PASS** (2026-07-04) | orchestration/results/G3-verification.md — independent clean clone of 5/cli: install clean, 111/111, example byte-deterministic, §15 items all mapped (unit-level or deferred-to-P4), none MISSING |
 | G4 (code review: zero blockers, S1..S10 green x3 profiles) | OPEN | — |
 | G6 (independent final verification) | OPEN | — |
 
@@ -28,7 +28,7 @@
 ## Goal checklist (from /goal; evidence paths required)
 
 - [x] SPEC-FINAL pinned — evidence: prompts/01-implementation-spec-prompt.v5.md; orchestration/results/P2-4-CLOSURE.md ("VERDICT: G1-PASS"); dispositions P2-1..P2-4-DISPOSITIONS.md (zero waivers)
-- [ ] Clean-clone install; unit green; I1..I10 mapped — evidence: —
+- [x] Clean-clone install; unit green; I1..I10 mapped — evidence: orchestration/results/G3-verification.md (VERDICT: G3-PASS; 111/111; I1..I10 each ≥1 test per P3-1-core.md §3)
 - [ ] Harness real (multi-process, seeded fault proxy, barriers, permutation replay, hash oracle) — evidence: —
 - [ ] S1..S10 green at clean/lossy/partitioned — evidence: —
 - [ ] CODE-REVIEW.md zero open blockers; fuzz repros committed — evidence: —
@@ -65,3 +65,9 @@
 | D-008 | P2 | (surgical fix) | spec v4 + P2-3-CLOSURE.md | prompts/01-implementation-spec-prompt.v5.md + P2-4-DISPOSITIONS.md | DONE |
 | D-009 | P2 | (closure instr) | spec v5 + P2-3-CLOSURE.md | orchestration/results/P2-4-CLOSURE.md | DONE — **G1-PASS** |
 | D-010 | P3 | SPEC-FINAL v5 | (first build) | orchestration/results/P3-1-core.md + packages/core + test/ + DEVIATIONS.md | DONE — 59/59 green, supervisor re-ran and confirmed (529 incident, resumed in place) |
+| D-011 | P3 | (store instr) | SPEC-FINAL + core README | — | CANCELLED by user (autobase drift) |
+| D-012 | P3 | (store instr v2) | SPEC-FINAL + core README | — | CANCELLED by user (autobase drift) |
+| D-013 | P3 | (store on autobee) | SPEC-FINAL + core README + attempt-opus-1/2 refs | orchestration/results/P3-2-store.md + packages/store | DONE — 72/72, supervisor-verified |
+| D-014 | P3 | (faces instr) | SPEC-FINAL + core/store READMEs | orchestration/results/P3-3-faces.md + packages/faces | DONE — 104/104, supervisor-verified |
+| D-015 | P3 | (cli+example+README) | SPEC-FINAL + 3 package READMEs | orchestration/results/P3-4-cli.md + packages/cli + examples/recipe-book + README.md | DONE — 111/111, example byte-identical, supervisor-verified |
+| D-016 | G3 | (verifier instr) | clean clone of 5/cli | orchestration/results/G3-verification.md | DONE — **G3-PASS** |
