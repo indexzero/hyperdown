@@ -19,12 +19,16 @@ const execFileP = promisify(execFile)
 const MINUTES = Number(process.env.SOAK_MINUTES || 32)
 const SAMPLE_MS = 30000
 const N = 3
-// Balanced, sustainable write rate. At <=80ms/op the three writers attempt
-// ~12 ops/s each; 3-way concurrent lossy replication cannot fold that fast,
-// so one writer floods and the others stall applying it (CODE-REVIEW.md
-// finding M2). A ~2.5 ops/s/writer rate stays within the fold budget and
-// isolates the leak/backpressure measurement this soak exists to make.
+// Write pacing. At <=80ms/op the three writers attempt ~12 ops/s each;
+// 3-way concurrent lossy replication cannot fold that fast, so without
+// admission control one writer floods and the others stall applying it
+// (CODE-REVIEW.md finding M2). The store's opt-in append backpressure
+// (vault.append(..., { backpressure }) — the M2 fix) ties each writer's
+// append rate to its own fold rate, so the soak stays balanced even at
+// SOAK_SLEEP=80. Set SOAK_BACKPRESSURE=0 to reproduce the unthrottled
+// M2 flood.
 const OP_SLEEP = Number(process.env.SOAK_SLEEP || 400)
+const BACKPRESSURE = process.env.SOAK_BACKPRESSURE !== '0'
 // One brief partition at the midpoint (still exercises heal/catch-up)
 // instead of repeated churn, which builds expensive concurrent merges.
 const CHURN = process.env.SOAK_CHURN !== '0'
@@ -41,7 +45,9 @@ async function dirKb(dir) {
 const { ctl, writers } = await setupVaultCluster('soak', N, { profile: PROFILES.lossy })
 const csv = join(ctl.baseDir, 'soak.csv')
 await writeFile(csv, 'elapsed_s,writer,rss_mb,heap_mb,fds,dir_kb,ops\n')
-console.log(`[soak] ${MINUTES} minutes, ${N} writers, lossy profile, seed=${ctl.seed}`)
+console.log(
+  `[soak] ${MINUTES} minutes, ${N} writers, lossy profile, seed=${ctl.seed}, op_sleep=${OP_SLEEP}ms, backpressure=${BACKPRESSURE ? 'on' : 'OFF (M2 repro)'}`
+)
 console.log(`[soak] csv: ${csv}`)
 
 await writers[0].call('defineTerm', 'core', 'title', { '@id': 'ex:title' })
@@ -54,9 +60,14 @@ const opCounts = writers.map(() => 0)
 let running = true
 let fatal = null
 
-// sustained writes: each writer loops its own op stream (~12 ops/s/writer)
+// sustained writes: each writer loops its own op stream
 const loads = writers.map(async (w, wi) => {
   const rot = ['Home', 'Notes/A', 'Notes/B', `agents/w${wi}/Log`, 'Topic']
+  // The M2 fix, exercised where production writers would use it: the
+  // store's opt-in append backpressure makes each writer await its own
+  // fold once maxInflight of its ops are outstanding, so no writer builds
+  // the runaway append-vs-apply backlog (the M2 feedback loop).
+  const opOpts = BACKPRESSURE ? { backpressure: true } : {}
   while (running && Date.now() < deadline) {
     const i = opCounts[wi]
     const s = rot[i % rot.length]
@@ -68,11 +79,8 @@ const loads = writers.map(async (w, wi) => {
       // subject is O(R^2) (CODE-REVIEW.md finding M1) and would conflate the
       // apply-cost defect with the leak/backpressure measurement this soak
       // exists to make. M1 has its own committed repro.
-      if (i % 2 === 0) await w.call('setField', s, 'title', `t${wi}-${i}`)
-      else await w.call('addMember', s, 'topic', `m${i % 50}`)
-      // self-throttle: keep the local view current so no writer builds a
-      // runaway append-vs-apply backlog (the M2 feedback loop)
-      await w.update()
+      if (i % 2 === 0) await w.call('setField', s, 'title', `t${wi}-${i}`, opOpts)
+      else await w.call('addMember', s, 'topic', `m${i % 50}`, opOpts)
       opCounts[wi]++
     } catch (err) {
       fatal = `[soak] writer w${wi} op failed: ${err.message}`
