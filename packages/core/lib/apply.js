@@ -253,7 +253,7 @@ class Applier {
     }
     const dec = decodeOp(raw)
     if (!dec.ok) return this.reject(W, ord, raw, dec.reason) // unknown-msgid | undecodable
-    let op = normalizeOpStrings(dec.type, dec.op)
+    const op = normalizeOpStrings(dec.op)
     const type = dec.type
     if (valueDepth(op) > this.cfg.limits.maxDepth) {
       return this.reject(W, ord, raw, 'depth-exceeded')
@@ -396,17 +396,17 @@ class Applier {
   async applyGovernance(type, op, W, ord) {
     switch (type) {
       case 'add-writer':
-        return this.opAddWriter(op, W, ord)
+        return this.opAddWriter(op)
       case 'remove-writer':
-        return this.opRemoveWriter(op, W, ord)
+        return this.opRemoveWriter(op)
       case 'set-writer-policy':
         return this.opSetWriterPolicy(op, W, ord)
       case 'prune-revisions':
-        return this.opPruneRevisions(op, W, ord)
+        return this.opPruneRevisions(op)
     }
   }
 
-  async opAddWriter(op, W, ord) {
+  async opAddWriter(op) {
     const target = keyHex(op.key)
     const existing = await this.val(K.govWriter(target))
     const rec = {
@@ -428,7 +428,7 @@ class Applier {
     return null
   }
 
-  async opRemoveWriter(op, W, ord) {
+  async opRemoveWriter(op) {
     const target = keyHex(op.key)
     const clock = normalizeClock(op.clock) || {}
     const confirmed = (await this.val(K.govWriter(target))) !== undefined
@@ -480,7 +480,7 @@ class Applier {
     return null
   }
 
-  async opPruneRevisions(op, W, ord) {
+  async opPruneRevisions(op) {
     const s = op.s
     const head = await this.val(K.nBody(s))
     const protectedRevs = new Set([head, op.before])
@@ -506,7 +506,7 @@ class Applier {
   async foldHeld(W) {
     const writerRec = await this.val(K.govWriter(W))
     for (const { key, value } of await this.scanAll(K.nHoldPrefix(W))) {
-      const op = normalizeOpStrings(value.type, opFromJson(value.op))
+      const op = normalizeOpStrings(opFromJson(value.op))
       const res = await this.contentPipeline(value.type, op, W, value.ord, writerRec)
       if (res && res.rejected) {
         await this.reject(W, value.ord, Buffer.from(value.raw, 'hex'), res.reason)
@@ -543,7 +543,7 @@ class Applier {
       case 'resolve-conflict':
         return this.opResolveConflict(op, W, ord)
       case 'clear-flag':
-        return this.opClearFlag(op, W, ord)
+        return this.opClearFlag(op)
       case 'define-term':
         return this.opDefineTerm(op, W, ord)
       case 'define-scope':
@@ -785,7 +785,6 @@ class Applier {
     if (!iri || !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(iri)) {
       return { rejected: true, reason: 'bad-id' }
     }
-    await this.touchSubject(s, tag, op.clock)
     const cur = await this.val(K.nId(s))
     if (cur && cur.writer !== W && cur.iri !== iri) {
       await this.view.put(K.flag('clobber', s, '@id', tag), {
@@ -793,7 +792,10 @@ class Applier {
         by: tag
       })
     }
+    // The declared IRI must be in place BEFORE subject creation so the §7
+    // takeover check sees the declared (different) IRI, not the default mint.
     await this.view.put(K.nId(s), { iri, tag, writer: W })
+    await this.touchSubject(s, tag, op.clock)
     await this.recomputeLayerBase(s)
     return null
   }
@@ -820,7 +822,7 @@ class Applier {
     const head = await this.val(K.nBody(s))
 
     // §6: two revisions citing the same base are true concurrency.
-    let conflictPairs = new Set()
+    const conflictPairs = new Set()
     for (const { key, value } of await this.scanAll(K.nRevPrefix(s))) {
       const revId = K.parseKey(key)[3]
       if (revId === rh) continue
@@ -875,7 +877,7 @@ class Applier {
     return null
   }
 
-  async opClearFlag(op, W, ord) {
+  async opClearFlag(op) {
     const flagKey = op.flagKey
     const segs = K.parseKey(String(flagKey))
     if (segs[0] !== 'flag' || !CLEARABLE_FLAGS.has(segs[1])) {

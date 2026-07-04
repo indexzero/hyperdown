@@ -174,7 +174,7 @@ export function normalizeClock(clock) {
 }
 
 /** NFC-normalize the user-string fields of a decoded op (§3.1). */
-export function normalizeOpStrings(type, op) {
+export function normalizeOpStrings(op) {
   const out = { ...op }
   for (const f of ['s', 'p', 'path', 'scope', 'term', 'prefix', 'flagKey', 'text', 'base', 'keep', 'before']) {
     if (typeof out[f] === 'string') out[f] = nfc(out[f])
