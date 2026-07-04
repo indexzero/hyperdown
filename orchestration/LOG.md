@@ -56,3 +56,5 @@
 - 2026-07-04T02:32Z BRANCH 4/faces created off 3/store (stack PR #5).
 - 2026-07-04T02:32Z DISPATCH D-014 (P3 faces: materialize/ingest/exportTurtle, inputs=SPEC-FINAL+core README+store README, model=Fable 5, scratch=sslop/014, branch=4/faces) — synchronous.
 - 2026-07-04T03:12Z RESULT D-014 DONE: packages/faces (materialize/ingest/exportTurtle) — supervisor re-ran full suite: 104/104 confirmed. Report: orchestration/results/P3-3-faces.md. encodeName percent-encoding verified against fetched vault-ld §4.5 (UNVERIFIED item 2 settled; see DEVIATIONS.md cc931cb).
+- 2026-07-04T03:20Z PR-5 opened + assumptions comment. BRANCH 5/cli created off 4/faces (stack PR #6).
+- 2026-07-04T03:20Z DISPATCH D-015 (P3 cli + recipe-book example (4 agent writers) + top-level README, model=Fable 5, scratch=sslop/015, branch=5/cli) — synchronous.
