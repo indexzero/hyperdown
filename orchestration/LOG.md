@@ -70,3 +70,5 @@
 - 2026-07-04T06:36Z DISPATCH D-019 (M1 SetBody quadratic fix, scratch=sslop/019) — synchronous.
 - 2026-07-04T06:55Z RESULT D-019 DONE: M1 fixed (7222bf0) — revbybase index + bounded conflict fan-out; regressions 5/5, 111/111, clean matrix 17/17; supervisor re-ran regressions: pass.
 - 2026-07-04T06:56Z DISPATCH D-020 (M2 append backpressure, scratch=sslop/020) — synchronous.
+- 2026-07-04T08:35Z RESULT D-020 DONE: M2 fixed (5ae8147) — opt-in two-gate append backpressure; 114/114, two balanced 6-min soaks, 17/17 clean matrix. Flagged: post-load quiesce stall is PRE-EXISTING (control-run proven), handed to re-review.
+- 2026-07-04T08:36Z DISPATCH D-021 (P5 fresh re-reviewer: prompt 03 scoped to full S1..S10 matrix x3 profiles + re-attack touched paths (apply.js revocation/SetBody, vault.js append/backpressure) + adjudicate quiesce stall; model=Fable 5, scratch=sslop/021) — synchronous.
