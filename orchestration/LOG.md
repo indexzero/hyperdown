@@ -37,3 +37,6 @@
 - 2026-07-04T00:30Z INCIDENT D-010 terminated by API 529 Overloaded mid-task (after ~51 tool uses; core ops/apply/keyspace written, test suite partially written). Resuming same agent (a94044ce369304e3a) via SendMessage to preserve context; not a re-dispatch, no prompt change.
 - 2026-07-04T00:55Z RESULT D-010 DONE (after 529 resume): packages/core + 59-test invariant suite green; supervisor independently re-ran pnpm install + pnpm test — 59/59 confirmed. Report: orchestration/results/P3-1-core.md.
 - 2026-07-04T00:56Z USER INSTRUCTION received mid-phase: package-level READMEs + top-level README required. core README written by D-010 supplemental (docs(core): package README). Requirement added to all subsequent build dispatches.
+- 2026-07-04T01:02Z PR-3 opened: https://github.com/indexzero/hyperwiki2/pull/3 (2/core -> 1/spec-review); assumptions comment posted.
+- 2026-07-04T01:03Z BRANCH 3/store created off 2/core (stack PR #4).
+- 2026-07-04T01:03Z DISPATCH D-011 (P3 build: store, inputs=SPEC-FINAL v5 + core README, model=Fable 5, scratch=sslop/011, branch=3/store) — synchronous.
