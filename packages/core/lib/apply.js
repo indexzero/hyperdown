@@ -497,7 +497,11 @@ class Applier {
       const rec = await this.val(K.nRev(s, cur))
       if (rec === undefined) break
       const parent = rec.base || null
-      if (!protectedRevs.has(cur)) await this.view.del(K.nRev(s, cur))
+      if (!protectedRevs.has(cur)) {
+        await this.view.del(K.nRev(s, cur))
+        // keep the base-keyed revision index in step with pruning (M1)
+        if (parent !== null) await this.view.del(K.revByBase(s, parent, cur))
+      }
       cur = parent
     }
     return null
@@ -819,15 +823,25 @@ class Applier {
       // `at` is the writer's per-writer ordinal — deterministic, never wall
       // clock (I1). §4 names the field but does not define its source.
       await this.view.put(K.nRev(s, rh), { base, text, writer: W, at: ord })
+      // maintain the base-keyed revision index (M1): non-null bases only.
+      if (base !== null) await this.view.put(K.revByBase(s, base, rh), true)
     }
     const head = await this.val(K.nBody(s))
 
-    // §6: two revisions citing the same base are true concurrency.
+    // §6: two revisions citing the same NON-null base are true concurrency
+    // (both retained, deterministic head, flag/conflict per pair). A null
+    // base is "no base cited" — independent null-base creations are LWW on
+    // the head pointer and raise no mutual conflict (their supersession is
+    // still surfaced via the §5.4 clobber flag below), so a stream of
+    // null-base SetBody ops can no longer produce N-choose-2 flags or an
+    // O(R) rescan per op (review finding M1). Same-base siblings are found
+    // via revbybase/<s>/<base>/* in O(matches) instead of scanning every
+    // n/<s>/rev/* row. Every revision is still retained and observable (I4).
     const conflictPairs = new Set()
-    for (const { key, value } of await this.scanAll(K.nRevPrefix(s))) {
-      const revId = K.parseKey(key)[3]
-      if (revId === rh) continue
-      if ((value.base || null) === base) {
+    if (base !== null) {
+      for (const { key } of await this.scanAll(K.revByBasePrefix(s, base))) {
+        const revId = K.parseKey(key)[3]
+        if (revId === rh) continue
         const [a, b] = [revId, rh].sort()
         await this.view.put(K.flag('conflict', s, a, b), { base })
         conflictPairs.add(a + '/' + b)
@@ -866,6 +880,8 @@ class Applier {
       head = revHash(keep, text)
       if ((await this.val(K.nRev(s, head))) === undefined) {
         await this.view.put(K.nRev(s, head), { base: keep, text, writer: W, at: ord })
+        // merged revision cites `keep` as base: index it like any other (M1)
+        await this.view.put(K.revByBase(s, keep, head), true)
       }
     }
     await this.view.put(K.nBody(s), head)

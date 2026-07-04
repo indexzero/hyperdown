@@ -128,6 +128,25 @@ patched: `encodeName` in packages/core/lib/apply.js, and the §10.1
 fallback mint in packages/faces/lib/turtle.js that deliberately mirrors it
 (the two must change together).
 
+**§6 a null `base` is "no base cited", never a shared base (review finding
+M1).** A literal reading of §6's "two revisions citing the same `base`"
+makes every pair of null-base `SetBody` revisions on a subject true
+concurrency, so N independent creations yield N-choose-2 `flag/conflict`
+rows and the detection rescan made every `SetBody` O(R) in the subject's
+revision count — quadratic per subject, unbounded flag state, and a
+single-writer DoS of every peer's apply (two soak runs died when one
+setBody exceeded the 120s command budget; CODE-REVIEW.md M1). Resolution:
+independent null-base creations are LWW on the head pointer and raise no
+mutual `flag/conflict`; cross-writer supersession among them is still
+surfaced via the §5.4 `flag/clobber` (O(1) per op), and `flag/conflict` is
+reserved for two revisions citing the same NON-null base — which still
+keeps both revisions, sets the head deterministically, and writes exactly
+one flag per pair (I4 intact). Same-base detection now reads the
+base-keyed bookkeeping index `revbybase/<s>/<base>/<rev>` (maintained by
+`SetBody`, `ResolveConflict`-with-text, and `PruneRevisions`; like `seen/`
+it is included in the I2 view hash and excluded from materialize/export)
+in O(matches) instead of scanning `n/<s>/rev/*`.
+
 **§9.4 `flag/unsafepath` is a materialize report, not a view row.** §9.4
 directs `materialize` to record `flag/unsafepath/<s>` for skipped unsafe
 paths, but §9.3 mandates that no component writes the view except `apply`

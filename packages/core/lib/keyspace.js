@@ -85,6 +85,16 @@ export const hostIdx = (k, s) => `hostidx/${esc(k)}/${escSubject(s)}`
 export const hostIdxPrefix = (k) => `hostidx/${esc(k)}/`
 export const scopeIdx = (scope, s) => `scopeidx/${esc(scope)}/${escSubject(s)}`
 export const scopeIdxPrefix = (scope) => `scopeidx/${esc(scope)}/`
+// Base-keyed revision index (§6 conflict detection): one row per revision
+// citing a NON-null base, so same-base concurrency is found in O(matches)
+// instead of a full n/<s>/rev/* scan (review finding M1). Null-base
+// revisions cite no base and are never indexed (they raise no mutual
+// conflicts). Bookkeeping family like seen/ and fidx/: written
+// deterministically by apply (so it participates in the I2/I3 full-range
+// view hash) but excluded from materialize/export, which scan only n/,
+// ctx/ and idx/spo/.
+export const revByBase = (s, base, rev) => `revbybase/${escSubject(s)}/${esc(base)}/${esc(rev)}`
+export const revByBasePrefix = (s, base) => `revbybase/${escSubject(s)}/${esc(base)}/`
 
 // --- ctx/ (§4; layout resolution above) ---
 export const ctxDef = (scope, term) => `ctx/d/${esc(scope)}/${esc(term)}`
