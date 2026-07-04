@@ -66,3 +66,5 @@
 - 2026-07-04T04:11Z DISPATCH D-017 (P4: prompt=03 harness+review, autobee ground adjustments, soak mandated, model=Fable 5, scratch=sslop/017, branch=6/harness) — synchronous, generous runtime.
 - 2026-07-04T06:05Z RESULT D-017 DONE (~110 min incl. 30.5-min soak): harness + S1..S10 + fuzz + CODE-REVIEW.md. G4 FAIL: B1 blocker (revocation race divergence; supervisor re-ran repro — fails as claimed, hashes diverge), M1, M2, O1. Soak: no memory/FD leak. UNVERIFIED item 1 (removeable) resolved as CONFIRMED FINDING (B1); DEVIATIONS §13(d) claim disproven.
 - 2026-07-04T06:06Z GATE G4 FAIL iteration 1. Phase -> P5 loop 1/3. O1 batched to BACKLOG.
+- 2026-07-04T06:35Z RESULT D-018 DONE: B1 fixed (8ff981b) — revocation by in-log clock rule only; repro + S6 x3 profiles + 111/111 + clean matrix 17/17 green; supervisor re-ran test:regressions: 2/2 pass. DEVIATIONS §13(d) corrected.
+- 2026-07-04T06:36Z DISPATCH D-019 (M1 SetBody quadratic fix, scratch=sslop/019) — synchronous.
