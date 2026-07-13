@@ -10,7 +10,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test \"test/*.test.js\" \"okf/test/*.test.js\"",
+    "test:okf": "node --test \"okf/test/*.test.js\"",
     "test:regressions": "node --test \"test/regressions/*.test.js\"",
     "test:harness:clean": "HARNESS_PROFILE=clean node --test --test-concurrency=1 \"harness/scenarios/*.test.js\"",
     "test:harness:lossy": "HARNESS_PROFILE=lossy node --test --test-concurrency=1 \"harness/scenarios/*.test.js\"",
@@ -19,6 +20,7 @@
     "test:harness:soak": "node harness/soak/soak.js"
   },
   "devDependencies": {
+    "@auto-okf/core": "workspace:*",
     "@autovault-ld/cli": "workspace:*",
     "@autovault-ld/core": "workspace:*",
     "@autovault-ld/faces": "workspace:*",
