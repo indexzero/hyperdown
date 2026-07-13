@@ -32,3 +32,8 @@
 - 2026-07-03T23:48Z RESULT D-009 DONE: orchestration/results/P2-4-CLOSURE.md — R1..R4 all CLOSED, no delta regressions, VERDICT: G1-PASS.
 - 2026-07-03T23:48Z GATE G1 PASS. SPEC-FINAL pinned = prompts/01-implementation-spec-prompt.v5.md. Checklist item 1 checked. Phase -> P3.
 - 2026-07-03T23:49Z ENV pnpm 10.34.0, node v24.16.0 (spec requires Node 20+: satisfied).
+- 2026-07-03T23:52Z BRANCH 2/core created off 1/spec-review (stack PR #3).
+- 2026-07-03T23:52Z DISPATCH D-010 (P3 build: core + invariant unit suite + workspace scaffolding, input=SPEC-FINAL v5 only, model=Fable 5, scratch=sslop/010, branch=2/core) — synchronous.
+- 2026-07-04T00:30Z INCIDENT D-010 terminated by API 529 Overloaded mid-task (after ~51 tool uses; core ops/apply/keyspace written, test suite partially written). Resuming same agent (a94044ce369304e3a) via SendMessage to preserve context; not a re-dispatch, no prompt change.
+- 2026-07-04T00:55Z RESULT D-010 DONE (after 529 resume): packages/core + 59-test invariant suite green; supervisor independently re-ran pnpm install + pnpm test — 59/59 confirmed. Report: orchestration/results/P3-1-core.md.
+- 2026-07-04T00:56Z USER INSTRUCTION received mid-phase: package-level READMEs + top-level README required. core README written by D-010 supplemental (docs(core): package README). Requirement added to all subsequent build dispatches.

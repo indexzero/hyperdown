@@ -7,8 +7,9 @@
 
 ## Phase
 
-- **Current phase:** P3 (implementation)
-- **Next action:** dispatch D-010 (build packages/core + invariant unit suite + workspace scaffolding, branch 2/core), then store → faces → cli, each with SPEC-FINAL + built interfaces only. Then G3 verification (clean-clone install + unit run).
+- **Current phase:** P3 (implementation; core DONE + supervisor-verified 59/59)
+- **Next action:** core README (D-010 supplemental, running) → open PR #3 → dispatch D-011 (packages/store, branch 3/store, inputs: SPEC-FINAL + core README/interfaces) → faces → cli. Then G3 verification (clean-clone install + unit run).
+- **USER INSTRUCTION (2026-07-04):** every package gets an appropriate README.md, plus a top-level repo README (already a SPEC-FINAL §13 deliverable). Added to every subsequent build dispatch.
 
 ## Gates
 
@@ -63,3 +64,4 @@
 | D-007 | P2 | (closure instr) | spec v4 + P2-2-SPEC-REVIEW.md | orchestration/results/P2-3-CLOSURE.md | DONE — G1-FAIL (regression R1) |
 | D-008 | P2 | (surgical fix) | spec v4 + P2-3-CLOSURE.md | prompts/01-implementation-spec-prompt.v5.md + P2-4-DISPOSITIONS.md | DONE |
 | D-009 | P2 | (closure instr) | spec v5 + P2-3-CLOSURE.md | orchestration/results/P2-4-CLOSURE.md | DONE — **G1-PASS** |
+| D-010 | P3 | SPEC-FINAL v5 | (first build) | orchestration/results/P3-1-core.md + packages/core + test/ + DEVIATIONS.md | DONE — 59/59 green, supervisor re-ran and confirmed (529 incident, resumed in place) |
