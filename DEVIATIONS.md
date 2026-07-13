@@ -93,4 +93,36 @@ quorum states. (2) The exact reserved-character set of vault-ld §4.5
 percent-encoding was not confirmed against the vault-ld SPEC.md text;
 `encodeURIComponent`-after-NFC is used, centralized in one function
 (`encodeName`) if adjustment is needed. Both are marked in code and are P4
-harness targets.
+harness targets. *(Item (2) resolved by the faces build; see the §4.5
+entry below. Item (1) remains open.)*
+
+**vault-ld §4.5 percent-encoding verified; `encodeName` over-encodes
+(resolves UNVERIFIED item (2)).** Fetched from the vault-ld SPEC.md
+(2026-07-03): "A file name may contain characters that are not legal in an
+IRI (spaces are the common case); when minting an identity from a file
+name, a tool MUST percent-encode the offending characters per RFC 3987, so
+`Red Lentil Soup.md` mints `.../Red%20Lentil%20Soup`." Core's `encodeName`
+(`encodeURIComponent` after NFC, packages/core/lib/apply.js) agrees with
+the spec's own example, but over-encodes characters RFC 3987 permits in an
+IRI path segment — non-ASCII `ucschar` letters and sub-delims/`:`/`@` — so
+`Café` mints `vault://data/Caf%C3%A9` where a minimal RFC 3987 minter
+yields `.../Café`. The mapping is injective and applied uniformly after
+NFC, so §3.1 same-subject identity and I2 convergence are unaffected
+inside a vault; the deviation is cross-tool IRI equality with a strict
+vault-ld minter for names containing such characters. Core is a frozen
+input to the faces build (P3-3), so the fix site is recorded instead of
+patched: `encodeName` in packages/core/lib/apply.js, and the §10.1
+fallback mint in packages/faces/lib/turtle.js that deliberately mirrors it
+(the two must change together).
+
+**§9.4 `flag/unsafepath` is a materialize report, not a view row.** §9.4
+directs `materialize` to record `flag/unsafepath/<s>` for skipped unsafe
+paths, but §9.3 mandates that no component writes the view except `apply`
+folding ops, and core exposes no flag-writing op. `materialize` therefore
+returns unsafe skips in its report (`unsafe: [{ subject, reason }]`,
+covering separator-in-subject, escape, absolute-path, and
+case-insensitive-collision skips), while the view-side audit remains
+apply's rejection of unsafe `SetPath` values (`flag/rejected`, reason
+`unsafe-path`, §8.4). I4 is preserved in substance (no silent skip; every
+skip is observable) at the cost of the flag living in the report instead
+of the view.

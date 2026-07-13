@@ -52,3 +52,7 @@
 - 2026-07-04T01:53Z DISPATCH D-013 (store on CURRENT autobee, autobase forbidden, references embedded, model=Fable 5, scratch=sslop/013, branch=3/store) — background.
 - 2026-07-04T02:25Z RESULT D-013 DONE: packages/store on autobee ^1.0.10; supervisor re-ran full suite — 72/72 confirmed (incl. hyperswarm replication + writer round trip). Port mappings + autobee topo-weight divergence workaround recorded in DEVIATIONS.md. Report: orchestration/results/P3-2-store.md.
 - 2026-07-04T02:25Z USER FRAMING recorded: hyperwiki2 = a registry with more members in the tuple ([name,version] -> [subject,predicate,value,tag]); anchors the top-level README narrative. INTENT.md updated.
+- 2026-07-04T02:30Z PR-4 opened: https://github.com/indexzero/hyperwiki2/pull/4 (3/store -> 2/core); assumptions comment posted (incl. on-record supervisor correction re autobase).
+- 2026-07-04T02:32Z BRANCH 4/faces created off 3/store (stack PR #5).
+- 2026-07-04T02:32Z DISPATCH D-014 (P3 faces: materialize/ingest/exportTurtle, inputs=SPEC-FINAL+core README+store README, model=Fable 5, scratch=sslop/014, branch=4/faces) — synchronous.
+- 2026-07-04T03:12Z RESULT D-014 DONE: packages/faces (materialize/ingest/exportTurtle) — supervisor re-ran full suite: 104/104 confirmed. Report: orchestration/results/P3-3-faces.md. encodeName percent-encoding verified against fetched vault-ld §4.5 (UNVERIFIED item 2 settled; see DEVIATIONS.md cc931cb).
