@@ -3,3 +3,32 @@
 - 2026-07-03T21:37:52Z INVOCATION-ZERO /goal received; STATE.md absent; ledger initialized. Supervisor prompt adopted as operating instruction.
 - 2026-07-03T21:37:52Z NOTE branch `0/initial` pre-exists with package.json committed by user; adopted as stack base and PR #1 branch. main == 0/initial at 172016f.
 - 2026-07-03T21:37:52Z ANNOUNCE cross-model review skipped for all doubt cycles: non-interactive context (doubt-driven-development skill rule).
+- 2026-07-03T21:39Z PR-1 opened: https://github.com/indexzero/hyperwiki2/pull/1 (bootstrap, branch 0/initial); assumptions comment posted.
+- 2026-07-03T21:40Z DISPATCH D-001 (P1 reviewer, prompt=02, artifact=01, model=Fable 5, scratch=sslop/001) — synchronous.
+- 2026-07-03T21:57Z RESULT D-001 DONE: orchestration/results/P1-1-SPEC-REVIEW.md — verdict do-not-ship-as-written; 6 blockers (F1 NFC normalization, F2 op/kind table, F3 undecodable-op flags, F4 LWW/I4 contradiction, F5 schema/data split, F6 revocation point), 10 majors, conformance matrix 8/10/7, novelty claim narrowed to "in-log reflexive merge policy".
+- 2026-07-03T21:57Z GATE G1 FAIL (6 open blockers). Phase -> P2, loop counter 1/3.
+- 2026-07-03T21:58Z BRANCH 1/spec-review created off 0/initial (stack PR #2).
+- 2026-07-03T21:58Z DISPATCH D-002 (P2 author, inputs=01+P1-1 findings, outputs=spec v2 + dispositions, model=Fable 5, scratch=sslop/002) — synchronous.
+- 2026-07-03T22:02Z RESULT D-002 DONE: spec v2 (299 lines) + P2-1-DISPOSITIONS.md — F1..F6 applied, F7..F16 all FIXED (no waivers), F17..F20 applied, I4 preserved via F4 Option B. v1 untouched.
+- 2026-07-03T22:03Z PREP D-003: extracted findings table only -> orchestration/results/P1-1-FINDINGS-TABLE.md (context hygiene: fresh reviewer gets v2 + table, no prior reasoning).
+- 2026-07-03T22:03Z DISPATCH D-003 (P2 closure reviewer, prompt=02, artifact=spec v2 + findings table, model=Fable 5, scratch=sslop/003) — synchronous.
+- 2026-07-03T22:20Z INCIDENT D-003 stalled mid-stream (API error) after fetching all primary sources, before writing result. Continuing same agent (a2beaa6cb099bb8da) via SendMessage to preserve its fetched-source context; not a re-dispatch, no prompt change.
+- 2026-07-03T22:22Z PR-2 opened: https://github.com/indexzero/hyperwiki2/pull/2 (1/spec-review -> 0/initial); assumptions comment posted.
+- 2026-07-03T22:45Z RESULT D-003 DONE: orchestration/results/P2-1-SPEC-REVIEW.md — verdict do-not-ship; closure 18/20 (F6 reopened as B1, F8 reopened as M1); fresh blockers B2 (governance-op issuer authority: 4 ops capture the vault) and B3 (rate-window vs I10 reorg stability); 10 majors, 7 minors, 2 nits; conformance 12 PASS / 5 PARTIAL / 5 FAIL; novelty claim survives with "engineering composition" qualifier.
+- 2026-07-03T22:46Z GATE G1 FAIL iteration 2 (3 open blockers). Loop counter 2/3.
+- 2026-07-03T22:46Z DISPATCH D-004 (P2 author iter2, inputs=v2+P2-1 findings, outputs=spec v3 + dispositions, model=Fable 5, scratch=sslop/004) — synchronous.
+- 2026-07-03T22:52Z RESULT D-004 DONE: spec v3 (379 lines) + P2-2-DISPOSITIONS.md — B1..B3 applied (clock-in-op revocation, §8.0 governance authority, token-bucket rate + I10 scoped per B3), M1..M10 all FIXED, minors/nits applied, 0 waivers.
+- 2026-07-03T22:53Z DISPATCH D-005 (P2 closure reviewer iter2, prompt=02, artifact=spec v3 + findings table, model=Fable 5, scratch=sslop/005) — synchronous.
+- 2026-07-03T23:12Z RESULT D-005 DONE: orchestration/results/P2-2-SPEC-REVIEW.md — SHIP-WITH-CHANGES, ZERO BLOCKERS. B1/B2/B3 verified CLOSED against fetched autobase README. Majors: F1 (per-writer seq undocumented in apply; hold-buffer fallback broken for unapplied ops), F2 (optimistic fold-at-ack semantics + unbounded holds for never-acked writers), F3 (I6/I10 conditional on optional ctxKind + peer-local signedLength; state carve-outs), M-a (layer from @type diverges from vault-ld folder rule; use SetPath top segment first). Minors m1..m5, nits n1..n2. Novelty survives "barely" with one more narrowing notch.
+- 2026-07-03T23:13Z DECISION G1 blocker bar met at iteration 3; majors dispositioned FIXED via final author pass applying reviewer-supplied text verbatim, followed by closure-scoped fresh verification (D-007). Failed closure => BLOCKED.md (ceiling reached).
+- 2026-07-03T23:13Z DISPATCH D-006 (P2 author iter3/final, inputs=v3+P2-2 findings, outputs=spec v4 + dispositions, model=Fable 5, scratch=sslop/006) — synchronous.
+- 2026-07-03T23:20Z RESULT D-006 DONE: spec v4 + P2-3-DISPOSITIONS.md — F1/F2/F3/M-a + m1..m5 + n2 + narrowed novelty applied; all FIXED, none waived.
+- 2026-07-03T23:20Z DISPATCH D-007 (P2 closure verifier, scope=deltas+regressions only, artifact=v4+P2-2 findings, model=Fable 5, scratch=sslop/007) — synchronous.
+- 2026-07-03T23:35Z RESULT D-007 DONE: orchestration/results/P2-3-CLOSURE.md — all 11 items CLOSED; VERDICT G1-FAIL on regression R1 (F1's ctx/gov/seen fallback contradicts I10 "never mutate ctx/" + §8.0 test) plus minors R2..R4.
+- 2026-07-03T23:36Z LOOP-ACCOUNTING P2 ceiling counts FAILED iterations per supervisor §0.4 ("On the third failed iteration"). Failed: cycle A (v2, 3 blockers), cycle C (v4, regression R1). Cycle B (v3) met the zero-blocker bar. 2/3 failures spent; one surgical remediation cycle (D-008 fix + D-009 verify) is within ceiling. If it fails: BLOCKED.md.
+- 2026-07-03T23:36Z DISPATCH D-008 (surgical fix R1..R4 -> spec v5, model=Fable 5, scratch=sslop/008) — synchronous.
+- 2026-07-03T23:42Z RESULT D-008 DONE: spec v5 + P2-4-DISPOSITIONS.md — R1 relocated seen/ out of ctx/, R2/R3/R4 applied; author self-verified diff scope v4->v5 limited to the four fixes.
+- 2026-07-03T23:42Z DISPATCH D-009 (final closure verifier on v5, scope=R1..R4 deltas, model=Fable 5, scratch=sslop/009) — synchronous.
+- 2026-07-03T23:48Z RESULT D-009 DONE: orchestration/results/P2-4-CLOSURE.md — R1..R4 all CLOSED, no delta regressions, VERDICT: G1-PASS.
+- 2026-07-03T23:48Z GATE G1 PASS. SPEC-FINAL pinned = prompts/01-implementation-spec-prompt.v5.md. Checklist item 1 checked. Phase -> P3.
+- 2026-07-03T23:49Z ENV pnpm 10.34.0, node v24.16.0 (spec requires Node 20+: satisfied).
