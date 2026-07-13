@@ -1,3 +1,4 @@
 packages:
-  - packages/*
+  - vault-ld/*
+  - okf/*
   - examples/*

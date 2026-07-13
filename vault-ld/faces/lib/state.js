@@ -9,7 +9,7 @@
 //
 // Key parsing note: `n/hold/<W>/<ord>` is the one reserved family under
 // n/ (§8.2). The keyspace codec re-escapes a subject literally named
-// 'hold' to '%68old' (packages/core/lib/keyspace.js), so the RAW second
+// 'hold' to '%68old' (vault-ld/core/lib/keyspace.js), so the RAW second
 // segment distinguishes the reserved family ('hold') from the subject
 // ('%68old'); both unescape to the display name 'hold'.
 import { keyspace as K } from '@autovault-ld/core'

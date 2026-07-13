@@ -8,11 +8,11 @@ import { execFile, spawn } from 'node:child_process'
 import { mkdir, readFile, access, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Vault } from '../packages/store/index.js'
-import { keyspace as K } from '../packages/core/index.js'
+import { Vault } from '../vault-ld/store/index.js'
+import { keyspace as K } from '../vault-ld/core/index.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const BIN = join(ROOT, 'packages', 'cli', 'bin', 'autovault-ld.js')
+const BIN = join(ROOT, 'vault-ld', 'cli', 'bin', 'autovault-ld.js')
 const RUN = `run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 let seq = 0
 

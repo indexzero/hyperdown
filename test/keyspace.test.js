@@ -1,8 +1,8 @@
 // §4 keyspace codec escaping + §9.4 adversarial '../escape' containment.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { keyspace as K } from '../packages/core/index.js'
-import { isSafePath, namespaceMatches } from '../packages/core/index.js'
+import { keyspace as K } from '../vault-ld/core/index.js'
+import { isSafePath, namespaceMatches } from '../vault-ld/core/index.js'
 import { run, n, GEN, W1, addWriters, defineLwwTerm, defineSetTerm, makeTag, hex } from './helpers.js'
 
 test('§4: components round-trip through escaping; separators cannot be injected', () => {

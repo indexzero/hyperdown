@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { revHash } from '../packages/core/index.js'
+import { revHash } from '../vault-ld/core/index.js'
 
 function reference(baseHex, text) {
   const base = Buffer.from(baseHex || '', 'ascii')

@@ -18,7 +18,7 @@ import {
   makeTag,
   hex
 } from './helpers.js'
-import { MemView, createApply } from '../packages/core/index.js'
+import { MemView, createApply } from '../vault-ld/core/index.js'
 
 test('I10/§8.0: a non-indexer AddWriter{indexer:true} never reaches host.addWriter and never mutates ctx/gov', async () => {
   const { view, host } = await run([

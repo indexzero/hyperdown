@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { run, n, addWriters, defineSetTerm, defineLwwTerm, K, GEN, W1, W2, makeTag } from './helpers.js'
-import { revHash, tagHex } from '../packages/core/index.js'
+import { revHash, tagHex } from '../vault-ld/core/index.js'
 
 test('I7: dangling ref mints in the data namespace and coalesces a count (§7)', async () => {
   const { view } = await run([

@@ -23,7 +23,7 @@ encryptionKey, encrypted, keyPair, optimistic })` with
 SPEC-FINAL's autobase-specific mechanics (apply node shape, `signedLength`
 finality, indexer checkpoints) are therefore ported onto autobee's actual
 contract; each port mapping is recorded by the store build below. Citations
-to the autobase README in `packages/core` comments predate this correction
+to the autobase README in `vault-ld/core` comments predate this correction
 and are historical; core itself is transport-agnostic (its apply consumes a
 node stream and a view interface) and depends only on
 hyperschema/hyperdispatch/compact-encoding/b4a.
@@ -115,7 +115,7 @@ entry below. Item (1) remains open.)*
 IRI (spaces are the common case); when minting an identity from a file
 name, a tool MUST percent-encode the offending characters per RFC 3987, so
 `Red Lentil Soup.md` mints `.../Red%20Lentil%20Soup`." Core's `encodeName`
-(`encodeURIComponent` after NFC, packages/core/lib/apply.js) agrees with
+(`encodeURIComponent` after NFC, vault-ld/core/lib/apply.js) agrees with
 the spec's own example, but over-encodes characters RFC 3987 permits in an
 IRI path segment — non-ASCII `ucschar` letters and sub-delims/`:`/`@` — so
 `Café` mints `vault://data/Caf%C3%A9` where a minimal RFC 3987 minter
@@ -124,8 +124,8 @@ NFC, so §3.1 same-subject identity and I2 convergence are unaffected
 inside a vault; the deviation is cross-tool IRI equality with a strict
 vault-ld minter for names containing such characters. Core is a frozen
 input to the faces build (P3-3), so the fix site is recorded instead of
-patched: `encodeName` in packages/core/lib/apply.js, and the §10.1
-fallback mint in packages/faces/lib/turtle.js that deliberately mirrors it
+patched: `encodeName` in vault-ld/core/lib/apply.js, and the §10.1
+fallback mint in vault-ld/faces/lib/turtle.js that deliberately mirrors it
 (the two must change together).
 
 **§6 a null `base` is "no base cited", never a shared base (review finding

@@ -10,8 +10,8 @@
 // from the controller], restart [controller respawns with `open`].
 import net from 'node:net'
 import { readdirSync } from 'node:fs'
-import { Vault } from '../../packages/store/index.js'
-import { materialize, exportTurtle, createIngestWatcher } from '../../packages/faces/index.js'
+import { Vault } from '../../vault-ld/store/index.js'
+import { materialize, exportTurtle, createIngestWatcher } from '../../vault-ld/faces/index.js'
 
 let vault = null
 const links = new Map() // linkId -> { socket, stream }

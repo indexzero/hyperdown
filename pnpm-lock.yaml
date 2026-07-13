@@ -10,16 +10,16 @@ importers:
     devDependencies:
       '@autovault-ld/cli':
         specifier: workspace:*
-        version: link:packages/cli
+        version: link:vault-ld/cli
       '@autovault-ld/core':
         specifier: workspace:*
-        version: link:packages/core
+        version: link:vault-ld/core
       '@autovault-ld/faces':
         specifier: workspace:*
-        version: link:packages/faces
+        version: link:vault-ld/faces
       '@autovault-ld/store':
         specifier: workspace:*
-        version: link:packages/store
+        version: link:vault-ld/store
       n3:
         specifier: ^2.1.1
         version: 2.1.1
@@ -28,13 +28,13 @@ importers:
     dependencies:
       '@autovault-ld/core':
         specifier: workspace:*
-        version: link:../../packages/core
+        version: link:../../vault-ld/core
       '@autovault-ld/faces':
         specifier: workspace:*
-        version: link:../../packages/faces
+        version: link:../../vault-ld/faces
       '@autovault-ld/store':
         specifier: workspace:*
-        version: link:../../packages/store
+        version: link:../../vault-ld/store
       b4a:
         specifier: ^1.8.1
         version: 1.8.1
@@ -42,7 +42,7 @@ importers:
         specifier: ^3.6.1
         version: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
 
-  packages/cli:
+  vault-ld/cli:
     dependencies:
       '@autovault-ld/core':
         specifier: workspace:*
@@ -57,7 +57,7 @@ importers:
         specifier: ^1.8.1
         version: 1.8.1
 
-  packages/core:
+  vault-ld/core:
     dependencies:
       b4a:
         specifier: ^1.8.1
@@ -72,7 +72,7 @@ importers:
         specifier: ^1.21.0
         version: 1.21.0
 
-  packages/faces:
+  vault-ld/faces:
     dependencies:
       '@autovault-ld/core':
         specifier: workspace:*
@@ -81,7 +81,7 @@ importers:
         specifier: ^2.8.0
         version: 2.9.0
 
-  packages/store:
+  vault-ld/store:
     dependencies:
       '@autovault-ld/core':
         specifier: workspace:*

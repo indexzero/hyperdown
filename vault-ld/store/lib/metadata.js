@@ -1,4 +1,4 @@
-// Vault metadata pinning (SPEC-FINAL §13 / packages/core README
+// Vault metadata pinning (SPEC-FINAL §13 / vault-ld/core README
 // "Vault-metadata constants"): every peer of a vault MUST run createApply
 // with identical values — they are convergence-relevant inputs (I2). The
 // metadata document is written at init, loaded at open, and carried to
@@ -19,7 +19,7 @@ import { canonical } from '@autovault-ld/core'
 export const METADATA_VERSION = 1
 export const METADATA_FILE = 'vault-ld.json'
 
-// Defaults mirror packages/core README "Vault-metadata constants" exactly.
+// Defaults mirror vault-ld/core README "Vault-metadata constants" exactly.
 export const METADATA_DEFAULTS = {
   rootBase: 'vault://data/',
   hostAllowlist: ['tags', 'aliases', 'cssclasses'],

@@ -7,9 +7,9 @@ import { mkdir, readFile, readdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export { Vault } from '../packages/store/index.js'
-export { keyspace as K, canonical, revHash } from '../packages/core/index.js'
-export * as faces from '../packages/faces/index.js'
+export { Vault } from '../vault-ld/store/index.js'
+export { keyspace as K, canonical, revHash } from '../vault-ld/core/index.js'
+export * as faces from '../vault-ld/faces/index.js'
 export { pair, until, converged, sleep } from './store-helpers.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
