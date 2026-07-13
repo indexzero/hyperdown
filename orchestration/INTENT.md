@@ -33,6 +33,30 @@ STATE.md for pipeline state).
   - **node core test runner (`node:test`) only** — no jest/mocha/vitest/brittle.
     Record as user-directed deviation vs the spec's "Brittle/bare compatibility
     SHOULD be preserved where cheap" line.
+  - **AUTOBEE IS MANDATORY (user directive 2026-07-04, emphatic).** The store
+    layer is built ON AUTOBEE — the spec's "MAY depend on autobee or
+    reimplement on raw Autobase + Hyperbee" is resolved by the user to
+    autobee, matching package.json ("a wiki implementation on top of
+    autobee"). Reach through to the underlying Autobase only where autobee's
+    surface lacks a needed capability, and record every reach-through in
+    DEVIATIONS.md. Never describe the store as "on hyperbee/autobase".
+  - **READMEs (user directive 2026-07-04):** every package + top level; usage-
+    first per "How to write a README" (short working example FIRST, install,
+    API docs stubbed per entry point, how to run tests, license). Top-level
+    README must be a cohesive "this is how you use this thing".
+  - **Working multi-writer example (user directive 2026-07-04):** LLM-framed
+    (e.g. four agents co-write a recipe book from scratch → knowledge graph →
+    materialized markdown vault), demonstrating the §5.6 roundtrip
+    (RDF/Turtle ◀─ingest── markdown ──export▶) so HUMAN OPERATORS CAN DUMP
+    OUTPUT AT THE END OF A MULTI-AGENT SESSION. Agentic-AI communication
+    structures (sessions, findings, determinations, RFCs) are one target
+    representation to keep in mind.
+  - **NEVER delete anything from sslop/** — all agents, all dispatches,
+    including test temp dirs (close handles, leave files).
+  - **Registry framing (user, 2026-07-04):** conceptually this system is the
+    attempt-opus-1 registry with more members in the tuple — [name, version]
+    grown into [subject, predicate, value, tag] on the same autobee
+    substrate. The top-level README's narrative should use this framing.
   - No AI/Claude attribution footers on any PR body or commit (global rule).
 - **Out of scope:** merging any PR; spec §12 non-goals (text CRDT, HTTP API,
   SPARQL engine, Obsidian plugin); gold-plating beyond the `/goal` checklist
