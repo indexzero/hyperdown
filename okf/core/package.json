@@ -1,0 +1,30 @@
+{
+  "name": "@auto-okf/core",
+  "version": "0.0.0",
+  "description": "auto-okf core: op wire contract (hyperschema/hyperdispatch), deterministic apply, view keyspace codec, canonical forms, revHash, MemView test double",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./ops": "./lib/ops.js",
+    "./apply": "./lib/apply.js",
+    "./keyspace": "./lib/keyspace.js",
+    "./canonical": "./lib/canonical.js",
+    "./revhash": "./lib/revhash.js",
+    "./links": "./lib/links.js",
+    "./memview": "./lib/memview.js"
+  },
+  "scripts": {
+    "build:schema": "node schema/build.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "b4a": "^1.8.1",
+    "compact-encoding": "^3.3.0",
+    "hyperdispatch": "^1.6.0",
+    "hyperschema": "^1.21.0"
+  }
+}
