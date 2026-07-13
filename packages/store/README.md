@@ -74,7 +74,9 @@ Vault ──ops──▶ autobee (writer cores, linearization, hyperbee2 view)
   `{ key, metadata, encryptionKey }`.
 - `opts`: `key`, `metadata` (overrides/invite), `encryptionKey` (32-byte
   Buffer, end to end: writer cores, system and view encrypted at rest),
-  `keyPair`, `swarm` (shared Hyperswarm instance).
+  `keyPair`, `swarm` (shared Hyperswarm instance), `backpressure`
+  (opt-in append admission control, `true` or `{ maxInflight, ackTimeout }`
+  — see "Backpressure and the sustainable-rate envelope" below).
 
 Identity and lifecycle: `vault.key` / `vault.keyHex` (vault key ==
 genesis key), `vault.discoveryKey`, `vault.localKey` (this peer's writer
@@ -94,7 +96,9 @@ Reads (over autobee's read-only view snapshot, §4 keyspace):
 Op emission (§8 plumbing; every helper fills the §3.2 `clock` field from
 the DAG heads at append time, and the opId `tag` where the op carries one):
 
-- `await vault.append(type, payload, { optimistic })` — generic §3.2 op
+- `await vault.append(type, payload, { optimistic, backpressure })` —
+  generic §3.2 op; `backpressure` (`true` | `{ maxInflight }` | `false`)
+  opts this one append in or out of the admission control described below
 - governance (apply rejects these unless the issuer is a confirmed indexer,
   §8.0): `addWriter(key, { indexer })`, `removeWriter(key)`,
   `setWriterPolicy(key, { namespacePrefixes, rateCeiling })`,
@@ -102,7 +106,9 @@ the DAG heads at append time, and the opId `tag` where the op carries one):
 - content: `setField(s, p, o)`, `addMember(s, p, o)`,
   `remMember(s, p, value)` (computes the full §5.3 citation set from the
   resolved view — callers never pass tag subsets), `setBody(s, base, text)`,
-  `defineTerm(scope, term, def)`, `defineScope(scope, base, prefix)`
+  `defineTerm(scope, term, def)`, `defineScope(scope, base, prefix)` — every
+  convenience takes a trailing `opts` whose `optimistic` and `backpressure`
+  keys are forwarded as append options
 
 Optimistic onboarding (§8.2): an unadmitted writer may pass
 `{ optimistic: true }`. The node is acknowledged at the autobee level so it
@@ -146,6 +152,66 @@ Full-range-scan sha256 of any `{ key, value }` iterable view — byte-for-byte
 the same construction as core's `MemView.hash()`, so store views and unit
 MemViews are directly comparable.
 
+## Backpressure and the sustainable-rate envelope
+
+By default `vault.append` is **fire-at-caller-rate**: it never yields to or
+waits on the local fold. Under sustained concurrent multi-writer load that
+is a feedback loop (CODE-REVIEW.md finding M2): whichever writer gets ahead
+keeps its event loop free and floods faster, while the peers drown applying
+the growing concurrent DAG, fall further behind on their own appends, and
+eventually stall.
+
+The opt-in fix is store-level admission control:
+
+```js
+// per vault: every append from this peer self-throttles
+const v = await Vault.open('./vault', { backpressure: true })
+
+// or per op (true == { maxInflight: 1, ackTimeout: 1500 });
+// false opts a single op out of a vault-level config
+await v.setField('Home', 'title', 'hi', { backpressure: true })
+```
+
+With backpressure on, every append passes two admission gates on the same
+`maxInflight` watermark before the op is issued:
+
+1. **own fold** — if `maxInflight` ops are outstanding beyond the writer's
+   last awaited fold, it awaits `update()` (a full fold of the linearized
+   DAG, remote ops included), so it never builds a local append-vs-apply
+   backlog;
+2. **peer acknowledgment** — if `maxInflight` ops are beyond the highest
+   length of this writer's core that any folded peer op's §3.2 `clock` has
+   cited, the append waits (up to `ackTimeout` ms) for fresh acks. A peer's
+   op clock cites exactly what that peer had linearized when it appended, so
+   this pins a fast writer to its peers' *demonstrated* fold progress. This
+   gate is the load-bearing one: under the M2 flood the leader's own fold
+   stays cheap precisely because the drowning peers send little, so a
+   local-fold-only throttle measurably fails to prevent the divergence.
+
+The ack gate never engages on a vault that has not folded another writer's
+op (single-writer vaults never wait), and on timeout the op is admitted
+anyway — silent, idle or partitioned peers degrade a backpressured writer to
+roughly `maxInflight` ops per `ackTimeout` instead of deadlocking it; pass
+`backpressure: false` per op for deliberate offline/bulk writing. Default
+behavior without the option is unchanged — enable it on any sustained-write
+production path. The bound is per awaited caller: concurrent in-process
+appends may overshoot by the concurrency degree.
+
+Measured envelope (3-writer lossy-link soak, bounded O(1) ops —
+setField/addMember): **unthrottled at ~12 ops/s/writer the run floods** —
+op counts diverge (1,535 vs 101 vs 421) and an op on the flooding writer
+stalls past a 120 s budget at ~4.5 min; **throttled to the fold rate
+(~2.5 ops/s/writer with a per-op fold) the same workload sustains the full
+30.5 min balanced** (final op counts 3,235 / 3,601 / 3,736), no op timeouts,
+with RSS, heap and open FDs all bounded. With the `backpressure` option on,
+the same 3-writer lossy workload *attempted* at ~12 ops/s/writer self-paces
+to ~0.6–0.7 admitted ops/s/writer and stays balanced end to end (measured
+6-minute runs: 245/243/246 and 253/237/248 final ops, no op timeouts) —
+the writers absorb the excess demand instead of flooding the mesh. Only the
+on-disk corestore grows (append-only log — a known design decision).
+Post-load bulk catch-up of a large accumulated backlog remains limited by
+the same fold-rate ceiling.
+
 ## Caveats
 
 - **Policy epochs (§5.7):** merge policy is read from the in-log context at
@@ -162,7 +228,8 @@ From the repo root: `pnpm test` (Node's built-in runner). The store suite
 (`test/store-*.test.js`) drives real autobee + corestore instances on disk:
 two-writer convergence by view-hash equality, optimistic hold/fold, writer
 add/remove round trip, encrypted open/read/replicate, metadata determinism,
-restart-from-disk and fresh-peer rebuild equality (I3), and hyperswarm
+restart-from-disk and fresh-peer rebuild equality (I3), append backpressure
+(bounded in-flight watermark under concurrent load), and hyperswarm
 replication over a local DHT testnet.
 
 ## License

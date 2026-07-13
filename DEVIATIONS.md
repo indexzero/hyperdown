@@ -46,20 +46,33 @@ installed autobee@1.0.10 source. (a) Apply node shape: autobee hands
 `{ key, value, length, optimistic }` (key = writer core key); the store
 wraps each node as `{ from: { key }, value, length }` before core's apply.
 (b) Host surface: core's `host.addWriter(key, { indexer })` maps to
-autobee's `host.addWriter(key, { isIndexer, weight })`; `removeable(key)`
-is autobee's (always true in 1.0.10). (c) `signedLength`-scoped clauses:
+autobee's `host.addWriter(key, { isIndexer, weight })`; autobee's
+`removeWriter`/`removeable` are not exposed at all (see (d)).
+(c) `signedLength`-scoped clauses:
 autobee has no separate signing pipeline (`views()` reports
 `signedLength === length`; finality is flush/anchor —
 `host.createAnchor()` is the checkpoint primitive), so §8.5's
 "at or below signedLength" rate-partition scope and §11's quorum-signed
 snapshots have no 1:1 substrate; view convergence is asserted by full-scan
 hash equality and §11 snapshot machinery stays future work (P4 harness
-territory). (d) §8.3: once a peer has *seen* its own removal, autobee
-refuses to linearize further non-optimistic local nodes at all
-(lib/writers.js "Not writable", surfaced as an `'error'` event that tears
-the revoked instance down) — strictly stronger containment than the spec's
-reject-in-apply; the in-log clock rule still governs ops that raced the
-revocation.
+territory). (d) §8.3: revocation is decided solely by core's in-log clock
+rule; `opRemoveWriter` records `ctx/gov/removed/<W>` and deliberately never
+invokes autobee's positional `host.removeWriter` (positional removal cut
+W's concurrent nodes out of the remover's linearization while peers that
+had already linearized them kept them — permanent divergence; review
+finding B1). The removed writer stays admitted at the substrate level, so
+every node linearizes on every peer: ops linearized after the RemoveWriter
+are uniformly accepted/rejected (`revoked`) by the clock rule, and a racing
+op that linearizes before it (autobee orders concurrent nodes by node
+timestamp) is uniformly applied — either way one convergent view (I2), the
+partition a pure function of the final log (I10). Two store-side
+consequences: the emitted §3.2 clock counts the appending op itself in the
+writer's own entry (`seq + 1`; DAG heads alone give the pre-append length,
+which a removal that never delivered the op would dominate, mis-accepting
+racing ops), and containment of a revoked peer is app-level —
+`Vault.append` refuses new local ops (`VAULT_REVOKED`) once
+`ctx/gov/removed/<self>` exists and the op's clock does not causally
+precede it.
 
 **§8.2 optimistic onboarding on autobee (ackWriter port).** Autobee's
 optimistic path requires the batch to anchor in its system during apply or
@@ -114,6 +127,25 @@ input to the faces build (P3-3), so the fix site is recorded instead of
 patched: `encodeName` in packages/core/lib/apply.js, and the §10.1
 fallback mint in packages/faces/lib/turtle.js that deliberately mirrors it
 (the two must change together).
+
+**§6 a null `base` is "no base cited", never a shared base (review finding
+M1).** A literal reading of §6's "two revisions citing the same `base`"
+makes every pair of null-base `SetBody` revisions on a subject true
+concurrency, so N independent creations yield N-choose-2 `flag/conflict`
+rows and the detection rescan made every `SetBody` O(R) in the subject's
+revision count — quadratic per subject, unbounded flag state, and a
+single-writer DoS of every peer's apply (two soak runs died when one
+setBody exceeded the 120s command budget; CODE-REVIEW.md M1). Resolution:
+independent null-base creations are LWW on the head pointer and raise no
+mutual `flag/conflict`; cross-writer supersession among them is still
+surfaced via the §5.4 `flag/clobber` (O(1) per op), and `flag/conflict` is
+reserved for two revisions citing the same NON-null base — which still
+keeps both revisions, sets the head deterministically, and writes exactly
+one flag per pair (I4 intact). Same-base detection now reads the
+base-keyed bookkeeping index `revbybase/<s>/<base>/<rev>` (maintained by
+`SetBody`, `ResolveConflict`-with-text, and `PruneRevisions`; like `seen/`
+it is included in the I2 view hash and excluded from materialize/export)
+in O(matches) instead of scanning `n/<s>/rev/*`.
 
 **§9.4 `flag/unsafepath` is a materialize report, not a view row.** §9.4
 directs `materialize` to record `flag/unsafepath/<s>` for skipped unsafe

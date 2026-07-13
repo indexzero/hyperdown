@@ -54,13 +54,18 @@ test('I7: different-IRI takeover retargets triples with audit flags, never merge
 })
 
 test('I7: conflict flags persist until an explicit ResolveConflict (§6)', async () => {
-  const r1 = revHash(null, 'branch one')
-  const r2 = revHash(null, 'branch two')
+  // true concurrency = two revisions citing the same NON-null base (§6);
+  // independent null-base creations are LWW on the head and do not conflict
+  // (review finding M1), so the branches cite a shared seed revision.
+  const r0 = revHash(null, 'seed')
+  const r1 = revHash(r0, 'branch one')
+  const r2 = revHash(r0, 'branch two')
   const [a, b] = [r1, r2].sort()
   const base = [
     ...addWriters([W1, false], [W2, false]),
-    n(W1, 'set-body', { s: 'A', base: null, text: 'branch one' }),
-    n(W2, 'set-body', { s: 'A', base: null, text: 'branch two' })
+    n(GEN, 'set-body', { s: 'A', base: null, text: 'seed' }),
+    n(W1, 'set-body', { s: 'A', base: r0, text: 'branch one' }),
+    n(W2, 'set-body', { s: 'A', base: r0, text: 'branch two' })
   ]
   const { view } = await run(base)
   assert.ok(await view.get(K.flag('conflict', 'A', a, b)))
@@ -88,13 +93,15 @@ test('I7: conflict flags persist until an explicit ResolveConflict (§6)', async
 })
 
 test('I7: ResolveConflict with text creates a merged revision based on keep (§6)', async () => {
-  const r1 = revHash(null, 'one')
-  const r2 = revHash(null, 'two')
+  const r0 = revHash(null, 'seed')
+  const r1 = revHash(r0, 'one')
+  const r2 = revHash(r0, 'two')
   const merged = revHash(r1, 'merged text')
   const { view } = await run([
     ...addWriters([W1, false], [W2, false]),
-    n(W1, 'set-body', { s: 'A', base: null, text: 'one' }),
-    n(W2, 'set-body', { s: 'A', base: null, text: 'two' }),
+    n(GEN, 'set-body', { s: 'A', base: null, text: 'seed' }),
+    n(W1, 'set-body', { s: 'A', base: r0, text: 'one' }),
+    n(W2, 'set-body', { s: 'A', base: r0, text: 'two' }),
     n(GEN, 'resolve-conflict', { s: 'A', keep: r1, supersede: [r2], text: 'merged text' })
   ])
   assert.equal((await view.get(K.nBody('A'))).value, merged)

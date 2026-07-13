@@ -151,6 +151,15 @@ async function main() {
   await nova.setField('hasIngredient', 'range', 'cul:Ingredient')
   await nova.append('set-path', { s: 'hasIngredient', path: 'Ontologies/culinary/Properties/hasIngredient', scope: 'culinary' })
 
+  // Basil posts a first draft of the soup body while everyone is still
+  // connected: this converged revision is the SHARED BASE the §6 conflict
+  // below needs (a null base is "no base cited" and never conflicts — only
+  // two revisions citing the same non-null base are true concurrency).
+  say('basil', 'posting a first draft of the "Tomato Soup" body — the shared base for what follows')
+  const draftBody = 'Simmer tomatoes. Season. Serve.'
+  await basil.setBody('Tomato Soup', null, draftBody)
+  const draft = revHash(null, draftBody)
+
   await converge(agents)
   say('all', 'barrier: ontology replicated; every peer holds a bit-identical view (I2)\n')
 
@@ -172,7 +181,7 @@ async function main() {
   await basil.setField('Tomato Soup', 'tags', ['soup', 'starter']) // host key: Markdown face only (§5.6)
   const basilBody =
     'Simmer crushed [[Tomato]] with [[Garlic]] in [[Olive Oil]].\n\nBlend until smooth, season, and serve hot.'
-  await basil.setBody('Tomato Soup', null, basilBody)
+  await basil.setBody('Tomato Soup', draft, basilBody) // revises his own converged draft
 
   // Clove bakes, and also touches Basil's note (cross-agent edit): the
   // concurrent AddMember lands in the same OR-set and UNIONS (§5.1, I5).
@@ -216,7 +225,7 @@ async function main() {
   say('dill', 'ALSO sets Tomato Soup servings to 6 and rewrites its body — concurrent with Basil')
   await dill.setField('Tomato Soup', 'servings', 6, { ctxKind: 'scalar' })
   const dillBody = 'Roast the [[Tomato]] halves first — always.\n\nThen simmer with [[Garlic]] and blend.'
-  await dill.setBody('Tomato Soup', null, dillBody)
+  await dill.setBody('Tomato Soup', draft, dillBody) // cites the SAME base as Basil's revision (§6)
 
   // ---- phase 3: the session heals — every disagreement is visible ----------
   console.log('\n--- the agents reconnect: merge, audit, converge ---')
@@ -239,8 +248,8 @@ async function main() {
 
   // ---- phase 4: Dill drains the queue (editorial pass) ---------------------
   console.log('\n--- editorial pass: Dill resolves what the flags surfaced ---')
-  const keep = revHash(null, basilBody)
-  const supersede = revHash(null, dillBody)
+  const keep = revHash(draft, basilBody)
+  const supersede = revHash(draft, dillBody)
   const merged =
     'Roast the [[Tomato]] halves first — always.\n\nThen simmer with [[Garlic]] in [[Olive Oil]], blend until smooth, season, and serve hot.'
   say('dill', 'ResolveConflict on Tomato Soup: keep Basil\'s revision, supersede mine, append the merged text (§6)')

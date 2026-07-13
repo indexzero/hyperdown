@@ -61,3 +61,19 @@
 - 2026-07-04T03:55Z RESULT D-015 DONE: packages/cli (8 commands), examples/recipe-book (4 agent writers; committed out/ regenerates byte-identically — supervisor re-ran the script and confirmed no git diff), top-level README (usage-first, on autobee). Supervisor re-ran full suite: 111/111 confirmed. Report: orchestration/results/P3-4-cli.md.
 - 2026-07-04T04:00Z PR-6 opened + assumptions comment.
 - 2026-07-04T04:01Z DISPATCH D-016 (G3 independent verifier: clean clone of 5/cli into sslop/016, install, full suite, example byte-determinism, §15 acceptance mapping; model=Fable 5) — synchronous.
+- 2026-07-04T04:10Z GATE G3 PASS (independent clean-clone verification). Checklist item 2 checked. Phase -> P4.
+- 2026-07-04T04:11Z BRANCH 6/harness created off 5/cli (stack PR #7).
+- 2026-07-04T04:11Z DISPATCH D-017 (P4: prompt=03 harness+review, autobee ground adjustments, soak mandated, model=Fable 5, scratch=sslop/017, branch=6/harness) — synchronous, generous runtime.
+- 2026-07-04T06:05Z RESULT D-017 DONE (~110 min incl. 30.5-min soak): harness + S1..S10 + fuzz + CODE-REVIEW.md. G4 FAIL: B1 blocker (revocation race divergence; supervisor re-ran repro — fails as claimed, hashes diverge), M1, M2, O1. Soak: no memory/FD leak. UNVERIFIED item 1 (removeable) resolved as CONFIRMED FINDING (B1); DEVIATIONS §13(d) claim disproven.
+- 2026-07-04T06:06Z GATE G4 FAIL iteration 1. Phase -> P5 loop 1/3. O1 batched to BACKLOG.
+- 2026-07-04T06:35Z RESULT D-018 DONE: B1 fixed (8ff981b) — revocation by in-log clock rule only; repro + S6 x3 profiles + 111/111 + clean matrix 17/17 green; supervisor re-ran test:regressions: 2/2 pass. DEVIATIONS §13(d) corrected.
+- 2026-07-04T06:36Z DISPATCH D-019 (M1 SetBody quadratic fix, scratch=sslop/019) — synchronous.
+- 2026-07-04T06:55Z RESULT D-019 DONE: M1 fixed (7222bf0) — revbybase index + bounded conflict fan-out; regressions 5/5, 111/111, clean matrix 17/17; supervisor re-ran regressions: pass.
+- 2026-07-04T06:56Z DISPATCH D-020 (M2 append backpressure, scratch=sslop/020) — synchronous.
+- 2026-07-04T08:35Z RESULT D-020 DONE: M2 fixed (5ae8147) — opt-in two-gate append backpressure; 114/114, two balanced 6-min soaks, 17/17 clean matrix. Flagged: post-load quiesce stall is PRE-EXISTING (control-run proven), handed to re-review.
+- 2026-07-04T08:36Z DISPATCH D-021 (P5 fresh re-reviewer: prompt 03 scoped to full S1..S10 matrix x3 profiles + re-attack touched paths (apply.js revocation/SetBody, vault.js append/backpressure) + adjudicate quiesce stall; model=Fable 5, scratch=sslop/021) — synchronous.
+- 2026-07-04T09:50Z RESULT D-021 DONE: CODE-REVIEW-2.md — VERDICT: G4-PASS. Matrix 17/17 x3 profiles (seed 591324767, log sslop/021/matrix-run1.log); fuzz 10-iter + regressions 5/5 + unit 114/114 green; 5 adversarial probes on touched paths all pass; quiesce stall adjudicated minor L1 (pre-existing, liveness-only). No new findings; nothing committed by reviewer.
+- 2026-07-04T09:51Z GATE G4 PASS. P5 loop spent 1/3. L1 + stale harness README line batched to BACKLOG. Checklist items 3,4,5 checked. Phase -> P6.
+- 2026-07-04T09:55Z DISPATCH D-022 (P6 final independent verifier: clean clone of 6/harness -> full unit + regressions + matrix x3 + fuzz + materialize structural + Turtle parse + two-peer byte-determinism; model=Fable 5, scratch=sslop/022) — synchronous.
+- 2026-07-04T10:15Z RESULT D-022 DONE: orchestration/results/final-verification.md — VERDICT: FINAL-PASS (clean clone: 114/114 unit, 5/5 regressions, matrix 17/17 x clean/lossy/partitioned + fuzz, vault structural per-file PASS, n3 Turtle parse 0 errors, two-peer byte-diff identical).
+- 2026-07-04T10:16Z GATE G6 PASS. DELIVERY.md written. STATE -> COMPLETE. Every /goal checklist line has a verified evidence path. Pipeline COMPLETE.

@@ -46,7 +46,7 @@ import Corestore from 'corestore'
 import Autobee from 'autobee'
 import Hyperswarm from 'hyperswarm'
 import b4a from 'b4a'
-import { createApply, encodeOp, makeTag, keyspace as K, canonical } from '@hyperwiki/core'
+import { createApply, encodeOp, decodeOp, makeTag, normalizeClock, keyspace as K, canonical } from '@hyperwiki/core'
 import { ViewAdapter } from './view.js'
 import { viewHash } from './hash.js'
 import {
@@ -62,6 +62,21 @@ import {
 // §3.2 ops whose opId tag the emission helpers auto-fill when absent.
 const AUTO_TAG = new Set(['set-field', 'add-member', 'unset-field', 'delete-subject'])
 
+// Defaults for the opt-in append backpressure (CODE-REVIEW.md M2).
+// maxInflight: how many of this writer's ops may be outstanding beyond BOTH
+// its last awaited local fold AND the best peer acknowledgment before
+// append() blocks (see append()). Measured on the 3-writer lossy soak at
+// ~12 ops/s/writer attempted: a local-fold-only throttle is NOT enough —
+// the leader's own fold stays cheap precisely because the drowning peers
+// send little, so it keeps flooding (observed 1483 vs 293/162 ops and an
+// op timeout, the M2 shape) — hence the peer-ack watermark, which pins a
+// writer to the fold progress its peers demonstrate through the §3.2
+// clocks their ops carry. ackTimeout bounds the wait so idle, silent or
+// partitioned peers degrade a backpressured writer to ~maxInflight ops per
+// ackTimeout instead of deadlocking it.
+const DEFAULT_MAX_INFLIGHT = 1
+const DEFAULT_ACK_TIMEOUT = 1500
+
 export class Vault extends EventEmitter {
   /**
    * @param {string|Corestore} storage directory (preferred: metadata is
@@ -75,6 +90,11 @@ export class Vault extends EventEmitter {
    *                  cores, system and view are encrypted at rest)
    *   keyPair        custom signing key pair for the local writer
    *   swarm          a shared Hyperswarm instance for joinSwarm()
+   *   backpressure   opt-in append admission control (CODE-REVIEW.md M2):
+   *                  `true` or `{ maxInflight, ackTimeout }` — every
+   *                  append() then self-throttles to this writer's own fold
+   *                  AND its peers' demonstrated fold progress (see
+   *                  append()). Default: off (append is fire-at-caller-rate).
    */
   constructor(storage, opts = {}) {
     super()
@@ -91,6 +111,13 @@ export class Vault extends EventEmitter {
       this._applyBarrierResolve = resolve
     })
     this._nextSeq = 0
+    this._foldedSeq = 0
+    this._backpressure = normalizeBackpressure(opts.backpressure)
+    this._trackAcks = !!this._backpressure
+    this._ackSeen = false // ever folded another writer's op (multiwriter)
+    this._bestAck = 0 // max length of OUR core any peer's op clock has cited
+    this._ackWaiters = new Set()
+    this._closing = false
     this._readying = null
   }
 
@@ -199,6 +226,7 @@ export class Vault extends EventEmitter {
     this.metadata = meta
     if (!this._coreApply) this._setApply(meta)
     this._nextSeq = this.db.local.length
+    this._foldedSeq = this._nextSeq
     return this
   }
 
@@ -220,9 +248,34 @@ export class Vault extends EventEmitter {
         // speculative batch persists; view effects stay held by core.
         await host.ackWriter(node.key)
       }
+      if (this._trackAcks) this._observeAck(node)
       wrapped.push({ from: { key: node.key }, value: node.value, length: node.length })
     }
     await this._coreApply(wrapped, view, new HostAdapter(host))
+    this._wakeAckWaiters()
+  }
+
+  /**
+   * Backpressure bookkeeping (M2): a folded remote op whose §3.2 clock
+   * cites OUR writer core at length L proves that peer had linearized us
+   * through L when it appended — the peer-fold acknowledgment append()'s
+   * admission control waits on. Only runs once backpressure has been used
+   * (`_trackAcks`), so the default path never pays the extra decode.
+   */
+  _observeAck(node) {
+    if (!this.db || !this.db.local || b4a.equals(node.key, this.db.local.key)) return
+    this._ackSeen = true
+    const dec = decodeOp(node.value)
+    if (!dec.ok || !dec.op) return // poison/undecodable ops carry no ack
+    const clock = normalizeClock(dec.op.clock)
+    if (!clock) return
+    const len = clock[b4a.toString(this.db.local.key, 'hex')]
+    if (typeof len === 'number' && len > this._bestAck) this._bestAck = len
+  }
+
+  _wakeAckWaiters() {
+    for (const wake of this._ackWaiters) wake()
+    this._ackWaiters.clear()
   }
 
   // ---------- identity / lifecycle ----------
@@ -274,6 +327,8 @@ export class Vault extends EventEmitter {
   }
 
   async close() {
+    this._closing = true
+    this._wakeAckWaiters() // release any append blocked in the M2 ack gate
     if (this.swarm && this._onConnection) {
       this.swarm.off('connection', this._onConnection)
       this._onConnection = null
@@ -319,24 +374,136 @@ export class Vault extends EventEmitter {
    * `base.heads()` source) and, for ops that carry one, the opId
    * `tag = writerKey || seq` (§3.2), unless the caller supplied them.
    * Returns `{ seq, tag }`.
+   *
+   * Backpressure (opt-in; CODE-REVIEW.md M2): with no option, append is
+   * fire-at-caller-rate — a sustained fast writer can outrun every peer's
+   * fold and starve them (the M2 concurrency feedback loop). Pass
+   * `{ backpressure: true }` (or `{ maxInflight, ackTimeout }`), or
+   * configure the vault with `{ backpressure }`, and append() runs two
+   * admission gates before issuing the op, both on the same `maxInflight`
+   * watermark:
+   *
+   * 1. own fold — if `maxInflight` of this writer's ops are outstanding
+   *    beyond its last awaited fold, await `update()` (folds the full
+   *    linearized DAG, remote ops included), so the writer never builds a
+   *    local append-vs-apply backlog;
+   * 2. peer acknowledgment — if `maxInflight` of this writer's ops are
+   *    beyond the highest length of OUR core any peer op's §3.2 clock has
+   *    cited (i.e. beyond what any peer has demonstrably folded), wait for
+   *    fresh acks, at most `ackTimeout` ms. This is what actually pins a
+   *    fast writer to its peers' fold rate: its own fold stays cheap
+   *    exactly when the peers are the ones drowning. Skipped until the
+   *    vault has folded another writer's op (single-writer vaults never
+   *    wait); on timeout the op is admitted anyway, so silent/partitioned
+   *    peers degrade throughput to ~maxInflight per ackTimeout rather than
+   *    deadlocking the writer. Disable per-op (`backpressure: false`) for
+   *    deliberate offline/bulk writing.
+   *
+   * Per-call `backpressure: false` disables a vault-level config for that
+   * op. The bound is per awaited caller: concurrent in-process appends may
+   * overshoot by the concurrency degree.
    */
-  async append(type, payload = {}, { optimistic = false } = {}) {
+  async append(type, payload = {}, { optimistic = false, backpressure } = {}) {
     await this.ready()
+    const bp = backpressure === undefined ? this._backpressure : normalizeBackpressure(backpressure)
+    if (bp) {
+      this._trackAcks = true
+      await this._admit(bp)
+    }
+    // §8.3 app-level containment (see DEVIATIONS.md §13(d)): once this
+    // peer's own revocation record is in the view, any new local op is
+    // uniformly rejected 'revoked' by every peer's apply — refuse the
+    // append instead of growing the log with dead ops.
+    await this._guardRevoked(payload.clock)
     const seq = this._nextSeq++
     const op = { ...payload }
-    if (op.clock === undefined) op.clock = this.clock()
+    if (op.clock === undefined) op.clock = this.clock(seq)
     if (AUTO_TAG.has(type) && op.tag === undefined) op.tag = makeTag(this.db.local.key, seq)
     const buf = encodeOp(type, op)
     await this.db.append(buf, { optimistic })
     return { seq, tag: op.tag || null }
   }
 
-  /** The §3.2 clock payload: [[writerKeyHex, seq], ...], sorted. */
-  clock() {
+  /** The two M2 admission gates (see append()). */
+  async _admit(bp) {
+    // gate 1: own fold — never run more than maxInflight ops ahead of the
+    // writer's own last awaited fold
+    if (this._nextSeq - this._foldedSeq >= bp.maxInflight) {
+      const target = this._nextSeq
+      await this.update()
+      if (target > this._foldedSeq) this._foldedSeq = target
+    }
+    // gate 2: peer acknowledgment — never run more than maxInflight ops
+    // ahead of what some peer's op clock proves that peer has folded
+    if (!this._ackSeen) return
+    const deadline = Date.now() + bp.ackTimeout
+    while (!this._closing && this._nextSeq - this._bestAck >= bp.maxInflight) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return // degrade instead of deadlocking (see append())
+      await this._ackWait(remaining)
+      if (this._closing) return
+      // fold whatever arrived: acks only advance when remote ops fold
+      await this.update()
+    }
+  }
+
+  /** Resolves on the next applied batch (or after ms). */
+  _ackWait(ms) {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer)
+        this._ackWaiters.delete(wake)
+        resolve()
+      }
+      const timer = setTimeout(wake, ms)
+      this._ackWaiters.add(wake)
+    })
+  }
+
+  /**
+   * The §3.2 clock payload: [[writerKeyHex, seq], ...], sorted. `seq` is
+   * the local seq of the op being appended, when called for one: §8.3's
+   * consumer reads a writer's own entry as "delivered through this op"
+   * (the I10 unit convention), so the self entry must count the op itself
+   * (seq + 1) — the DAG heads alone give the length *before* the op, which
+   * a RemoveWriter that never saw the op can dominate, wrongly accepting a
+   * racing op everywhere.
+   */
+  clock(seq = null) {
     const heads = (this.db && this.db.system && this.db.system.heads) || []
-    return heads
-      .map((h) => [b4a.toString(h.key, 'hex'), h.length])
-      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    const entries = new Map(heads.map((h) => [b4a.toString(h.key, 'hex'), h.length]))
+    if (seq !== null && this.db && this.db.local) {
+      const self = b4a.toString(this.db.local.key, 'hex')
+      entries.set(self, Math.max(entries.get(self) || 0, seq + 1))
+    }
+    return [...entries].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  }
+
+  /**
+   * §8.3 revocation containment, app-level (replaces autobee's positional
+   * "Not writable" teardown — see DEVIATIONS.md §13(d)): refuse a local
+   * append once `ctx/gov/removed/<self>` exists and the op's clock does
+   * not causally precede the recorded revocation. A store-emitted clock
+   * always carries this op's own new position, which the revocation cannot
+   * have observed, so any default-clock append from a revoked writer is
+   * refused; a caller-crafted clock is judged by core's exact §8.3 rule.
+   */
+  async _guardRevoked(clock) {
+    if (!this.db || !this.db.local) return
+    const self = b4a.toString(this.db.local.key, 'hex')
+    const removed = await this.val(K.govRemoved(self))
+    if (removed === undefined) return
+    if (clock !== undefined) {
+      const c = normalizeClock(clock)
+      if (c) {
+        const entries = Object.entries(c)
+        const dominated =
+          entries.length > 0 &&
+          entries.every(([w, s]) => removed[w] !== undefined && s <= removed[w])
+        if (dominated) return // causally precedes the revocation: apply accepts it
+      }
+    }
+    throw vaultError('VAULT_REVOKED', `local writer ${self} has been removed (§8.3)`)
   }
 
   // Governance ops (§8.0: apply rejects these unless the ISSUER is a
@@ -361,15 +528,16 @@ export class Vault extends EventEmitter {
     return this.append('prune-revisions', { s, before })
   }
 
-  // Content-op conveniences (thin over append()).
+  // Content-op conveniences (thin over append()). `optimistic` and
+  // `backpressure` are append options; everything else rides the payload.
   setField(s, p, o, opts = {}) {
-    const { optimistic, ...rest } = opts
-    return this.append('set-field', { s, p, o, ...rest }, { optimistic })
+    const { optimistic, backpressure, ...rest } = opts
+    return this.append('set-field', { s, p, o, ...rest }, { optimistic, backpressure })
   }
 
   addMember(s, p, o, opts = {}) {
-    const { optimistic, ...rest } = opts
-    return this.append('add-member', { s, p, o, ...rest }, { optimistic })
+    const { optimistic, backpressure, ...rest } = opts
+    return this.append('add-member', { s, p, o, ...rest }, { optimistic, backpressure })
   }
 
   /**
@@ -386,23 +554,23 @@ export class Vault extends EventEmitter {
     for (const [tagH, el] of Object.entries(els)) {
       if (canonical.valuesEqual(el.v, target)) tags.push(b4a.from(tagH, 'hex'))
     }
-    const { optimistic, ...rest } = opts
-    return this.append('rem-member', { s, p, tags, ...rest }, { optimistic })
+    const { optimistic, backpressure, ...rest } = opts
+    return this.append('rem-member', { s, p, tags, ...rest }, { optimistic, backpressure })
   }
 
   setBody(s, base, text, opts = {}) {
-    const { optimistic, ...rest } = opts
-    return this.append('set-body', { s, base, text, ...rest }, { optimistic })
+    const { optimistic, backpressure, ...rest } = opts
+    return this.append('set-body', { s, base, text, ...rest }, { optimistic, backpressure })
   }
 
   defineTerm(scope, term, def, opts = {}) {
-    const { optimistic, ...rest } = opts
-    return this.append('define-term', { scope, term, def, ...rest }, { optimistic })
+    const { optimistic, backpressure, ...rest } = opts
+    return this.append('define-term', { scope, term, def, ...rest }, { optimistic, backpressure })
   }
 
   defineScope(scope, base, prefix, opts = {}) {
-    const { optimistic, ...rest } = opts
-    return this.append('define-scope', { scope, base, prefix, ...rest }, { optimistic })
+    const { optimistic, backpressure, ...rest } = opts
+    return this.append('define-scope', { scope, base, prefix, ...rest }, { optimistic, backpressure })
   }
 
   // ---------- replication ----------
@@ -450,8 +618,10 @@ export class Vault extends EventEmitter {
  * Adapts autobee's host (lib/apply-calls.js: addWriter(key, { isIndexer,
  * weight }), removeWriter, ackWriter, removeable, interrupt, createAnchor)
  * to the surface @hyperwiki/core's apply invokes: addWriter(key,
- * { indexer }) and removeWriter(key) guarded by removeable(key) — only ever
- * for governance ops that passed the §8.0 authority check.
+ * { indexer }) — only ever for governance ops that passed the §8.0
+ * authority check. autobee's positional removeWriter is deliberately NOT
+ * exposed: §8.3 revocation is decided purely by core's in-log clock rule
+ * (DEVIATIONS.md §13(d); review finding B1).
  */
 class HostAdapter {
   constructor(host) {
@@ -472,16 +642,20 @@ class HostAdapter {
     return this.host.addWriter(key, { isIndexer: indexer, weight: 2 })
   }
 
-  removeWriter(key) {
-    return this.host.removeWriter(key)
-  }
-
   ackWriter(key) {
     return this.host.ackWriter(key)
   }
+}
 
-  removeable(key) {
-    return typeof this.host.removeable === 'function' ? this.host.removeable(key) : true
+/** `true` | `{ maxInflight, ackTimeout }` | falsy → normalized | null (M2). */
+function normalizeBackpressure(bp) {
+  if (!bp) return null
+  if (bp === true) return { maxInflight: DEFAULT_MAX_INFLIGHT, ackTimeout: DEFAULT_ACK_TIMEOUT }
+  const n = Number(bp.maxInflight)
+  const t = Number(bp.ackTimeout)
+  return {
+    maxInflight: Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_MAX_INFLIGHT,
+    ackTimeout: Number.isFinite(t) && t >= 0 ? t : DEFAULT_ACK_TIMEOUT
   }
 }
 
