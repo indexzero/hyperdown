@@ -1,5 +1,5 @@
 // View adapter (SPEC-FINAL §13 store wiring): presents the classic
-// get/put/del/createReadStream surface @hyperwiki/core's apply expects
+// get/put/del/createReadStream surface @autovault-ld/core's apply expects
 // (documented in packages/core/README.md, "View-interface contract") over
 // the hyperbee2-flavored view autobee hands apply.
 //

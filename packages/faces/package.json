@@ -1,5 +1,5 @@
 {
-  "name": "@hyperwiki/faces",
+  "name": "@autovault-ld/faces",
   "version": "0.0.0",
   "description": "Vault-LD generated faces: Obsidian-compatible vault materialization, human-edit ingest watcher, deterministic Turtle export",
   "license": "Apache-2.0",
@@ -17,7 +17,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@hyperwiki/core": "workspace:*",
+    "@autovault-ld/core": "workspace:*",
     "yaml": "^2.8.0"
   }
 }

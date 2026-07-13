@@ -1,13 +1,13 @@
-# @hyperwiki/store
+# @autovault-ld/store
 
 Multiwriter Vault-LD storage **on [autobee](https://github.com/holepunchto/autobee)**:
-opens a vault over a corestore, wires `@hyperwiki/core`'s deterministic
+opens a vault over a corestore, wires `@autovault-ld/core`'s deterministic
 `apply` into autobee's apply cycle, pins the vault metadata every peer must
 agree on, emits the §8 governance/content ops, and replicates over
 hyperswarm.
 
 ```js
-import { Vault } from '@hyperwiki/store'
+import { Vault } from '@autovault-ld/store'
 
 // creator
 const a = await Vault.init('./vault-a')
@@ -36,14 +36,14 @@ await b.close()
 ## Install
 
 ```sh
-pnpm add @hyperwiki/store
+pnpm add @autovault-ld/store
 ```
 
 ## How it fits
 
 The op log is the source of truth (SPEC-FINAL §2). Each peer appends encoded
 ops to its own writer core; autobee linearizes all writers' nodes and calls
-`apply`, which this package routes into `@hyperwiki/core`'s pure fold over a
+`apply`, which this package routes into `@autovault-ld/core`'s pure fold over a
 view adapter. Nothing writes the view except that fold, so any set of peers
 that exchanged all ops holds bit-identical views (I2), verified by
 `vault.hash()`.
@@ -55,12 +55,12 @@ Vault ──ops──▶ autobee (writer cores, linearization, hyperbee2 view)
    node adapter + ViewAdapter + host adapter
                  │
                  ▼
-   @hyperwiki/core createApply(metadata)   ←  pinned vault metadata
+   @autovault-ld/core createApply(metadata)   ←  pinned vault metadata
 ```
 
 ## API
 
-### `Vault` (`@hyperwiki/store/vault`)
+### `Vault` (`@autovault-ld/store/vault`)
 
 - `await Vault.init(storage, opts)` — create a brand-new vault. Writes the
   pinned metadata document to `<dir>/vault-ld.json`. `storage` is a
@@ -124,7 +124,7 @@ Replication:
   hyperswarm; every connection is fed to `db.replicate`. Without a provided
   swarm the vault creates and owns one. `await vault.leaveSwarm()`.
 
-### Metadata (`@hyperwiki/store/metadata`)
+### Metadata (`@autovault-ld/store/metadata`)
 
 Every peer must run `createApply` with identical constants — they are
 convergence-relevant inputs (core README, "Vault-metadata constants").
@@ -138,7 +138,7 @@ its vault key: autobee derives the creator's vault key from the creator's
 local writer core, so the §8.0 genesis indexer and the bootstrap key
 coincide on every peer.
 
-### View adapter (`@hyperwiki/store/view`)
+### View adapter (`@autovault-ld/store/view`)
 
 `new ViewAdapter(bee)` presents the classic
 `get`/`put`/`del`/`createReadStream({ gt, gte, lt, lte, reverse, limit })`
@@ -146,7 +146,7 @@ surface core's apply expects over a hyperbee2 view (buffer keys/values,
 `write()` batches). Range iteration is native hyperbee2 (verified against
 its source), keys in UTF-8 byte order, values JSON round-tripped.
 
-### `viewHash(view)` (`@hyperwiki/store/hash`)
+### `viewHash(view)` (`@autovault-ld/store/hash`)
 
 Full-range-scan sha256 of any `{ key, value }` iterable view — byte-for-byte
 the same construction as core's `MemView.hash()`, so store views and unit

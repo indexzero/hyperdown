@@ -1,4 +1,4 @@
-// @hyperwiki/store — Vault-LD on autobee (SPEC-FINAL §14 "store"): vault
+// @autovault-ld/store — Vault-LD on autobee (SPEC-FINAL §14 "store"): vault
 // lifecycle over a standalone multiwriter Hyperbee (autobee), core-apply
 // wiring through the view adapter, metadata pinning, writer governance
 // plumbing, and hyperswarm replication.

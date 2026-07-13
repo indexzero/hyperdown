@@ -1,4 +1,4 @@
-# @hyperwiki/faces
+# @autovault-ld/faces
 
 The **generated faces** of a Vault-LD vault (SPEC-FINAL §2/§13): the
 Markdown/Obsidian vault on disk, the human-edit ingest watcher, and the
@@ -7,8 +7,8 @@ projection of the view, and human edits re-enter the system as semantic
 ops — never whole-file writes.
 
 ```js
-import { Vault } from '@hyperwiki/store'
-import { materialize, createIngestWatcher, exportTurtle } from '@hyperwiki/faces'
+import { Vault } from '@autovault-ld/store'
+import { materialize, createIngestWatcher, exportTurtle } from '@autovault-ld/faces'
 import { readFile, writeFile } from 'node:fs/promises'
 
 // open a vault and write some ops
@@ -50,10 +50,10 @@ await v.close()
 ## Install
 
 ```sh
-pnpm add @hyperwiki/faces
+pnpm add @autovault-ld/faces
 ```
 
-The faces consume any vault object exposing the `@hyperwiki/store` read
+The faces consume any vault object exposing the `@autovault-ld/store` read
 surface (`scan(prefix)`, `val(key)`, `update()`, `metadata`) plus
 `append(type, payload)` for ingest; they never write the view directly
 (§9.3 — the view is written only by `apply` folding ops).
@@ -178,7 +178,7 @@ Returns `{ schema: { path, triples }, data: { path, triples } }`.
 ## Tests
 
 From the repo root: `pnpm test` (Node's built-in runner). The faces suite
-(`test/faces-*.test.js`) drives real `@hyperwiki/store` vaults (autobee +
+(`test/faces-*.test.js`) drives real `@autovault-ld/store` vaults (autobee +
 corestore on disk): materialize byte-determinism across passes, rebuilt
 stores and replicated peers (I9); ingest minimality (one edited field →
 exactly one `SetField`; a deleted line → `UnsetField`; a body edit → one

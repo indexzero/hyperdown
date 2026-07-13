@@ -10,7 +10,7 @@
 // the per-path in-flight locks, the manifest hash check (files with
 // unsaved external modifications are skipped and reported so they can be
 // ingested first), and atomic temp+fsync+rename writes.
-import { keyspace as K, canonical } from '@hyperwiki/core'
+import { keyspace as K, canonical } from '@autovault-ld/core'
 import { readVaultState, faceMetadata, keywordAlias } from './state.js'
 import { placeSubject } from './placement.js'
 import { renderNote } from './note.js'

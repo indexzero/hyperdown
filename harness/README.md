@@ -1,4 +1,4 @@
-# hyperwiki2 adversarial E2E harness
+# AutoVault-LD adversarial E2E harness
 
 Real-process, fault-injecting end-to-end harness for the Vault-LD-on-autobee
 store. Every writer is a separate OS process with its own Corestore

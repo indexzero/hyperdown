@@ -1,5 +1,5 @@
 {
-  "name": "@hyperwiki/store",
+  "name": "@autovault-ld/store",
   "version": "0.0.0",
   "description": "Vault-LD on autobee: multiwriter vault lifecycle, metadata pinning, writer governance plumbing, swarm replication",
   "license": "Apache-2.0",
@@ -16,7 +16,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@hyperwiki/core": "workspace:*",
+    "@autovault-ld/core": "workspace:*",
     "autobee": "^1.0.10",
     "b4a": "^1.8.1",
     "corestore": "^7.11.0",

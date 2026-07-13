@@ -1,5 +1,5 @@
-// hyperwiki CLI (SPEC-FINAL §13): a thin veneer over @hyperwiki/store
-// (vault lifecycle + governance ops) and @hyperwiki/faces (materialize,
+// autovault-ld CLI (SPEC-FINAL §13): a thin veneer over @autovault-ld/store
+// (vault lifecycle + governance ops) and @autovault-ld/faces (materialize,
 // ingest watcher, Turtle export). The CLI never writes the view or the
 // face itself — every effect flows through the packages, so everything it
 // does is the same thing library callers do.
@@ -9,13 +9,13 @@ import { parseArgs } from 'node:util'
 import { readFile, access } from 'node:fs/promises'
 import { join } from 'node:path'
 import b4a from 'b4a'
-import { keyspace as K } from '@hyperwiki/core'
-import { Vault, METADATA_FILE } from '@hyperwiki/store'
-import { materialize, exportTurtle, createIngestWatcher } from '@hyperwiki/faces'
+import { keyspace as K } from '@autovault-ld/core'
+import { Vault, METADATA_FILE } from '@autovault-ld/store'
+import { materialize, exportTurtle, createIngestWatcher } from '@autovault-ld/faces'
 
-const USAGE = `hyperwiki — a multi-writer wiki on autobee
+const USAGE = `autovault-ld — multi-writer Vault-LD knowledge graphs on autobee
 
-Usage: hyperwiki <command> [arguments] [options]
+Usage: autovault-ld <command> [arguments] [options]
 
 Commands:
   init <storage>                         create a new vault; this peer's key is
@@ -51,17 +51,17 @@ export async function run(argv) {
   }
   const handler = COMMANDS[command]
   if (!handler) {
-    process.stderr.write(`hyperwiki: unknown command '${command}'\n\n${USAGE}`)
+    process.stderr.write(`autovault-ld: unknown command '${command}'\n\n${USAGE}`)
     return 2
   }
   try {
     return await handler(rest)
   } catch (err) {
     if (err instanceof UsageError) {
-      process.stderr.write(`hyperwiki ${command}: ${err.message}\n\n${USAGE}`)
+      process.stderr.write(`autovault-ld ${command}: ${err.message}\n\n${USAGE}`)
       return 2
     }
-    process.stderr.write(`hyperwiki ${command}: ${err && err.message ? err.message : err}\n`)
+    process.stderr.write(`autovault-ld ${command}: ${err && err.message ? err.message : err}\n`)
     return 1
   }
 }
@@ -120,7 +120,7 @@ async function isPinned(storage) {
 /** Open an EXISTING vault (pinned storage) and close it after fn. */
 async function withVault(storage, opts, fn) {
   if (!opts.key && !(await isPinned(storage))) {
-    throw new Error(`'${storage}' is not a vault (no ${METADATA_FILE}); run \`hyperwiki init\` or \`hyperwiki join\` first`)
+    throw new Error(`'${storage}' is not a vault (no ${METADATA_FILE}); run \`autovault-ld init\` or \`autovault-ld join\` first`)
   }
   const vault = await Vault.open(storage, opts)
   try {
@@ -180,8 +180,8 @@ async function cmdJoin(rest) {
   }
   return withVault(storage, opts, async (vault) => {
     printIdentity(vault)
-    console.log('hand the writer key to an indexer (`hyperwiki add-writer`), then replicate')
-    console.log('with `hyperwiki watch <storage> <dir> --swarm`')
+    console.log('hand the writer key to an indexer (`autovault-ld add-writer`), then replicate')
+    console.log('with `autovault-ld watch <storage> <dir> --swarm`')
     return 0
   })
 }
@@ -292,7 +292,7 @@ async function cmdWatch(rest) {
   if (!parsed) return 0
   const [storage, dir] = parsed.positionals
   if (!(await isPinned(storage))) {
-    throw new Error(`'${storage}' is not a vault (no ${METADATA_FILE}); run \`hyperwiki init\` or \`hyperwiki join\` first`)
+    throw new Error(`'${storage}' is not a vault (no ${METADATA_FILE}); run \`autovault-ld init\` or \`autovault-ld join\` first`)
   }
   const vault = await Vault.open(storage)
   let watcher = null

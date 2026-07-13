@@ -1,4 +1,4 @@
-// @hyperwiki/faces — the generated faces of a Vault-LD vault (SPEC-FINAL
+// @autovault-ld/faces — the generated faces of a Vault-LD vault (SPEC-FINAL
 // §2/§13): the Markdown/Obsidian vault on disk (materialize + ingest
 // watcher) and the Turtle export. Faces are projections; the op log is the
 // source of truth and human edits re-enter the system as ops (§9).

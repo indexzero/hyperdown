@@ -1,4 +1,4 @@
-// CLI smoke tests (assignment scope item 4): the real `hyperwiki` binary
+// CLI smoke tests (assignment scope item 4): the real `autovault-ld` binary
 // spawned against real vaults on disk. Test dirs are unique per run under
 // sslop/015/tmp/ (never /tmp, never cleaned up — handles are closed, files
 // are left for post-mortem).
@@ -12,7 +12,7 @@ import { Vault } from '../packages/store/index.js'
 import { keyspace as K } from '../packages/core/index.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const BIN = join(ROOT, 'packages', 'cli', 'bin', 'hyperwiki.js')
+const BIN = join(ROOT, 'packages', 'cli', 'bin', 'autovault-ld.js')
 const RUN = `run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 let seq = 0
 
@@ -37,7 +37,7 @@ const WRITER_LINE = /^writer key: {2}([0-9a-f]{64})$/m
 test('help and usage errors carry the documented exit codes', async () => {
   const help = await cli(['--help'])
   assert.equal(help.code, 0)
-  assert.match(help.stdout, /Usage: hyperwiki <command>/)
+  assert.match(help.stdout, /Usage: autovault-ld <command>/)
 
   const none = await cli([])
   assert.equal(none.code, 2, 'no command is a usage error')

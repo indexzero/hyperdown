@@ -2,7 +2,7 @@
 //
 // The faces package never writes the view: the view is written only by
 // apply folding ops (SPEC-FINAL §9.3 "no component writes n/ directly").
-// Everything here consumes the read surface a @hyperwiki/store Vault
+// Everything here consumes the read surface a @autovault-ld/store Vault
 // exposes — `scan(prefix)` (async iterable of { key, value }) and
 // `val(key)` — or any object with the same shape (core's MemView wrapped
 // accordingly works too).
@@ -12,7 +12,7 @@
 // 'hold' to '%68old' (packages/core/lib/keyspace.js), so the RAW second
 // segment distinguishes the reserved family ('hold') from the subject
 // ('%68old'); both unescape to the display name 'hold'.
-import { keyspace as K } from '@hyperwiki/core'
+import { keyspace as K } from '@autovault-ld/core'
 
 const DEFAULT_ROOT_BASE = 'vault://data/'
 const DEFAULT_HOST_ALLOWLIST = ['tags', 'aliases', 'cssclasses']

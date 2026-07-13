@@ -1,4 +1,4 @@
-# @hyperwiki/core
+# @autovault-ld/core
 
 Core package of the Vault-LD-on-Autobase system (SPEC-FINAL §14): the op wire
 contract, the deterministic `apply` function, the view keyspace codec,
@@ -15,7 +15,7 @@ export, autobase wiring, and replication live in later packages.
 ## Public API
 
 All exports come from `index.js` (also importable per-module via the
-`exports` map, e.g. `@hyperwiki/core/apply`).
+`exports` map, e.g. `@autovault-ld/core/apply`).
 
 ### Apply (`lib/apply.js`)
 

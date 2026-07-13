@@ -20,7 +20,7 @@
 // a warning); a path disambiguates same-named notes. Ambiguity is decided
 // by APPLY (flag/linkambiguous), never by ingest (§9.2).
 import { parse as parseYaml } from 'yaml'
-import { canonical } from '@hyperwiki/core'
+import { canonical } from '@autovault-ld/core'
 
 const { nfc, canonicalInteger, canonicalDouble, stableStringify } = canonical
 
