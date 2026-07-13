@@ -8,9 +8,54 @@ importers:
 
   .:
     devDependencies:
+      '@hyperwiki/cli':
+        specifier: workspace:*
+        version: link:packages/cli
+      '@hyperwiki/core':
+        specifier: workspace:*
+        version: link:packages/core
+      '@hyperwiki/faces':
+        specifier: workspace:*
+        version: link:packages/faces
+      '@hyperwiki/store':
+        specifier: workspace:*
+        version: link:packages/store
       n3:
         specifier: ^2.1.1
         version: 2.1.1
+
+  examples/recipe-book:
+    dependencies:
+      '@hyperwiki/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@hyperwiki/faces':
+        specifier: workspace:*
+        version: link:../../packages/faces
+      '@hyperwiki/store':
+        specifier: workspace:*
+        version: link:../../packages/store
+      b4a:
+        specifier: ^1.8.1
+        version: 1.8.1
+      hypercore-crypto:
+        specifier: ^3.6.1
+        version: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
+
+  packages/cli:
+    dependencies:
+      '@hyperwiki/core':
+        specifier: workspace:*
+        version: link:../core
+      '@hyperwiki/faces':
+        specifier: workspace:*
+        version: link:../faces
+      '@hyperwiki/store':
+        specifier: workspace:*
+        version: link:../store
+      b4a:
+        specifier: ^1.8.1
+        version: 1.8.1
 
   packages/core:
     dependencies:

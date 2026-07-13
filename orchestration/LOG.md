@@ -56,3 +56,8 @@
 - 2026-07-04T02:32Z BRANCH 4/faces created off 3/store (stack PR #5).
 - 2026-07-04T02:32Z DISPATCH D-014 (P3 faces: materialize/ingest/exportTurtle, inputs=SPEC-FINAL+core README+store README, model=Fable 5, scratch=sslop/014, branch=4/faces) — synchronous.
 - 2026-07-04T03:12Z RESULT D-014 DONE: packages/faces (materialize/ingest/exportTurtle) — supervisor re-ran full suite: 104/104 confirmed. Report: orchestration/results/P3-3-faces.md. encodeName percent-encoding verified against fetched vault-ld §4.5 (UNVERIFIED item 2 settled; see DEVIATIONS.md cc931cb).
+- 2026-07-04T03:20Z PR-5 opened + assumptions comment. BRANCH 5/cli created off 4/faces (stack PR #6).
+- 2026-07-04T03:20Z DISPATCH D-015 (P3 cli + recipe-book example (4 agent writers) + top-level README, model=Fable 5, scratch=sslop/015, branch=5/cli) — synchronous.
+- 2026-07-04T03:55Z RESULT D-015 DONE: packages/cli (8 commands), examples/recipe-book (4 agent writers; committed out/ regenerates byte-identically — supervisor re-ran the script and confirmed no git diff), top-level README (usage-first, on autobee). Supervisor re-ran full suite: 111/111 confirmed. Report: orchestration/results/P3-4-cli.md.
+- 2026-07-04T04:00Z PR-6 opened + assumptions comment.
+- 2026-07-04T04:01Z DISPATCH D-016 (G3 independent verifier: clean clone of 5/cli into sslop/016, install, full suite, example byte-determinism, §15 acceptance mapping; model=Fable 5) — synchronous.

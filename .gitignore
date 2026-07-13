@@ -173,3 +173,7 @@ series/importer/series/
 
 # agent scratch/context files (per-dispatch, inspectable, never committed)
 sslop/
+
+# the recipe-book example dump is COMMITTED generated output (regenerated
+# byte-identically by `node examples/recipe-book`; asserted by the test suite)
+!examples/recipe-book/out/

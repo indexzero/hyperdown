@@ -1,0 +1,46 @@
+{
+  "@context": {
+    "@base": "vault://data/",
+    "comment": {
+      "@id": "rdfs:comment"
+    },
+    "cuisine": {
+      "@id": "cul:cuisine"
+    },
+    "cul": "https://recipes.example/culinary#",
+    "difficulty": {
+      "@id": "cul:difficulty"
+    },
+    "domain": {
+      "@id": "rdfs:domain",
+      "@type": "@id"
+    },
+    "hasIngredient": {
+      "@container": "@set",
+      "@id": "cul:hasIngredient"
+    },
+    "id": {
+      "@id": "@id"
+    },
+    "pairsWith": {
+      "@container": "@set",
+      "@id": "cul:pairsWith"
+    },
+    "prepTime": {
+      "@id": "cul:prepTime"
+    },
+    "range": {
+      "@id": "rdfs:range",
+      "@type": "@id"
+    },
+    "servings": {
+      "@id": "cul:servings"
+    },
+    "title": {
+      "@id": "cul:title"
+    },
+    "type": {
+      "@id": "@type"
+    }
+  }
+}

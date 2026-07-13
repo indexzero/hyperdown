@@ -1,0 +1,43 @@
+@prefix cul: <https://recipes.example/culinary#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<vault://data/Baguette> a <https://recipes.example/culinary#Ingredient> .
+<vault://data/Baguette> rdfs:comment "Day-old works best." .
+<vault://data/Basil> a <https://recipes.example/culinary#Ingredient> .
+<vault://data/Basil> rdfs:comment "Tear it, never chop it." .
+<vault://data/Eggplant> a <https://recipes.example/culinary#Ingredient> .
+<vault://data/Eggplant> rdfs:comment "Do not skip the salting." .
+<vault://data/Garlic> a <https://recipes.example/culinary#Ingredient> .
+<vault://data/Garlic> rdfs:comment "The backbone of everything." .
+<vault://data/Garlic%20Bread> a <https://recipes.example/culinary#Recipe> .
+<vault://data/Garlic%20Bread> cul:difficulty "easy" .
+<vault://data/Garlic%20Bread> cul:hasIngredient <vault://data/Baguette> .
+<vault://data/Garlic%20Bread> cul:hasIngredient <vault://data/Garlic> .
+<vault://data/Garlic%20Bread> cul:hasIngredient <vault://data/Olive%20Oil> .
+<vault://data/Garlic%20Bread> cul:prepTime 12 .
+<vault://data/Garlic%20Bread> cul:title "Golden Garlic Bread" .
+<vault://data/Olive%20Oil> a <https://recipes.example/culinary#Ingredient> .
+<vault://data/Olive%20Oil> rdfs:comment "Use the good bottle." .
+<vault://data/Ratatouille> a <https://recipes.example/culinary#Recipe> .
+<vault://data/Ratatouille> cul:cuisine "French" .
+<vault://data/Ratatouille> cul:hasIngredient <vault://data/Eggplant> .
+<vault://data/Ratatouille> cul:hasIngredient <vault://data/Herbes%20de%20Provence> .
+<vault://data/Ratatouille> cul:hasIngredient <vault://data/Olive%20Oil> .
+<vault://data/Ratatouille> cul:hasIngredient <vault://data/Tomato> .
+<vault://data/Ratatouille> cul:hasIngredient <vault://data/Zucchini> .
+<vault://data/Ratatouille> cul:servings 6 .
+<vault://data/Ratatouille> cul:title "Ratatouille" .
+<vault://data/Tomato> a <https://recipes.example/culinary#Ingredient> .
+<vault://data/Tomato> rdfs:comment "Sweetest in late summer." .
+<vault://data/Tomato%20Soup> a <https://recipes.example/culinary#Recipe> .
+<vault://data/Tomato%20Soup> cul:cuisine "French" .
+<vault://data/Tomato%20Soup> cul:hasIngredient <vault://data/Basil> .
+<vault://data/Tomato%20Soup> cul:hasIngredient <vault://data/Garlic> .
+<vault://data/Tomato%20Soup> cul:hasIngredient <vault://data/Olive%20Oil> .
+<vault://data/Tomato%20Soup> cul:hasIngredient <vault://data/Tomato> .
+<vault://data/Tomato%20Soup> cul:pairsWith <vault://data/Garlic%20Bread> .
+<vault://data/Tomato%20Soup> cul:prepTime 35 .
+<vault://data/Tomato%20Soup> cul:servings 6 .
+<vault://data/Tomato%20Soup> cul:title "Rustic Tomato Soup" .
+<vault://data/Zucchini> a <https://recipes.example/culinary#Ingredient> .
+<vault://data/Zucchini> rdfs:comment "Salt it first." .
