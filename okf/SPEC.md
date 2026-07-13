@@ -1,12 +1,16 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.1 (2026-07-13). RFC 2119
+**Status:** Normative build instruction, v1.2 (2026-07-13). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.1 applies adversarial review round 1
-(`orchestration/results/OKF-SPEC-REVIEW-1.md`): blockers B1–B4 fixed,
-majors M1–M15 fixed, minors m1–m15 applied. Dispositions:
-`orchestration/results/OKF-SPEC-DISPOSITIONS-1.md`. v1.0-draft is the
-prior revision in git history.
+**Changelog:** v1.2 applies adversarial review round 2
+(`orchestration/results/OKF-SPEC-REVIEW-2.md`): majors N1–N5 fixed
+(squat-proof minting, epoch key freshness, manifest-gated mirror
+reconciliation, apply-time `empty-type` rejection, conflict-copy ingest
+round-trip), minors n1–n14 applied. v1.1 applied adversarial review
+round 1 (`orchestration/results/OKF-SPEC-REVIEW-1.md`): blockers B1–B4
+fixed, majors M1–M15 fixed, minors m1–m15 applied. Dispositions for both
+rounds: `orchestration/results/OKF-SPEC-DISPOSITIONS-1.md`. v1.1 and
+v1.0-draft are the prior revisions in git history.
 **Contract:** this document implements the confirmed intent at
 `~/Git/indexzero/0x/slop/intent/autokf.intent.md`. On conflict, the intent
 wins and this document gets corrected.
@@ -78,7 +82,7 @@ append-only for the life of a vault (message ids and field orders never
 reordered or removed; generated codec committed under `spec/`).
 
 ```
-CreateConcept { id, path, type }                  // mints or adopts _id (§6)
+CreateConcept { id?, path, type }                 // id absent = mint, id present = adopt (§6)
 SetField      { id, key, value }                  // LWW-array register (§5)
 AddTag        { id, value }                       // OR-set add on `tags`
 RemTag        { id, value, tags: [tag, ...] }     // OR-set remove by observed tags
@@ -130,7 +134,9 @@ c/<id>/path                     current path { path, tag, ord } — ord is the
                                 so far) at which this path was set (§7, I8)
 c/<id>/body                     head revision pointer (revHash)
 c/<id>/rev/<revHash>            immutable revision { base, text, writer, at }
-c/<id>/revbybase/<base>/<rev>   base-keyed revision index (M1 ancestry: no O(R²) scans)
+revbybase/<id>/<base>/<rev>     base-keyed revision index (M1 ancestry: no O(R²)
+                                scans) — a true top-level bookkeeping family,
+                                trivially co-derived from c/<id>/rev/
 path/<path>                     path -> id (current holder; collision losers flagged)
 link/<from-id>/<to-path>        outbound links (extracted from body, §9)
 bl/<to-id>/<from-id>            backlinks (resolved links only)
@@ -138,10 +144,11 @@ wanted/<path>/<from-id>         demand index: one key per unresolved referrer
                                 (count = subkey count; NOT a flag — §9;
                                 Special:WantedPages)
 wantedrank/<inv-count>/<path>   derived rank index, rewritten on referrer-count
-                                change (inv-count = zero-padded (MAX − count),
-                                so an ascending scan yields most-wanted first)
+                                change (inv-count = (MAX − count) as a 16-digit
+                                zero-padded decimal, MAX = 10^16 − 1, so an
+                                ascending scan yields most-wanted first)
 log/<ordinal>                   append-only narration records -> log.md (§9)
-flag/conflict|clobber|staletag|pathcollision|writeafterdelete|undelete|rejected|optimistic/...
+flag/conflict|clobber|staletag|pathcollision|writeafterdelete|undelete|rejected|optimistic|squat|copydetect/...
 seen/<writerKey>                per-writer ordinal (bookkeeping)
 gov/writer/<key>                { indexer, namespacePrefixes, rateCeiling }
 gov/removed/<key>               revocation clock + seqAtRemoval (§8)
@@ -154,10 +161,12 @@ Bookkeeping families (`seen/`, `rate/`, `hold/`, `revbybase/`,
 materialize.
 
 Flag lifecycle: `conflict` clears only via `ResolveConflict` (§5);
-`pathcollision` clears when a subsequent `SetPath` gives the loser a free
-path (§7); `clobber`, `staletag`, `writeafterdelete`, `undelete`,
-`rejected`, and `optimistic` are permanent audit records — no op or rule
-clears them.
+`pathcollision` clears whenever the loser's claim ceases to collide — its
+own subsequent `SetPath`, or the competing holder vacating by rename,
+deletion, or its own collision loss (§7; apply recomputes this on the same
+events as §9's late-binding link resolution); `clobber`, `staletag`,
+`writeafterdelete`, `undelete`, `rejected`, `optimistic`, `squat`, and
+`copydetect` are permanent audit records — no op or rule clears them.
 
 ## 5. Merge semantics: fixed defaults
 
@@ -169,12 +178,15 @@ saga is the cautionary tale). The rules are frozen:
   computes). The view keeps a removed-token set per (id, value): a citation
   of an already-removed token is a silent no-op (benign concurrent removes
   of the same tag never flag); a citation of a never-observed token is
-  ignored for effect and recorded once under `flag/staletag`. Concurrent
-  add wins over remove-of-unobserved (SU-Set semantics; I5).
+  ignored for effect and recorded once under
+  `flag/staletag/<id>/<value>/<tag>`. Concurrent add wins over
+  remove-of-unobserved (SU-Set semantics; I5).
 - **Every other frontmatter key**: **LWW-array register** under
   linearization order. Values are canonical arrays (possibly length 1),
   superseding atomically; one materialized YAML scalar when length is 1.
-  A cross-writer supersession with a different value writes
+  An empty LWW state (e.g. a key removed via `SetField` with an empty
+  array) materializes as the key omitted from frontmatter. A cross-writer
+  supersession with a different value writes
   `flag/clobber/<id>/<key>/<tag>` (I4: the loser is auditable).
 - **Reserved field keys**: `SetField` with `key` ∈ {`tags`, `_id`, `_rev`}
   (post-NFC, exact) is rejected (`flag/rejected`, reason `reserved-key`).
@@ -198,6 +210,11 @@ saga is the cautionary tale). The rules are frozen:
   `c/<id>/rev/` is stored, flagged `flag/conflict/<id>/<head>/<new>`
   against the current head, and never becomes head until `ResolveConflict`
   selects it — fabricated ancestry cannot silently displace real ancestry.
+  With no current head, the flag is `flag/conflict/<id>/-/<new>` and the
+  concept materializes bodyless until `ResolveConflict`; the unknown-base
+  rule subsumes the same-base sibling rule (one flag per revision against
+  the head position, none pairwise among revisions citing the same unknown
+  base).
 - **`ResolveConflict`** is valid only if `keep` and every `supersede` entry
   exist under `c/<id>/rev/` and at least one cited flag is open; otherwise
   it is rejected (`flag/rejected`, reason `bad-resolve`). Effect: head :=
@@ -207,9 +224,16 @@ saga is the cautionary tale). The rules are frozen:
   over the same (now-cleared) flags is rejected `bad-resolve`; resolution
   races converge by linearization: the first valid resolve wins, the loser
   flags.
-- **`type`** (OKF's one required key): LWW-array like any other key, but
-  materialize emits the first element as the scalar `type` (OKF requires
-  non-empty; an empty state materializes `type: unknown` and flags).
+- **`type`** (OKF's one required key): LWW-array like any other key;
+  materialize emits the first element as the scalar `type`.
+  `CreateConcept.type` seeds the `c/<id>/f/type` register at the create's
+  linearized position; `c/<id>/meta.type` is a bookkeeping copy of the
+  creation value, never read by materialize. Apply rejects any `SetField`
+  on `type` whose value is an empty array or a sole empty string
+  (`flag/rejected`, reason `empty-type`) — an empty `type` state is
+  unreachable through accepted ops. `type: unknown` remains a
+  materialize-only defensive fallback for corrupt state and writes nothing
+  to the view (§7: materialize never writes the view).
 - **`_id` and `_rev` are never merged**: `_id` is identity (§6); `_rev` is
   derived output, never stored as a field.
 
@@ -217,14 +241,25 @@ saga is the cautionary tale). The rules are frozen:
 
 - **`_id`** is the concept's stable identity: minted exactly once, opaque,
   never path- or content-derived. Mint = the creating op's `tag`
-  (`writerKey || seq`, hex). Adopted, not minted, when `CreateConcept`
-  carries an id the vault has never seen (ingest supplies it — §9, §10;
-  this is what makes epoch cycling identity-preserving). `_id` is unique
-  per vault; equality asserts same concept, nothing else. It survives
-  deletion (tombstones keep it).
-- **Seen-id rule**: a `CreateConcept` whose `id` is already present in `c/`
-  is **rejected** (`flag/rejected`, reason `duplicate-id`) — creation never
-  updates. Only `SetField`/`AddTag`/`RemTag`/`SetPath`/`SetBody`/
+  (`writerKey || seq`, hex; `seq` is minimal lowercase hex, no leading
+  zeros, `0` for seq 0) — or the squat-fallback id below when that tag-id
+  is occupied. A `CreateConcept` with no explicit `id` mints; one carrying
+  an id **adopts** it — an id the vault has never seen, supplied by ingest
+  (§9, §10; this is what makes epoch cycling identity-preserving). `_id`
+  is unique per vault; equality asserts same concept, nothing else. It
+  survives deletion (tombstones keep it).
+- **Seen-id rule**: an **adopting** `CreateConcept` (explicit `id`) whose
+  `id` is already present in `c/` is **rejected** (`flag/rejected`, reason
+  `duplicate-id`) — creation never updates; `duplicate-id` rejection
+  applies only to adoption. **Squats cannot block mints**: a
+  `CreateConcept` **minting** (no explicit id) whose derived id
+  `writerKey || seq` is already present in `c/` does not reject; it mints
+  instead `SHA-256(writerKey || seq || k)` (64 hex; over the raw 32-byte
+  writer key, u64 LE seq, u64 LE k) for the smallest `k >= 1` yielding an
+  unseen id, and records the permanent audit flag
+  `flag/squat/<squatted-id>/<tag>`. Creation by a genuine writer always
+  succeeds; a squatter must spend one op per candidate and always loses.
+  Only `SetField`/`AddTag`/`RemTag`/`SetPath`/`SetBody`/
   `DeleteConcept`/`UndeleteConcept`/`ResolveConflict` mutate an existing
   concept, and each is policy-checked against the concept's **current**
   path, never an op-claimed path. Adopted ids MUST match
@@ -232,8 +267,10 @@ saga is the cautionary tale). The rules are frozen:
   (both public, hence predictable), adoption of an id whose writerKey
   prefix equals any current or former writer's key with `seq >=` that
   writer's seen-count is rejected (`flag/rejected`, reason
-  `mint-collision-risk`) — a squatter cannot pre-occupy a writer's future
-  mints.
+  `mint-collision-risk`), and an adopted id exactly equal to a 64-hex
+  writer key is likewise rejected `mint-collision-risk` (empty seq
+  suffix). Epoch-cycle adoption never trips this rule because writer
+  keypairs MUST NOT recur across epochs (§10).
 - **`_rev`** is the body-head revHash at materialization time, emitted into
   frontmatter. On ingest, an edited file's `_rev` is the `base` its
   `SetBody` cites — the file carries its own causal context. A stale `_rev`
@@ -260,7 +297,9 @@ saga is the cautionary tale). The rules are frozen:
   can never clobber a generated face on any filesystem.
 - **Rename + concurrent edit → merge** (the edit targets `_id`; it follows).
 - **Rename + concurrent rename → linearization winner**, loser recorded in
-  `flag/clobber` (audit).
+  `flag/clobber/<id>/path/<tag>` (audit; `path` here names the §4 path
+  register, `SetPath` not being a field — the `<tag>` component keeps the
+  key unique even against a frontmatter field literally named `path`).
 - **Two concepts on one path**: the concept whose current path-claim has
   the **lower `ord`** (§4 — the earlier claim under linearization) holds
   `path/<path>`; a later claimant is the loser (first-wins: a squatter
@@ -269,13 +308,19 @@ saga is the cautionary tale). The rules are frozen:
   `<path>.conflict-<first-8-hex-of-SHA-256(_id)>` (hash, not prefix: `_id`
   prefixes are shared by a writer's every mint) — byte-deterministic (I9),
   flagged `flag/pathcollision/<path>/<loser-id>`, narrated in `log.md`.
-  The literal component pattern `\.conflict-[0-9a-f]{8}$` is **reserved**:
-  `CreateConcept`/`SetPath` carrying it are rejected (`flag/rejected`,
-  reason `reserved-path`), so conflict paths cannot be squatted. If two
+  The literal component pattern `\.conflict-[0-9a-f]{8,}$` (any terminal
+  hex run of 8 or more) is **reserved**: `CreateConcept`/`SetPath`
+  carrying it are rejected (`flag/rejected`, reason `reserved-path`), so
+  neither the 8-hex landing path nor any longer fallback can be squatted.
+  (Ingest of materialized conflicted copies never trips this: it strips
+  the suffix before op generation — §9 conflict-copy awareness.) If two
   losers of the same path still hash-collide on 8 hex, extend to the full
-  hash; materialize MUST NOT emit two concepts to one file under any
-  input. The flag clears when a subsequent `SetPath` gives the loser a
-  free path.
+  64-hex hash, and an occupied fallback extends the same way (occupation
+  is only possible by another conflicted copy, the reservation covering
+  every extension length); materialize MUST NOT emit two concepts to one
+  file under any input. The flag clears whenever the loser's claim ceases
+  to collide — its own subsequent `SetPath`, or the competing holder
+  vacating by rename, deletion, or its own collision loss (§4 lifecycle).
 - Path safety (vault-ld M5 ancestry): a path that escapes the bundle root
   or is absolute is rejected in apply (`flag/rejected`, reason
   `unsafe-path`). Case-fold (plus NFC) collision detection is performed
@@ -283,8 +328,13 @@ saga is the cautionary tale). The rules are frozen:
   form equals another live concept's casefolded path (or a generated-face
   filename, above), the linearization loser gets `flag/pathcollision`
   exactly as for exact-path collisions and materializes at the
-  conflicted-copy path on every platform. Materialize itself never writes
-  to the view. Lexical + realpath containment is re-checked at materialize
+  conflicted-copy path on every platform. A casefold loser retains
+  `path/<its exact path>` (it has no exact-path competitor): links to it
+  resolve into `bl/`, and the emitted absolute link is expected to be
+  broken on disk — OKF §5.3 tolerates dangling links (chosen over
+  demotion to `wanted/`, which would make `wanted/` disagree with
+  `path/`). Materialize itself never writes to the view. Lexical +
+  realpath containment is re-checked at materialize
   time before any file write; a violation aborts that file's emission and
   is reported on the CLI only (it is unreachable if apply's path
   validation is correct, and is a bug, not state).
@@ -347,7 +397,9 @@ saga is the cautionary tale). The rules are frozen:
   (vault-ld §8.5 ancestry — never a global window): each writer's bucket
   gains 1 token per accepted op *authored by any indexer*, capped at that
   writer's `rateCeiling`; unacked writers use a fixed default ceiling (64)
-  until admitted.
+  until admitted. Buckets start full (at ceiling) at admission and at
+  first hold — the accept/reject partition is pinned, not
+  implementation-chosen.
 - `encryptionKey` (+ `encrypted: true`) supported end to end.
 
 ## 9. Faces
@@ -365,7 +417,8 @@ saga is the cautionary tale). The rules are frozen:
   `<name>.md`; subdirectory: `<name>/`). Concepts first, then
   subdirectories, each group in canonical byte order of the link target.
 - **`log.md` per bundle root** (derived, never authored): OKF §7 structure —
-  UTC `YYYY-MM-DD` date headings (OKF §7 MUST), newest first, entries
+  shape pinned: one `# Update Log` title, then `## YYYY-MM-DD` UTC date
+  headings (OKF §7 MUST), newest first, entries
   generated from the `log/` family: creations, renames (old → new),
   deletions, conflict resolutions, epoch notes. The narration is a
   *projection of the actual op log* — auto-okf's structural upgrade over
@@ -379,14 +432,24 @@ saga is the cautionary tale). The rules are frozen:
   reinterpret them; flow-style lists; LF line endings; trailing newline.
   Cross-implementation byte-identity and OKF §9(1) parseability depend on
   this.
-- Materialize makes the directory an **exact mirror** of the view: after
-  emission it deletes any `.md` file under the bundle root not produced by
-  this run (including prior conflicted copies, prior paths of renamed
-  concepts, and per-directory `index.md` for directories that ceased to
-  exist), and removes empty directories. Deletion honors the same
-  containment checks as writes. The ingest watcher treats mirror-deletions
-  as materialize-authored (in-flight-lock coordination), never as human
-  deletes.
+- Materialize reconciles the directory to the view **through an emission
+  manifest**, never by blind mirroring: it records, in peer-local state
+  outside the view, the (path, content-hash) set it last emitted. After
+  emission, the only removal candidates are manifest-tracked files not
+  produced by this run whose current bytes still match their manifest
+  entry (prior conflicted copies, prior paths of renamed concepts,
+  per-directory `index.md` for directories that ceased to exist); empty
+  directories are then removed. A `.md` file whose current bytes differ
+  from its manifest entry — or that has no entry (human-authored, not yet
+  ingested) — is **never deleted or overwritten**: it is left in place,
+  reported as pending-ingest (an ingest candidate, surfaced on the CLI),
+  and the run exits nonzero unless ingest is run first
+  (`materialize --force-mirror` restores unconditional mirroring for
+  operator use). Deletion honors the same containment checks as writes.
+  The ingest watcher treats manifest-gated reconciliation deletions as
+  materialize-authored (in-flight-lock coordination), never as human
+  deletes. Converged-peer I9 is judged on the emitted set; pending-ingest
+  files are transient local state that becomes ops.
 - Atomic writes (temp + fsync + rename), containment checks, per-path
   in-flight locks (vault-ld §9.4 ancestry).
 - Byte-deterministic: converged peers emit identical bundles (I9).
@@ -403,10 +466,21 @@ saga is the cautionary tale). The rules are frozen:
   `_id` seen at two paths → copy detection is deterministic: the file at
   the `_id`'s current view path (if present) is the original; otherwise
   the casefolded-lexicographically-first path is; every other file is a
-  copy (mint fresh via `CreateConcept`, flag). Missing `_id` → mint and
-  write back into the file; `_id` present but unknown to this vault →
-  **adopt** it (`CreateConcept` with the supplied id, subject to the §6
-  seen-id and mint-collision rules) — the epoch-cycle contract (§10).
+  copy (mint fresh via `CreateConcept`, recording
+  `flag/copydetect/<new-id>/<original-id>` — §4, permanent audit).
+  Missing `_id` → mint and write back into the file; `_id` present but
+  unknown to this vault → **adopt** it (`CreateConcept` with the supplied
+  id, subject to the §6 seen-id and mint-collision rules) — the
+  epoch-cycle contract (§10).
+- Conflict-copy awareness: a file whose terminal component matches
+  `\.conflict-[0-9a-f]{8,}$` ingests at the **suffix-stripped path**.
+  Known `_id` whose view path equals the stripped path → no `SetPath`
+  (the file is the loser's materialized face; body/frontmatter diffs
+  ingest normally). Unknown `_id` (epoch cycle) → `CreateConcept` at the
+  stripped path; the collision re-manifests in the new vault under §7's
+  ordinary rules, the loser re-flags and re-materializes at a conflict
+  path — state, identity, and collision status all carry across. §10's
+  `--force` enumeration lists old conflict path → new conflict path.
 - File deleted on disk → `DeleteConcept`, behind a confirmation guard
   (default on).
 - Links: standard markdown links per OKF §5 (absolute bundle-relative
@@ -443,6 +517,12 @@ Byte reclamation is an **operator act via the hydrated face**, never an op:
    suppressed; open conflicts as conflicted copies).
 2. The operator optionally deletes files on disk.
 3. `init` a fresh vault; ingest the directory with **`_id` adoption** (§9).
+   The fresh vault MUST use freshly generated writer keypairs: a writer
+   keypair MUST NOT recur across epochs (corestore-derived keys MUST be
+   namespaced by epoch). Otherwise adoption of the predecessor's
+   mint-shaped ids is rejected `mint-collision-risk` and I11 is
+   unachievable. `init` MUST enforce this by deriving writer cores under
+   a per-epoch namespace recorded in vault metadata.
 4. New vault metadata records `{ predecessorKey, predecessorCheckpoint }` —
    the epoch chain. `predecessorCheckpoint = { viewHash: <the I2 full-range
    hash>, writerLengths: [[key, len], ...] }`, signed by the operator key
@@ -455,7 +535,9 @@ revisions, per-op attribution, clocks) is shed by design. The compact
 command MUST refuse (without `--force`) while `flag/conflict` **or
 `flag/pathcollision`** is non-empty; with `--force`, it MUST enumerate in
 the new vault's epoch `log/` entry every conflicted copy carried across,
-old path → materialized path. It MUST record an epoch entry in the new
+old conflict path → new conflict path (carry-across works because ingest
+strips the conflict suffix and lets the collision re-manifest — §9
+conflict-copy awareness). It MUST record an epoch entry in the new
 vault's `log/`. State- and identity-fidelity across a cycle is an
 acceptance criterion (§14).
 
@@ -468,8 +550,8 @@ acceptance criterion (§14).
   (full range-scan hash).
 - **I3 Rebuild equivalence:** from-scratch rebuild equals incremental view.
 - **I4 No silent loss:** no op's effect disappears without a flag
-  (clobber/staletag/conflict/pathcollision/writeafterdelete/rejected).
-  `wanted/` entries are NOT loss (they are demand).
+  (clobber/staletag/conflict/pathcollision/writeafterdelete/rejected/
+  optimistic). `wanted/` entries are NOT loss (they are demand).
 - **I5 OR-set law** (tags): concurrent add + remove-of-unobserved → present.
 - **I6 LWW law:** register outcome depends only on linearized order.
 - **I7 Conflict lifecycle:** same-non-null-base siblings persist until
@@ -525,8 +607,9 @@ Complete when: I1..I11 each pass; the multi-process harness matrix (fault
 proxy, partitions, permutation replay — retargeted from `/harness`) is green
 at clean/lossy/partitioned; an epoch cycle round-trips a non-trivial bundle
 with identity-fidelity and byte-fidelity **modulo the `_rev` frontmatter
-line** (which necessarily re-derives in the new epoch; I11's property list
-is the normative fidelity set) including a drained conflict; all three
+lines and the regenerated `log.md`** (both necessarily re-derive in the
+new epoch; I11's property list is the normative fidelity set) including a
+drained conflict; all three
 examples run from committed scripts and regenerate their committed output
 byte-identically; every emitted bundle passes an independent OKF v0.1
 conformance check (frontmatter parses, `type` present, reserved files
