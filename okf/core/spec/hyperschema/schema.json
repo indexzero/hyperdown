@@ -1,0 +1,389 @@
+{
+  "version": 1,
+  "schema": [
+    {
+      "name": "create-concept",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 0,
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "path",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "type",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "set-field",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "key",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "value",
+          "required": true,
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "add-tag",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 2,
+      "fields": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "value",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "rem-tag",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "value",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "tags",
+          "required": true,
+          "array": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "set-body",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "base",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "text",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "set-path",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 2,
+      "fields": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "path",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "delete-concept",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "undelete-concept",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "resolve-conflict",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "keep",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "supersede",
+          "required": true,
+          "array": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "add-writer",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "indexer",
+          "required": false,
+          "type": "bool",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "remove-writer",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "set-writer-policy",
+      "namespace": "okf",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "namespacePrefixes",
+          "required": true,
+          "array": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "rateCeiling",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "clock",
+          "type": "json",
+          "version": 1
+        },
+        {
+          "name": "at",
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    }
+  ]
+}

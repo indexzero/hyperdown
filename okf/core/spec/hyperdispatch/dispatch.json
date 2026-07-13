@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "offset": 0,
+  "schema": [
+    {
+      "id": 0,
+      "name": "@okf/create-concept",
+      "requestType": "@okf/create-concept",
+      "version": 1
+    },
+    {
+      "id": 1,
+      "name": "@okf/set-field",
+      "requestType": "@okf/set-field",
+      "version": 1
+    },
+    {
+      "id": 2,
+      "name": "@okf/add-tag",
+      "requestType": "@okf/add-tag",
+      "version": 1
+    },
+    {
+      "id": 3,
+      "name": "@okf/rem-tag",
+      "requestType": "@okf/rem-tag",
+      "version": 1
+    },
+    {
+      "id": 4,
+      "name": "@okf/set-body",
+      "requestType": "@okf/set-body",
+      "version": 1
+    },
+    {
+      "id": 5,
+      "name": "@okf/set-path",
+      "requestType": "@okf/set-path",
+      "version": 1
+    },
+    {
+      "id": 6,
+      "name": "@okf/delete-concept",
+      "requestType": "@okf/delete-concept",
+      "version": 1
+    },
+    {
+      "id": 7,
+      "name": "@okf/undelete-concept",
+      "requestType": "@okf/undelete-concept",
+      "version": 1
+    },
+    {
+      "id": 8,
+      "name": "@okf/resolve-conflict",
+      "requestType": "@okf/resolve-conflict",
+      "version": 1
+    },
+    {
+      "id": 9,
+      "name": "@okf/add-writer",
+      "requestType": "@okf/add-writer",
+      "version": 1
+    },
+    {
+      "id": 10,
+      "name": "@okf/remove-writer",
+      "requestType": "@okf/remove-writer",
+      "version": 1
+    },
+    {
+      "id": 11,
+      "name": "@okf/set-writer-policy",
+      "requestType": "@okf/set-writer-policy",
+      "version": 1
+    }
+  ]
+}
