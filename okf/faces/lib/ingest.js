@@ -163,8 +163,17 @@ export class IngestWatcher extends EventEmitter {
       const { fm, body, warnings } = parseNote(raw.toString('utf8'))
       for (const wmsg of warnings) this.emit('warning', { path: rel, message: wmsg })
 
-      const ops = await this._ingestParsed(rel, fm || {}, body)
+      const { ops, established } = await this._ingestParsed(rel, fm || {}, body)
 
+      if (!established) {
+        // No concept corresponds to this file (e.g. missing/empty `type`, so
+        // CreateConcept could not fire). It stays an UNTRACKED human file:
+        // recording its hash in the manifest would let the next materialize
+        // treat it as a prior output and DELETE it (N3). Leave it out so it
+        // surfaces as pending-ingest instead.
+        this.emit('ops', { path: rel, ops })
+        return ops
+      }
       this._ingested.set(rel, hash)
       // Account the ingested bytes into the manifest: they are now known to
       // the system, so the next materialize MAY regenerate the file (its
@@ -192,7 +201,7 @@ export class IngestWatcher extends EventEmitter {
 
     const emitted = []
     const id = await this._ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted)
-    if (id == null) return emitted // could not create (e.g. missing type)
+    if (id == null) return { ops: emitted, established: false } // could not create (e.g. missing type)
 
     if (typeof this.vault.update === 'function') await this.vault.update()
     const state = await this._conceptState(id)
@@ -229,7 +238,7 @@ export class IngestWatcher extends EventEmitter {
     }
 
     for (const op of ops) await this._apply(op)
-    return emitted.concat(ops)
+    return { ops: emitted.concat(ops), established: true }
   }
 
   /**

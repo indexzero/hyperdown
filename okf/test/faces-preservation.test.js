@@ -51,6 +51,32 @@ test('N3: a hand-authored .md is never deleted or overwritten by materialize', a
   await v.close()
 })
 
+test('N3: a failed ingest (type-less file) never lets materialize delete the human file', async () => {
+  const v = await initVault(await tmpDir('vault'))
+  const { tag: id } = await v.createConcept('a', 'Note')
+  await v.setBody(id, null, 'a')
+  await v.update()
+  const dir = await tmpDir('bundle')
+  await materialize(v, dir)
+
+  // Human drops a malformed note (no `type`): ingest cannot create a concept,
+  // so the file must NOT enter the emission manifest.
+  const humanPath = join(dir, 'draft.md')
+  const humanBytes = '---\ntitle: Draft, no type yet\n---\n\nwork in progress\n'
+  await writeFile(humanPath, humanBytes)
+
+  const w = await createIngestWatcher(v, dir, { watch: false })
+  const ops = await w.ingestFile('draft.md')
+  assert.equal(ops.length, 0, 'a type-less file must not create a concept')
+  await w.close()
+
+  const r = await materialize(v, dir)
+  assert.equal(await exists(humanPath), true, 'materialize deleted a human file a failed ingest had touched')
+  assert.equal(await readFile(humanPath, 'utf8'), humanBytes, 'human file was overwritten')
+  assert.ok(r.pendingIngest.includes('draft.md'), 'type-less human file not surfaced as pending-ingest')
+  await v.close()
+})
+
 test('N3: a human EDIT to a materialized concept file is preserved, not clobbered', async () => {
   const v = await initVault(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
