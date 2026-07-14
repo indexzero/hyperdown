@@ -1,0 +1,21 @@
+{
+  "name": "auto-okf-example-vlurp-library",
+  "version": "0.0.0",
+  "description": "Curate a context library into an auto-okf bundle: vlurpfile -> staging -> _id-stamped OKF concepts with provenance frontmatter, re-import safe, offline-fixture fallback",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "main": "import.js",
+  "scripts": {
+    "start": "node import.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@auto-okf/core": "workspace:*",
+    "@auto-okf/faces": "workspace:*",
+    "@auto-okf/store": "workspace:*",
+    "hypercore-crypto": "^3.6.1"
+  }
+}
