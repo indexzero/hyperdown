@@ -2,7 +2,7 @@
 
 **Purpose:** the only memory for the overnight build. A fresh/compacted
 supervisor reads this + `okf/SPEC.md` and resumes without questions.
-**Last updated:** 2026-07-14 (T10 landed G4-PASS; G6 dispatched).
+**Last updated:** 2026-07-14 — **COMPLETE**.
 **SPEC-FINAL:** `okf/SPEC.md` v1.2 (SPEC-PASS, PR #20). Normative.
 **Intent contract:** `~/Git/indexzero/0x/slop/intent/autokf.intent.md`.
 **Milestone:** GitHub "auto-okf v1", issues #10–#19 (T1–T10) + residual-minors issue.
@@ -98,9 +98,9 @@ merged in). Supervisor does not merge.
 - [x] T6 I11 epoch cycle — PR #24, 216/216; byte+identity fidelity across a length-2 epoch chain, history-shed asserted positively, conflict-drain guardrail   - [x] T7 cli — PR #25, 225/225; auto-okf bin, all §13 commands + smoke tests   - [x] T8 three examples byte-identical — PR #26, 228/228; flagship agent-session + slop-archive + vlurp-library; AI-attribution footers stripped from commits (standing-rule enforcement)
 - [x] T9 matrix green x3 profiles — PR #27, 12/12 at clean/lossy/partitioned (36 runs) + 10-iter fuzz, zero divergence; S8 (vault-ld B1 revocation blocker) CONVERGES here (causal-not-positional revocation designed it out)   - [x] T10 zero open blockers, repros committed — PR #29, G4-PASS; F1 poison-op BLOCKER + F2 ingest-squat MAJOR both fixed+regression-guarded; C1 (soak memory/liveness) is an open MAJOR (not a determinism blocker) → BACKLOG for Charlie sign-off; P7 minor → issue #28
 - [x] I1..I11 each mapped to a passing test: I1-I8,I10 core + I3 store + I9 faces + I11 compact; harness exercises I1/I2/I5/I6/I7/I9/I10 multi-process
-- [ ] Independent clean-clone final verification, raw output on file
-- [ ] DELIVERY-OKF.md written (artifacts, waived majors, loop counters)
+- [x] Independent clean-clone final verification — orchestration/results/OKF-FINAL-VERIFICATION.md (VERDICT: FINAL-PASS; 234/234, matrix x3+fuzz, examples byte-identical, I11, conformance 0 violations, wanted/ ranked)
+- [x] DELIVERY-OKF.md written — DELIVERY-OKF.md (artifacts, PR stack, gates, C1 waiver, loop counters)
 
 ## Next action
 
-G6 DISPATCHED: independent clean-clone final verification of the stack tip (17/okf-review). Audit: full suite 234/234 + matrix clean 12/12 re-verified by supervisor; F1/F2 regressions green. C1 major recorded in BACKLOG for Charlie. After G6-PASS: write DELIVERY-OKF.md -> COMPLETE.
+**NONE — PIPELINE COMPLETE (2026-07-14).** All acceptance items verified with evidence paths above. G6 FINAL-PASS (independent clean clone). DELIVERY-OKF.md written. 10 stacked PRs open (#9,#20,#21..#27,#29), none merged by supervisor — owner reviews in the morning. Open for owner: C1 major (BACKLOG, sign-off), P7 minor (issue #28).
