@@ -1,0 +1,22 @@
+{
+  "name": "auto-okf-example-agent-session",
+  "version": "0.0.0",
+  "description": "Four agent writers co-author a knowledge bundle on one shared auto-okf vault while partitioned, then heal and dump it as an OKF v0.1 markdown bundle",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "main": "session.js",
+  "scripts": {
+    "start": "node session.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@auto-okf/core": "workspace:*",
+    "@auto-okf/faces": "workspace:*",
+    "@auto-okf/store": "workspace:*",
+    "b4a": "^1.8.1",
+    "hypercore-crypto": "^3.6.1"
+  }
+}
