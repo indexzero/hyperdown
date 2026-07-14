@@ -2,7 +2,7 @@
 
 **Purpose:** the only memory for the overnight build. A fresh/compacted
 supervisor reads this + `okf/SPEC.md` and resumes without questions.
-**Last updated:** 2026-07-14 (T9 landed matrix 12/12 x3 profiles; T10 dispatched).
+**Last updated:** 2026-07-14 (T10 landed G4-PASS; G6 dispatched).
 **SPEC-FINAL:** `okf/SPEC.md` v1.2 (SPEC-PASS, PR #20). Normative.
 **Intent contract:** `~/Git/indexzero/0x/slop/intent/autokf.intent.md`.
 **Milestone:** GitHub "auto-okf v1", issues #10–#19 (T1–T10) + residual-minors issue.
@@ -37,7 +37,8 @@ supervisor reads this + `okf/SPEC.md` and resumes without questions.
 | #24 | 13/okf-compact → 12/okf-faces | T6 epoch compact + I11 | open, verified 216/216 |
 | #25 | 14/okf-cli → 13/okf-compact | T7 cli | open, verified 225/225 |
 | #26 | 15/okf-examples → 14/okf-cli | T8 three examples | open, verified 228/228 |
-| #27 | 16/okf-harness → 15/okf-examples | T9 fault harness + matrix (S8/B1 converges!) | open, verified 228/228 + 12/12x3 |
+| #27 | 16/okf-harness → 15/okf-examples | T9 fault harness + matrix | open, verified 228/228 + 12/12x3 |
+| #29 | 17/okf-review → 16/okf-harness | T10 review: F1 blocker + F2 major FIXED; C1 major open | open, verified 234/234 + 12/12 |
 
 Merge-order note for the owner: land #20 before #21 (10/okf-core has the spec
 merged in). Supervisor does not merge.
@@ -89,17 +90,17 @@ merged in). Supervisor does not merge.
 
 ## Loop counters (ceiling 3 each)
 
-- T4-T9:done T10:1(in progress) T6:0 T7:0 T8:0 T9:0 T10:0
+- T4-T10:done. G6 next. Loop counters: all tasks 1 iteration (no remediation loops hit ceiling). T6:0 T7:0 T8:0 T9:0 T10:0
 
 ## Completion checklist (COMPLETE only when all have evidence paths here)
 
 - [x] T4 store green — PR #22, 191/191 (114 vault-ld + 62 core + 15 store), re-verified; core hold-hydration bug found+fixed (d68a9fc)   - [x] T5 faces green + OKF conformance — PR #23, 212/212; codex (gpt-5.5) cross-model review found+fixed 2 N3 deletion-safety bugs (8402a6f, 03a4a19); independent OKF v0.1 conformance checker green
 - [x] T6 I11 epoch cycle — PR #24, 216/216; byte+identity fidelity across a length-2 epoch chain, history-shed asserted positively, conflict-drain guardrail   - [x] T7 cli — PR #25, 225/225; auto-okf bin, all §13 commands + smoke tests   - [x] T8 three examples byte-identical — PR #26, 228/228; flagship agent-session + slop-archive + vlurp-library; AI-attribution footers stripped from commits (standing-rule enforcement)
-- [x] T9 matrix green x3 profiles — PR #27, 12/12 at clean/lossy/partitioned (36 runs) + 10-iter fuzz, zero divergence; S8 (vault-ld B1 revocation blocker) CONVERGES here (causal-not-positional revocation designed it out)   - [ ] T10 zero blockers, repros committed
-- [~] I1..I11 mapped: I1-I8,I10 (core suite) + I3 (store) + I9 (faces) + I11 (compact) all green; final tally at G6
+- [x] T9 matrix green x3 profiles — PR #27, 12/12 at clean/lossy/partitioned (36 runs) + 10-iter fuzz, zero divergence; S8 (vault-ld B1 revocation blocker) CONVERGES here (causal-not-positional revocation designed it out)   - [x] T10 zero open blockers, repros committed — PR #29, G4-PASS; F1 poison-op BLOCKER + F2 ingest-squat MAJOR both fixed+regression-guarded; C1 (soak memory/liveness) is an open MAJOR (not a determinism blocker) → BACKLOG for Charlie sign-off; P7 minor → issue #28
+- [x] I1..I11 each mapped to a passing test: I1-I8,I10 core + I3 store + I9 faces + I11 compact; harness exercises I1/I2/I5/I6/I7/I9/I10 multi-process
 - [ ] Independent clean-clone final verification, raw output on file
 - [ ] DELIVERY-OKF.md written (artifacts, waived majors, loop counters)
 
 ## Next action
 
-T10 DISPATCHED (harness-grounded adversarial code review + remediation, prompt-03 pattern) on branch `17/okf-review` off `16/okf-harness`, model=Opus 4.8. Audit: full suite 228/228 + harness clean 12/12 re-verified by supervisor. After T10 PASS: G6 independent clean-clone final verification, then DELIVERY-OKF.md -> COMPLETE.
+G6 DISPATCHED: independent clean-clone final verification of the stack tip (17/okf-review). Audit: full suite 234/234 + matrix clean 12/12 re-verified by supervisor; F1/F2 regressions green. C1 major recorded in BACKLOG for Charlie. After G6-PASS: write DELIVERY-OKF.md -> COMPLETE.
