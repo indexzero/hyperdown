@@ -10,9 +10,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\" \"okf/test/*.test.js\"",
-    "test:okf": "node --test \"okf/test/*.test.js\"",
-    "test:regressions": "node --test \"test/regressions/*.test.js\"",
+    "test": "node --test \"test/*.test.js\" \"okf/test/*.test.js\" \"okf/test/regressions/*.test.js\"",
+    "test:okf": "node --test \"okf/test/*.test.js\" \"okf/test/regressions/*.test.js\"",
+    "test:regressions": "node --test \"test/regressions/*.test.js\" \"okf/test/regressions/*.test.js\"",
+    "test:okf:soak": "node okf/harness/soak/soak.js",
     "test:harness:clean": "HARNESS_PROFILE=clean node --test --test-concurrency=1 \"harness/scenarios/*.test.js\"",
     "test:harness:lossy": "HARNESS_PROFILE=lossy node --test --test-concurrency=1 \"harness/scenarios/*.test.js\"",
     "test:harness:partitioned": "HARNESS_PROFILE=partitioned node --test --test-concurrency=1 \"harness/scenarios/*.test.js\"",
