@@ -60,6 +60,24 @@ importers:
         specifier: ^1.21.0
         version: 1.21.0
 
+  okf/store:
+    dependencies:
+      '@auto-okf/core':
+        specifier: workspace:*
+        version: link:../core
+      autobee:
+        specifier: ^1.0.10
+        version: 1.0.10(bare-events@2.9.1)(bare-url@2.4.5)
+      b4a:
+        specifier: ^1.8.1
+        version: 1.8.1
+      corestore:
+        specifier: ^7.11.0
+        version: 7.11.0(bare-url@2.4.5)
+      hyperswarm:
+        specifier: ^4.17.0
+        version: 4.17.0(bare-url@2.4.5)
+
   vault-ld/cli:
     dependencies:
       '@autovault-ld/core':

@@ -6,7 +6,7 @@ supervisor reads this + `okf/SPEC.md` and resumes without questions.
 **SPEC-FINAL:** `okf/SPEC.md` v1.2 (SPEC-PASS, PR #20). Normative.
 **Intent contract:** `~/Git/indexzero/0x/slop/intent/autokf.intent.md`.
 **Milestone:** GitHub "auto-okf v1", issues #10–#19 (T1–T10) + residual-minors issue.
-**Subagent model:** Claude Fable 5, pinned. If unavailable → record + BLOCK.
+**Subagent model:** T4 (in flight) = Claude Fable 5. **T5 onward = Claude Opus 4.8** (owner directive 2026-07-13, effective once T4 lands: model='opus' on every T5–T10 dispatch). If the pinned model is unavailable → record + BLOCK.
 
 ## Standing rules (every dispatch)
 
