@@ -84,6 +84,54 @@ importers:
         specifier: ^1.21.0
         version: 1.21.0
 
+  okf/examples/agent-session:
+    dependencies:
+      '@auto-okf/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@auto-okf/faces':
+        specifier: workspace:*
+        version: link:../../faces
+      '@auto-okf/store':
+        specifier: workspace:*
+        version: link:../../store
+      b4a:
+        specifier: ^1.8.1
+        version: 1.8.1
+      hypercore-crypto:
+        specifier: ^3.6.1
+        version: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
+
+  okf/examples/slop-archive:
+    dependencies:
+      '@auto-okf/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@auto-okf/faces':
+        specifier: workspace:*
+        version: link:../../faces
+      '@auto-okf/store':
+        specifier: workspace:*
+        version: link:../../store
+      hypercore-crypto:
+        specifier: ^3.6.1
+        version: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
+
+  okf/examples/vlurp-library:
+    dependencies:
+      '@auto-okf/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@auto-okf/faces':
+        specifier: workspace:*
+        version: link:../../faces
+      '@auto-okf/store':
+        specifier: workspace:*
+        version: link:../../store
+      hypercore-crypto:
+        specifier: ^3.6.1
+        version: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
+
   okf/faces:
     dependencies:
       '@auto-okf/core':
