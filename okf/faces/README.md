@@ -121,6 +121,49 @@ against the head revision:
 > `materialize → ingest → materialize` is a stable fixpoint for any body
 > that does not itself end in a blank line.
 
+### Epoch-cycle compaction (SPEC §10, the CouchDB homage)
+
+Byte reclamation in auto-okf is an **operator act via the hydrated face**,
+never an op — the SPEC §8 wire contract has no prune/compact/byte-destroying
+message at all. `compact` performs one **epoch cycle**: it materializes the
+live bundle, spins up a **fresh vault**, and ingests the bundle back with
+`_id` **adoption**. Live **state and identity survive byte-for-byte** — every
+live concept's `_id`, `type`, fields, tags, path and head body — while
+**history is shed by design**: old revisions, per-op attribution and clocks
+do not cross the boundary (this is what compaction *means*, and I11 asserts it
+positively). Tombstoned concepts are dropped; `_rev` and `log.md` necessarily
+re-derive in the new epoch (a head that was an *edit* re-roots at `base:null`,
+so its revHash changes even though the body text is identical — SPEC §14).
+
+```js
+import { initVault } from '@auto-okf/store'
+import { compact } from '@auto-okf/faces'
+
+const res = await compact(old, {
+  toDir: './epoch-face',   // where the hydrated OKF bundle is written
+  vaultDir: './vault-e1',  // storage dir for the fresh vault
+  initVault                // the @auto-okf/store factory (substrate is injected)
+})
+// res.vault           — the fresh, OPEN vault (the caller closes it)
+// res.epoch           — the fresh per-epoch corestore namespace id
+// res.predecessorPath — the OLD vault's dir; compact NEVER deletes it —
+//                       the operator archives or destroys it out-of-band
+// res.predecessorCheckpoint — { viewHash, writerLengths } anchoring the chain
+// res.conflictCopies  — [{ from, to, id }] carried across (only under force)
+// res.logPath         — the log/epoch.json entry written into the new vault
+await res.vault.close()
+```
+
+The fresh vault uses a **fresh writer keypair** (`@auto-okf/store` derives
+writer cores under a per-epoch namespace keyed by the predecessor fields —
+SPEC §10/N2), which is exactly why adopting the predecessor's mint-shaped ids
+never trips `mint-collision-risk`. compact **refuses without `force: true`**
+while any `flag/conflict` or `flag/pathcollision` is open (a live conflict must
+never be silently frozen into a new epoch); with `force`, carried-across
+conflicted copies are enumerated in the new vault's `log/epoch.json`. `_id`,
+`type`, fields, tags, path and head body cross the boundary intact; drained
+conflicts and resolved renames land as their settled state with no history.
+
 ## Install
 
 ```sh
@@ -133,6 +176,7 @@ npm install @auto-okf/faces
 | --- | --- |
 | `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root }` |
 | `createIngestWatcher(vault, dir, opts)` | start the watcher; `opts`: `confirmDelete`, `debounce`, `settle`, `watch:false` (drive `ingestFile`/`scan` manually) |
+| `compact(vault, opts)` | SPEC §10 epoch cycle; `opts`: `initVault` (required store factory), `toDir`, `vaultDir`, `force`, `keyPair`, `encryptionKey`, `sign`, `stageDir`; returns `{ vault, epoch, predecessorKey, predecessorPath, predecessorCheckpoint, conflictCopies, logPath, ingestOps }` |
 | `wanted(vault)` | `[{ path, count, referrers }]`, most-wanted first (from `wanted/` + `wantedrank/`) |
 | `readView(reader)` / `readLog(reader)` | the pure view→model projection materialize builds on |
 | `renderNote` / `parseNote` / `emitFrontmatter` | the canonical YAML note codec |
@@ -152,7 +196,11 @@ corestore on disk, no stubs): materialize byte-determinism across two runs,
 a replicated peer, and a from-scratch rebuild (I9); ingest minimality (one
 field edit → one op); the full `materialize → edit → ingest → materialize`
 round-trip; a rename + concurrent-edit merge across the round-trip; the N3
-human-file-preservation case; conflict-copy round-trip; and an
+human-file-preservation case; conflict-copy round-trip; the **I11 epoch-cycle**
+suite (`okf/test/i11-roundtrip.test.js`: a non-trivial bundle round-trips
+byte-identically modulo `_rev`/`log.md`, identity + state fidelity per live
+concept, history shed positively asserted, the conflict-drain guardrail, a
+length-2 epoch chain, and `--force` conflict-copy carry-across); and an
 **independent** OKF v0.1 conformance check (`okf/test/okf-conformance.js`,
 written from scratch against the OKF spec — it does not call this package's
 emitter).
