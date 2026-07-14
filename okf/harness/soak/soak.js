@@ -60,17 +60,14 @@ console.log(
 console.log(`[soak] csv: ${csv}`)
 
 // w0 seeds the shared subjects; every writer then mutates them concurrently.
+// w0 mints them (no squat), so the op tag IS the concept id, and after
+// quiesce every peer's apply has folded the same ids.
 const ids = new Map()
 for (const s of SUBJECTS) {
   const res = await writers[0].call('createConcept', s, 'note')
   ids.set(s, res.tag)
 }
 await ctl.quiesce(writers)
-// every writer resolves the shared ids from its own converged view
-for (const s of SUBJECTS) {
-  const id = await writers[0].val('path/' + s)
-  ids.set(s, id)
-}
 
 const t0 = Date.now()
 const deadline = t0 + MINUTES * 60000
