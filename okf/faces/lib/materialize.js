@@ -248,6 +248,11 @@ export async function materialize(vault, dir, opts = {}) {
 
   // ---- 6. removal of this run's own prior outputs (§9) ----
   const prunableDirs = new Set()
+  // Manifest entries this run retired: a file we unlinked, or one already gone
+  // from disk. They MUST be dropped from the saved manifest — a stale entry
+  // pointing at a vanished file lets a LATER run delete a human file that
+  // happens to recreate those exact bytes at that path (N3).
+  const droppedFromManifest = new Set()
   for (const rel of Object.keys(manifest.files)) {
     if (planned.has(rel)) continue
     await withPathLock(registry, rel, async () => {
@@ -258,10 +263,14 @@ export async function materialize(vault, dir, opts = {}) {
         return
       }
       const onDisk = await hashFile(abs)
-      if (onDisk === null) return // already gone; drop from manifest
+      if (onDisk === null) {
+        droppedFromManifest.add(rel) // already gone; drop from manifest
+        return
+      }
       if (forceMirror || onDisk === manifest.files[rel]) {
         await atomicUnlink(realRoot, rel)
         report.removed.push(rel)
+        droppedFromManifest.add(rel)
         const d = dirOf(rel)
         if (d) prunableDirs.add(d)
       } else if (isReservedFile(rel)) {
@@ -302,7 +311,11 @@ export async function materialize(vault, dir, opts = {}) {
   // ---- 7. merge-save the manifest under its lock (§9 watcher coordination) ----
   await withPathLock(registry, MANIFEST_FILE, async () => {
     const current = await loadManifest(realRoot)
-    await saveManifest(realRoot, { files: { ...current.files, ...next.files } })
+    const merged = { ...current.files, ...next.files }
+    // Drop retired entries LAST so they win over any stale value re-merged from
+    // `current` (this run's own reconciliation is authoritative for them).
+    for (const rel of droppedFromManifest) delete merged[rel]
+    await saveManifest(realRoot, { files: merged })
   })
 
   report.ok = report.pendingIngest.length === 0
