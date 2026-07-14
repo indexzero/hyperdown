@@ -21,10 +21,13 @@
   },
   "devDependencies": {
     "@auto-okf/core": "workspace:*",
+    "@auto-okf/faces": "workspace:*",
+    "@auto-okf/store": "workspace:*",
     "@autovault-ld/cli": "workspace:*",
     "@autovault-ld/core": "workspace:*",
     "@autovault-ld/faces": "workspace:*",
     "@autovault-ld/store": "workspace:*",
-    "n3": "^2.1.1"
+    "n3": "^2.1.1",
+    "yaml": "^2.8.0"
   }
 }

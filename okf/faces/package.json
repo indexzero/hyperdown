@@ -1,0 +1,23 @@
+{
+  "name": "@auto-okf/faces",
+  "version": "0.0.0",
+  "description": "auto-okf generated faces: byte-deterministic OKF v0.1 bundle materialization (concepts + index.md + log.md), a minimal-op human-edit ingest watcher, and the wanted/ ranked demand index",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./materialize": "./lib/materialize.js",
+    "./ingest": "./lib/ingest.js",
+    "./wanted": "./lib/wanted.js",
+    "./yaml": "./lib/yaml.js",
+    "./view": "./lib/view.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@auto-okf/core": "workspace:*",
+    "yaml": "^2.8.0"
+  }
+}

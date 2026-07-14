@@ -11,6 +11,12 @@ importers:
       '@auto-okf/core':
         specifier: workspace:*
         version: link:okf/core
+      '@auto-okf/faces':
+        specifier: workspace:*
+        version: link:okf/faces
+      '@auto-okf/store':
+        specifier: workspace:*
+        version: link:okf/store
       '@autovault-ld/cli':
         specifier: workspace:*
         version: link:vault-ld/cli
@@ -26,6 +32,9 @@ importers:
       n3:
         specifier: ^2.1.1
         version: 2.1.1
+      yaml:
+        specifier: ^2.8.0
+        version: 2.9.0
 
   examples/recipe-book:
     dependencies:
@@ -59,6 +68,15 @@ importers:
       hyperschema:
         specifier: ^1.21.0
         version: 1.21.0
+
+  okf/faces:
+    dependencies:
+      '@auto-okf/core':
+        specifier: workspace:*
+        version: link:../core
+      yaml:
+        specifier: ^2.8.0
+        version: 2.9.0
 
   okf/store:
     dependencies:
