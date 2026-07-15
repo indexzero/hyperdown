@@ -14,8 +14,15 @@ corrected to an ingest watcher event, not a view row (no core op writes it —
 documented (§9); the epoch `log/` entry clarified as a filesystem artifact
 and the compaction `_rev`-stripped staging step documented (§10); a "Known
 limitations (v1)" note added (C1 soak scale limit, P7 double-conflict-suffix
-ingest, P4 empty-`type` ingest); node:test mandate and autobee@1.0.10
-verification pin confirmed. v1.2 applies adversarial review round 2
+ingest, P4 empty-`type` ingest, plus the live-watcher directory-move
+data-preservation gap, issue #30); node:test mandate and autobee@1.0.10
+verification pin confirmed. A source-driven review pass also corrected §7's
+directory-move deferral rationale — a category error citing the TPDS-2021
+tree-move CRDT (which solves cycles in explicit parent-pointer trees OKF does
+not have); the real v2 path is an atomic multi-concept path rewrite
+(`MoveSubtree` batch via `view.write()`) with read-atomic/RAMP transactions
+as the prior art (source: `sslop/041/FINDINGS.md`). v1.2 applies adversarial
+review round 2
 (`orchestration/results/OKF-SPEC-REVIEW-2.md`): majors N1–N5 fixed
 (squat-proof minting, epoch key freshness, manifest-gated mirror
 reconciliation, apply-time `empty-type` rejection, conflict-copy ingest
@@ -366,9 +373,21 @@ saga is the cautionary tale). The rules are frozen:
   time before any file write; a violation aborts that file's emission and
   is reported on the CLI only (it is unreachable if apply's path
   validation is correct, and is a bug, not state).
-- **Subtree/directory moves do not exist in v1** (concurrent-move cycle
-  problem; TPDS 2021 is the documented v2 path). A directory "move" is N
-  per-concept `SetPath` ops with no atomicity claim.
+- **Subtree/directory moves do not exist in v1.** OKF has no directory
+  object and no parent pointers: `path` is a flat absolute string on a
+  stable `_id` (an LWW register, §7), and a "directory" is only a shared
+  path prefix. A directory move is therefore expressible as N independent
+  per-concept `SetPath` ops (prefix rewrite), each a plain LWW rename with
+  the usual §7 collision/clobber resolution — no cycle can arise, because
+  there is no mutable child→parent edge to redirect (the concurrent-move
+  cycle problem of Kleppmann et al., IEEE TPDS 2021, applies only to
+  explicit parent-pointer trees with a reparent op, which OKF does not
+  have). What v1 lacks is atomicity: the N ops interleave, so a face may
+  observe a half-moved directory. The v2 path is an atomic multi-concept
+  path rewrite — a single batch op (`MoveSubtree { fromPrefix, toPrefix }`)
+  expanded deterministically within one apply step (autobee `view.write()`
+  batch); the relevant prior art is multi-key / read-atomic transactions,
+  not replicated-tree move CRDTs.
 
 ## 8. Governance and the append-only guarantee
 
@@ -678,6 +697,14 @@ are honest scale/edge caveats recorded by the delivery (`DELIVERY-OKF.md`,
   `type` register at the op level (§5, reason `empty-type`); the ingest edge
   around an empty-string `type` in an authored file is a documented
   minor.
+- **Directory moves through the live watcher (ingest-layer data-preservation
+  gap, GitHub issue #30).** Beyond v1's lack of move atomicity (§7), the live
+  `fs.watch` ingest watcher mishandles directory moves: on macOS the move
+  events can be missed (leaving a duplicated bundle), and a delete-guard-on
+  event ordering can tombstone + unlink moved files before their `SetPath`
+  lands (a `SetPath` on a tombstone is a silent no-op). The safe path for a
+  directory move is a one-shot reconciliation — `scan()` / `auto-okf ingest`
+  with the delete guard off — not the live watcher.
 
 ## 13. Deliverables
 
