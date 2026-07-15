@@ -1,8 +1,21 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.2 (2026-07-13). RFC 2119
+**Status:** Normative build instruction, v1.3 (2026-07-15). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.2 applies adversarial review round 2
+**Changelog:** v1.3 upstreams the auto-okf delivery + deviation learnings
+(sources: `DELIVERY-OKF.md`, `DEVIATIONS.md`) so the spec matches delivered
+reality: revHash length prefix corrected to u64 BE (§5); uniform writer
+weight corrected to 2 (§8); optimistic onboarding resolved as store-side
+DAG-level `host.ackWriter` with `hold/` full-payload folding — acked nodes
+are NOT re-delivered, so no seq-dedup branch (§8); the per-writer seen-count
+ordinal resolution settled against autobee@1.0.10 (§3); `flag/copydetect`
+corrected to an ingest watcher event, not a view row (no core op writes it —
+§4, §9); conflicted-copy face deletion skip and deferred `_id` write-back
+documented (§9); the epoch `log/` entry clarified as a filesystem artifact
+and the compaction `_rev`-stripped staging step documented (§10); a "Known
+limitations (v1)" note added (C1 soak scale limit, P7 double-conflict-suffix
+ingest, P4 empty-`type` ingest); node:test mandate and autobee@1.0.10
+verification pin confirmed. v1.2 applies adversarial review round 2
 (`orchestration/results/OKF-SPEC-REVIEW-2.md`): majors N1–N5 fixed
 (squat-proof minting, epoch key freshness, manifest-gated mirror
 reconciliation, apply-time `empty-type` rejection, conflict-copy ingest
@@ -51,7 +64,11 @@ paths.
   bundle structure, concept documents, frontmatter, cross-linking, index/log
   files, conformance. Normative for everything materialize emits.
 - autobee README **and source** (`https://github.com/holepunchto/autobee`,
-  read `index.js`): constructor `new Autobee(store, key, { apply, open,
+  read `index.js`) — the delivered stack verified the contract below against
+  **autobee@1.0.10** (standalone multiwriter Hyperbee on hyperbee2 +
+  hypercore 11, no autobase dependency), and the port mappings recorded in
+  `DEVIATIONS.md` are pinned to that version: constructor
+  `new Autobee(store, key, { apply, open,
   close, update, encryptionKey, encrypted, keyPair, optimistic })`; apply
   receives `(nodes, view, host)`, node = `{key, value, length, optimistic}`;
   host: `addWriter/removeWriter/ackWriter/interrupt/createAnchor/genesis`;
@@ -111,9 +128,15 @@ SetWriterPolicy { key, namespacePrefixes, rateCeiling }
   other ops'* tags/hashes, and those are citations, not
   self-identifications. The per-writer ordinal fallback is the view-kept
   seen-count (top-level `seen/` family, incremented for every node
-  regardless of disposition — vault-ld §8.2/§8.4 ancestry; record the
-  resolution in DEVIATIONS.md after checking what autobee's node actually
-  exposes).
+  regardless of disposition — vault-ld §8.2/§8.4 ancestry). **Resolved
+  (delivery):** although autobee@1.0.10 does expose a per-node `length`,
+  apply derives position from the view-kept `seen/` count rather than any
+  transport-exposed seq — core is transport-agnostic, and §8's unforgeable-
+  position rule (`seqAtRemoval`, `forged-clock`) MUST bind to the same
+  ordinal apply uses for `flag/rejected`/`hold/` keys. Under autobee's
+  per-writer FIFO delivery the seen-count equals the node seq; a future
+  substrate exposing a stable per-writer index would be a new DEVIATIONS.md
+  entry.
 - Strings are NFC-normalized before keying, hashing, or comparison (§3.1 of
   the vault-ld spec is copied semantics; `canonical.js` is the copied code).
 - Limits, fixed check order, single recorded reason. Pre-decode: op ≤
@@ -148,7 +171,9 @@ wantedrank/<inv-count>/<path>   derived rank index, rewritten on referrer-count
                                 zero-padded decimal, MAX = 10^16 − 1, so an
                                 ascending scan yields most-wanted first)
 log/<ordinal>                   append-only narration records -> log.md (§9)
-flag/conflict|clobber|staletag|pathcollision|writeafterdelete|undelete|rejected|optimistic|squat|copydetect/...
+flag/conflict|clobber|staletag|pathcollision|writeafterdelete|undelete|rejected|optimistic|squat/...
+                                (no `copydetect` family: no op writes one —
+                                copy-splits surface as an ingest event, §9)
 seen/<writerKey>                per-writer ordinal (bookkeeping)
 gov/writer/<key>                { indexer, namespacePrefixes, rateCeiling }
 gov/removed/<key>               revocation clock + seqAtRemoval (§8)
@@ -165,8 +190,8 @@ Flag lifecycle: `conflict` clears only via `ResolveConflict` (§5);
 own subsequent `SetPath`, or the competing holder vacating by rename,
 deletion, or its own collision loss (§7; apply recomputes this on the same
 events as §9's late-binding link resolution); `clobber`, `staletag`,
-`writeafterdelete`, `undelete`, `rejected`, `optimistic`, `squat`, and
-`copydetect` are permanent audit records — no op or rule clears them.
+`writeafterdelete`, `undelete`, `rejected`, `optimistic`, and `squat` are
+permanent audit records — no op or rule clears them.
 
 ## 5. Merge semantics: fixed defaults
 
@@ -194,10 +219,13 @@ saga is the cautionary tale). The rules are frozen:
   are never fields (§6; ingest obligations in §9).
 - **Bodies**: every `SetBody` creates an immutable revision keyed by
   `revHash = SHA-256(len(base)||base||len(text)||utf8(NFC(text)))` (copied
-  `revhash.js`), where `len()` is u32 LE and a null base encodes as
-  `len(0)` with zero bytes (distinct from any real hash) — this normative
-  text mirrors the copied code; on discrepancy the copied code wins and
-  DEVIATIONS.md records it. Head pointer is LWW under linearization. Two
+  `revhash.js`), where `len()` is an **8-byte big-endian** length prefix
+  (u64 BE) and a null base encodes as `len(0)` with eight zero bytes
+  (distinct from any real hash) — this normative text mirrors the copied
+  code; on discrepancy the copied code wins and DEVIATIONS.md records it.
+  (Delivery correction: earlier drafts said "u32 LE"; the copied
+  `revhash.js` uses u64 BE over the 64-char lowercase-hex base string, so
+  the code — and this corrected text — wins.) Head pointer is LWW under linearization. Two
   revisions citing the same **non-null** base are true siblings: both
   retained, head deterministic, exactly one `flag/conflict/<id>/<a>/<b>`,
   cleared only by `ResolveConflict`. A null base is "no base cited": no
@@ -375,21 +403,39 @@ saga is the cautionary tale). The rules are frozen:
   to the (bounded) window of ops at `seq <= seqAtRemoval` still in flight.
   Additionally, apply rejects any op whose claimed self-clock entry does
   not equal its actual seq (reason `forged-clock`).
-- Writers are admitted with an **explicit** uniform weight:
-  `host.addWriter(key, { isIndexer: op.indexer, weight: 1 })` — never rely
-  on autobee's defaults, which are `isIndexer ? 2 : 1` and would mix
-  weights the moment a non-indexer is admitted (vault-ld finding: 1.0.x
-  topo comparators diverge under unequal concurrent weights).
+- Writers are admitted with an **explicit** uniform weight. The substance
+  is *uniform* weight, not any particular value; the delivered value is
+  **2**, pinning `host.addWriter(key, { isIndexer: op.indexer, weight: 2 })`
+  on every admission. **Resolved (delivery):** autobee@1.0.10's GENESIS
+  auto-add is uncontrollable from apply and always uses weight 2, so a
+  literal `weight: 1` for later writers would re-create exactly the
+  mixed-weight condition this rule exists to prevent (1.0.x topo
+  comparators diverge under unequal concurrent weights). Pinning every
+  writer at the genesis value 2 keeps all weights uniform. Side effect:
+  autobee's cosmetic `isIndexer` getter (`weight === 2`) then reads true
+  for all writers — immaterial, because §8 governance authority is decided
+  from `gov/` by core, never from autobee writer state.
 - Optimistic onboarding: construct with explicit `optimistic: true`.
-  Unacked optimistic ops are held (`hold/`, full payload). **The ack is the
-  linearization of an indexer-authored `AddWriter` op naming the held
-  writer's key**; at that position apply calls `host.ackWriter(key)` and
-  folds `hold/<key>/*` in seq order at the ack's linearized position, then
-  deletes the holds. Before building, verify against autobee source
-  whether acknowledged optimistic nodes are re-delivered to apply; if they
-  are, `hold/` stores only seqs (a dedup guard), not payloads, and folding
-  is replaced by dedup — record which in DEVIATIONS.md with the source
-  line. `H_max = 512` held ops per writer; op 513+ from an unacked writer
+  Unacked optimistic ops are held (`hold/`, full decoded payload). **The
+  view-effect ack is the linearization of an indexer-authored `AddWriter`
+  op naming the held writer's key**; at that position apply folds
+  `hold/<key>/*` in seq order at the ack's linearized position, then
+  deletes the holds. **Resolved (delivery):** acknowledged optimistic nodes
+  are NOT re-delivered to apply — autobee@1.0.10 applies an unacked
+  writer's optimistic batch exactly once at its linearized position, and a
+  later `host.ackWriter()` flips writer state without replaying prior nodes
+  — so `hold/` stores the **full decoded payload** and the fold (never a
+  seq-dedup guard) is the mechanism. Two-level ack: autobee additionally
+  requires the optimistic batch to anchor in its system during apply or it
+  is rolled back and the writer dropped, so the **store's apply wrapper
+  calls `host.ackWriter(node.key)` at the DAG level for every
+  optimistic-flagged node** (deterministic — the flag is oplog-encoded, so
+  every peer makes the same call). That DAG-level ack only keeps the node
+  in the substrate; core's `hold/` buffer remains the sole VIEW-effect gate,
+  so effects still land at the in-log `AddWriter`'s linearized position and
+  peers converge to identical views even when the raw optimistic node
+  linearized at different positions. `H_max = 512` held ops per writer;
+  op 513+ from an unacked writer
   is rejected (`flag/rejected`, reason `hold-overflow`). Held ops are
   rate-checked at hold time; optimistic ops rejected at fold time write
   `flag/optimistic/<writerKey>/<seq>`. `RemoveWriter` of an unacked writer
@@ -466,9 +512,19 @@ saga is the cautionary tale). The rules are frozen:
   `_id` seen at two paths → copy detection is deterministic: the file at
   the `_id`'s current view path (if present) is the original; otherwise
   the casefolded-lexicographically-first path is; every other file is a
-  copy (mint fresh via `CreateConcept`, recording
-  `flag/copydetect/<new-id>/<original-id>` — §4, permanent audit).
-  Missing `_id` → mint and write back into the file; `_id` present but
+  copy (mint fresh via `CreateConcept`). **Delivered:** the split is
+  surfaced as a `'copy'` watcher event, **not** a `flag/copydetect` view
+  row — the 12-op wire contract (§3) has no op that writes a `copydetect`
+  flag, and recording one would require a new core op (out of v1 scope).
+  The identity outcome is exactly as designed: the copy gets a fresh `_id`,
+  the original keeps its path.
+  Missing `_id` → mint (`CreateConcept`); the minted `_id` is **not**
+  rewritten into the just-read file by the watcher (an echo hazard
+  mid-settle) — it lands on the next `materialize`, which regenerates the
+  file with the deterministic `_id`/`_rev` stamped in (bytes match the
+  emission manifest, so the overwrite is permitted, not blocked as
+  pending-ingest). Net effect is identical: the file ends up carrying its
+  `_id`. `_id` present but
   unknown to this vault → **adopt** it (`CreateConcept` with the supplied
   id, subject to the §6 seen-id and mint-collision rules) — the
   epoch-cycle contract (§10).
@@ -482,7 +538,14 @@ saga is the cautionary tale). The rules are frozen:
   path — state, identity, and collision status all carry across. §10's
   `--force` enumeration lists old conflict path → new conflict path.
 - File deleted on disk → `DeleteConcept`, behind a confirmation guard
-  (default on).
+  (default on). **Exception (delivered):** a deleted file whose terminal
+  component matches `\.conflict-[0-9a-f]{8,}$` is **not** a
+  `DeleteConcept` — a conflicted copy is a transient materialized face, not
+  the concept's canonical location, so the watcher skips deletion (emitting
+  a `'delete-skipped'` narration, reason `conflict-copy`); otherwise
+  removing a loser's face would delete a live concept the next
+  `materialize` immediately re-emits. Deleting the winner's canonical file
+  still deletes the concept behind the confirmation guard.
 - Links: standard markdown links per OKF §5 (absolute bundle-relative
   preferred); extraction feeds `link/`, `bl/`, and `wanted/`. **A link
   whose target path does not resolve goes to `wanted/` — the ranked demand
@@ -523,6 +586,17 @@ Byte reclamation is an **operator act via the hydrated face**, never an op:
    mint-shaped ids is rejected `mint-collision-risk` and I11 is
    unachievable. `init` MUST enforce this by deriving writer cores under
    a per-epoch namespace recorded in vault metadata.
+   **Delivered — staging step:** a materialized bundle cannot be ingested
+   in place. Its emission manifest makes the ingest watcher skip every
+   file as a self-echo (zero ops), and a materialized `_rev` cites a base
+   absent from the fresh vault (the head flags `flag/conflict` and
+   materializes bodyless). compact therefore copies each concept note into
+   a **sibling** staging dir (a nested dir would be cleared by
+   `new Corestore(vaultDir)` on init) with its `_rev` line **stripped**, so
+   each head re-roots at `base: null` — the only flag-free fresh start
+   (§5) — the body survives, and `_rev` re-derives (§14). Once a bundle has
+   cycled once, every body is already `base: null`, so further cycles
+   preserve `_rev` too.
 4. New vault metadata records `{ predecessorKey, predecessorCheckpoint }` —
    the epoch chain. `predecessorCheckpoint = { viewHash: <the I2 full-range
    hash>, writerLengths: [[key, len], ...] }`, signed by the operator key
@@ -537,9 +611,17 @@ command MUST refuse (without `--force`) while `flag/conflict` **or
 the new vault's epoch `log/` entry every conflicted copy carried across,
 old conflict path → new conflict path (carry-across works because ingest
 strips the conflict suffix and lets the collision re-manifest — §9
-conflict-copy awareness). It MUST record an epoch entry in the new
-vault's `log/`. State- and identity-fidelity across a cycle is an
-acceptance criterion (§14).
+conflict-copy awareness; because `_id` and path both survive, a carried
+copy re-manifests at the **same** path, so these enumerations legitimately
+record `from === to`). It MUST record an epoch entry in the new vault's
+`log/`. **Delivered:** the wire contract has no epoch op, so this entry
+cannot be a view `log/<ordinal>` record — it is written as a filesystem
+artifact `<vaultDir>/log/epoch.json`
+(`{ kind:'epoch', epoch, predecessorKey, predecessorCheckpoint,
+conflictCopies, at, note }`); it satisfies "an entry in the new vault's
+`log/`" literally and does not appear in the regenerated `log.md` (§14
+excludes `log.md` from I11 fidelity). State- and identity-fidelity across
+a cycle is an acceptance criterion (§14).
 
 ## 11. Invariants (the test suite maps to these)
 
@@ -576,6 +658,27 @@ No RDF/Turtle/SPARQL. No per-key merge policy. No subtree-move atomicity.
 No text CRDT for bodies. No HTTP API. No vlurp codebase changes. No
 `viz.html`.
 
+**Known limitations (v1)** — determinism (I1/I2/I10) holds throughout; these
+are honest scale/edge caveats recorded by the delivery (`DELIVERY-OKF.md`,
+`orchestration/BACKLOG.md`), not correctness gaps:
+
+- **C1 — soak memory/liveness under sustained flood (scale limit, not a
+  determinism issue).** Under a ~22-min sustained lossy flood with
+  backpressure on, RSS grew without plateau (~3.1 GB) and a lagging peer
+  failed to converge inside a 5-min heal window. Liveness/throughput is the
+  affected axis — caught-up peers stay byte-identical, no divergent view
+  hash, FDs flat, no crash. It is substrate-entangled (autobee under flood);
+  the okf-attributable lead is uncoalesced OR-set add-tokens (§5 `tags`). A
+  fix is architectural and risks determinism on green code, so it is
+  deliberately deferred; sign-off pending.
+- **P7 — double `.conflict-<hex>` suffix ingest.** A file carrying two
+  stacked `.conflict-<hex>` suffixes lands in a permanent pending-ingest
+  state (GitHub issue #28).
+- **P4 — empty-string `type` on ingest.** Apply already rejects an empty
+  `type` register at the op level (§5, reason `empty-type`); the ingest edge
+  around an empty-string `type` in an authored file is a documented
+  minor.
+
 ## 13. Deliverables
 
 ```
@@ -597,7 +700,10 @@ examples/slop-archive/     durable LLM-output archive (append-only shown off)
 examples/vlurp-library/    one script: vlurpfile → staging → _id-stamped bundle
 ```
 
-Node 20+, plain JS, pnpm workspace (`vault-ld/*` + `okf/*`), node:test only,
+Node 20+, plain JS, pnpm workspace (`vault-ld/*` + `okf/*`), **node:test
+only** (owner mandate — the Node core test runner `node --test`; the
+Holepunch brittle/bare convention is not used, and library packages import
+no test runner, so substrate compatibility is unaffected),
 usage-first READMEs per package plus example READMEs. Package names
 `auto-okf` (root) and `@auto-okf/{core,store,faces,cli}`.
 
