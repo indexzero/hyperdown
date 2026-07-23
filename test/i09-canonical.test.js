@@ -2,7 +2,7 @@
 // converged peers emit identical bytes because stored forms are canonical.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { canonical, keyspace as K } from '../packages/core/index.js'
+import { canonical, keyspace as K } from '../vault-ld/core/index.js'
 import { run, n, GEN, makeTag, defineLwwTerm } from './helpers.js'
 
 const {

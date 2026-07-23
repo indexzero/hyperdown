@@ -10,7 +10,7 @@
 // setBody exceeded the harness's 120s command budget once a subject held
 // ~200 revisions, killing two soak runs). See CODE-REVIEW.md finding M1.
 //
-// The fix (packages/core/lib/apply.js opSetBody):
+// The fix (vault-ld/core/lib/apply.js opSetBody):
 //   1. same-base concurrency is found via the base-keyed bookkeeping index
 //      revbybase/<s>/<base>/<rev> in O(matches), not a full-revision scan;
 //   2. a null base is "no base cited": independent null-base creations are
@@ -21,7 +21,7 @@
 // is deterministic, and a true same-base pair yields exactly one flag.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createApply, encodeOp, revHash, MemView } from '../../packages/core/index.js'
+import { createApply, encodeOp, revHash, MemView } from '../../vault-ld/core/index.js'
 import { run, n, addWriters, K, GEN, W1, W2 } from '../helpers.js'
 
 const W = 'aa'.repeat(32) // genesis writer of the manual folds below

@@ -24,7 +24,7 @@ and the queryable view are generated faces of that log.
 ## Install
 
 ```sh
-pnpm install            # workspace: packages/{core,store,faces,cli} + examples
+pnpm install            # workspace: vault-ld/{core,store,faces,cli} + examples
 ```
 
 Node.js ≥ 20, [pnpm](https://pnpm.io). Per package:
@@ -95,10 +95,10 @@ linearization + in-log mutable context), not a new merge theory.
 
 | package | entry point | what it is |
 | --- | --- | --- |
-| [`@autovault-ld/core`](./packages/core) | `import { createApply, encodeOp, keyspace, canonical, revHash } from '@autovault-ld/core'` | the op wire contract, the pure deterministic `apply`, the view keyspace, canonical forms |
-| [`@autovault-ld/store`](./packages/store) | `import { Vault } from '@autovault-ld/store'` | vault lifecycle on autobee: op emission, writer governance plumbing, metadata pinning, hyperswarm replication |
-| [`@autovault-ld/faces`](./packages/faces) | `import { materialize, createIngestWatcher, exportTurtle } from '@autovault-ld/faces'` | the generated faces: Obsidian-compatible vault, human-edit ingest watcher, deterministic Turtle export |
-| [`@autovault-ld/cli`](./packages/cli) | `autovault-ld init/join/add-writer/remove-writer/materialize/export/flags/watch` | thin command-line veneer over the three packages |
+| [`@autovault-ld/core`](./vault-ld/core) | `import { createApply, encodeOp, keyspace, canonical, revHash } from '@autovault-ld/core'` | the op wire contract, the pure deterministic `apply`, the view keyspace, canonical forms |
+| [`@autovault-ld/store`](./vault-ld/store) | `import { Vault } from '@autovault-ld/store'` | vault lifecycle on autobee: op emission, writer governance plumbing, metadata pinning, hyperswarm replication |
+| [`@autovault-ld/faces`](./vault-ld/faces) | `import { materialize, createIngestWatcher, exportTurtle } from '@autovault-ld/faces'` | the generated faces: Obsidian-compatible vault, human-edit ingest watcher, deterministic Turtle export |
+| [`@autovault-ld/cli`](./vault-ld/cli) | `autovault-ld init/join/add-writer/remove-writer/materialize/export/flags/watch` | thin command-line veneer over the three packages |
 
 Each package README is usage-first with the full API surface.
 

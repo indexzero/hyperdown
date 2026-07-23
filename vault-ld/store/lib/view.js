@@ -1,6 +1,6 @@
 // View adapter (SPEC-FINAL §13 store wiring): presents the classic
 // get/put/del/createReadStream surface @autovault-ld/core's apply expects
-// (documented in packages/core/README.md, "View-interface contract") over
+// (documented in vault-ld/core/README.md, "View-interface contract") over
 // the hyperbee2-flavored view autobee hands apply.
 //
 // hyperbee2 surface, verified against the installed source

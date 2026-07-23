@@ -6,8 +6,8 @@ import { mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export { Vault, createMetadata, metadataHash, canonicalMetadataBytes, loadMetadata, viewHash, METADATA_FILE } from '../packages/store/index.js'
-export { keyspace as K, canonical } from '../packages/core/index.js'
+export { Vault, createMetadata, metadataHash, canonicalMetadataBytes, loadMetadata, viewHash, METADATA_FILE } from '../vault-ld/store/index.js'
+export { keyspace as K, canonical } from '../vault-ld/core/index.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const RUN = `run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`

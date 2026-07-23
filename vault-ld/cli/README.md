@@ -36,7 +36,7 @@ ingested Home.md: set-field
 ## Install
 
 ```sh
-pnpm add @autovault-ld/cli    # or run the repo-local bin: packages/cli/bin/autovault-ld.js
+pnpm add @autovault-ld/cli    # or run the repo-local bin: vault-ld/cli/bin/autovault-ld.js
 ```
 
 ## Commands

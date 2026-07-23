@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { run, n, rawNode, addWriters, defineSetTerm, defineLwwTerm, K, GEN, W1, W2, makeTag, hex } from './helpers.js'
-import { tagHex } from '../packages/core/index.js'
+import { tagHex } from '../vault-ld/core/index.js'
 
 test('I4: unmapped writes are preserved verbatim and flagged', async () => {
   const { view } = await run([

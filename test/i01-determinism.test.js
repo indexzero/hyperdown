@@ -26,7 +26,7 @@ test('I1: identical logs produce bit-identical views', async () => {
 })
 
 test('I1: core sources contain no wall clock, randomness, or peer-local reads', async () => {
-  const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'packages', 'core', 'lib')
+  const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'vault-ld', 'core', 'lib')
   for (const file of await readdir(dir)) {
     const src = await readFile(path.join(dir, file), 'utf8')
     // strip comments before scanning (the ban is on executable code)

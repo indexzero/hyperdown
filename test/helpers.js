@@ -6,7 +6,7 @@ import {
   makeTag,
   MemView,
   keyspace as K
-} from '../packages/core/index.js'
+} from '../vault-ld/core/index.js'
 
 export { K, makeTag, encodeOp }
 
@@ -121,7 +121,7 @@ export async function checkIndexCoherence(view) {
   const subjectIri = (s) =>
     all[K.nBase(s)] ? all[K.nBase(s)].iri : 'vault://data/' + encodeURIComponent(s)
 
-  const { canonical } = await import('../packages/core/index.js')
+  const { canonical } = await import('../vault-ld/core/index.js')
   const expected = new Set()
   for (const s of subjects) {
     if (all[K.nDeleted(s)] !== undefined) continue

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { Vault, K, tmpDir, until } from './store-helpers.js'
 
-const storeRequire = createRequire(new URL('../packages/store/index.js', import.meta.url))
+const storeRequire = createRequire(new URL('../vault-ld/store/index.js', import.meta.url))
 const Hyperswarm = storeRequire('hyperswarm')
 const createTestnet = createRequire(storeRequire.resolve('hyperswarm'))('hyperdht/testnet')
 

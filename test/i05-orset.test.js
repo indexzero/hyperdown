@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { run, n, addWriters, defineSetTerm, K, GEN, W1, W2, makeTag } from './helpers.js'
-import { tagHex } from '../packages/core/index.js'
+import { tagHex } from '../vault-ld/core/index.js'
 
 test('I5: concurrent add and remove of the same member converge to present', async () => {
   const tA = makeTag(W1, 2)

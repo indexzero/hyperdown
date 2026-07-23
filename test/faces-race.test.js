@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Vault, K, faces, tmpDir, seedVault, treeHash, readText, captureOps, until, sleep } from './faces-helpers.js'
-import { rootRegistry, withPathLock } from '../packages/faces/lib/fsatomic.js'
+import { rootRegistry, withPathLock } from '../vault-ld/faces/lib/fsatomic.js'
 
 const { materialize, createIngestWatcher } = faces
 
