@@ -1,8 +1,16 @@
 # DELIVERY — Vault-LD on Autobee
 
-Pipeline completed 2026-07-04 under `prompts/04-supervisor-prompt.md`, driven
-by `/goal`. Final verification: `orchestration/results/final-verification.md`
-(**VERDICT: FINAL-PASS**, independent clean clone).
+## Bottom line
+
+**Shipped.** Every gate passed, verified from an independent clean clone (G6
+FINAL-PASS): the invariant suite is green, the multi-process harness matrix is
+green at all fault profiles, and two converged peers emit byte-identical
+faces. No [major](vault-ld/GLOSSARY.md) is waived; the open items are minors,
+batched. Everything below defends those sentences.
+
+The pipeline completed 2026-07-04 under `prompts/04-supervisor-prompt.md`,
+driven by `/goal`. Final verification:
+`orchestration/results/final-verification.md` (independent clean clone).
 
 ## What was delivered
 
