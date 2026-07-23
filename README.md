@@ -21,6 +21,14 @@ RDF. Every field write, link, schema definition, and governance decision is
 an op in a shared multi-writer log; the Markdown vault, the Turtle export,
 and the queryable view are generated faces of that log.
 
+This repository holds two systems on one substrate. **Vault-LD** (this
+README, `vault-ld/`) is the RDF/linked-data system above. **auto-okf**
+(`okf/`) is a lighter sibling — plain Open Knowledge Format bundles, no RDF —
+with its own [README](okf/README.md). Each has a glossary that fixes its
+vocabulary: [vault-ld/GLOSSARY.md](vault-ld/GLOSSARY.md) and
+[okf/GLOSSARY.md](okf/GLOSSARY.md). If a term below feels overloaded (`writer`,
+`op`, `view`, `vault`), the glossary is the one place it is pinned.
+
 ## Install
 
 ```sh
