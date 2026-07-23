@@ -200,3 +200,11 @@ equivalence, I4 no-silent-loss, I5 OR-set law, I6 LWW law, I7 flag lifecycle, I8
 index coherence, I9 export determinism, I10 governance.
 **Not this:** not a test — an invariant is the property; a test is evidence for
 it.
+
+### severity
+The weight of a defect. **Blocker:** an [invariant](#invariant-i1i10) is
+unachievable as specified, or a [view](#view) hash diverges under any seed.
+**Major:** a real defect or risk that does not by itself falsify an invariant.
+**Minor:** everything else.
+**Not this:** severity is about *invariant impact*, not how alarming the prose
+sounds.

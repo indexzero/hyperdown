@@ -189,3 +189,12 @@ law, I7 flag/conflict lifecycle, I8 index coherence, I9 face determinism, I10
 governance, I11 epoch roundtrip.
 **Not this:** not a test — an invariant is the property; a test is evidence for
 it.
+
+### severity
+The weight of a defect. **Blocker:** an [invariant](#invariant-i1i11) is
+unachievable as specified, or a [view](#view) hash diverges under any seed.
+**Major:** a real defect or risk that does not by itself falsify an invariant
+(a data-preservation or scale concern — C1 is one). **Minor:** everything else.
+**Not this:** severity is about *invariant impact*, not how alarming the prose
+sounds. A data-loss bug outside the deterministic core is a major, not a
+blocker, when no hash diverges.

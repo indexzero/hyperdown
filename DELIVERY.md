@@ -5,7 +5,7 @@
 **Shipped.** Every gate passed, verified from an independent clean clone (G6
 FINAL-PASS): the invariant suite is green, the multi-process harness matrix is
 green at all fault profiles, and two converged peers emit byte-identical
-faces. No [major](vault-ld/GLOSSARY.md) is waived; the open items are minors,
+faces. No [major](vault-ld/GLOSSARY.md#severity) is waived; the open items are minors,
 batched. Everything below defends those sentences.
 
 The pipeline completed 2026-07-04 under `prompts/04-supervisor-prompt.md`,

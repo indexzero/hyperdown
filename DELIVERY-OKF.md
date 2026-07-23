@@ -3,7 +3,7 @@
 ## Bottom line
 
 **Shipped.** All four gates pass, verified from an independent clean clone
-(G6 FINAL-PASS). One [major](okf/GLOSSARY.md#invariant-i1i11) awaits your
+(G6 FINAL-PASS). One [major](okf/GLOSSARY.md#severity) awaits your
 sign-off — C1, a memory/liveness limit under sustained flood — and it does not
 block correctness: no [view](okf/GLOSSARY.md#view) hash diverges under any
 seed. Everything below defends those two sentences.
