@@ -158,3 +158,39 @@ apply's rejection of unsafe `SetPath` values (`flag/rejected`, reason
 `unsafe-path`, §8.4). I4 is preserved in substance (no silent skip; every
 skip is observable) at the cost of the flag living in the report instead
 of the view.
+
+---
+
+## okf (auto-okf) deviations — okf/SPEC.md v1.2
+
+**okf §5 `revHash` length prefix: copied code wins (u64 BE, not u32 LE).**
+okf SPEC §5 describes `len()` as "u32 LE", but the same sentence pins the
+resolution: "this normative text mirrors the copied code; on discrepancy
+the copied code wins and DEVIATIONS.md records it." The copied
+`vault-ld/core/lib/revhash.js` (provenance header in
+`okf/core/lib/revhash.js`) uses an 8-byte big-endian length prefix over the
+64-char lowercase-hex base string (empty for null). That formula is
+byte-identical between the two stacks, which is exactly what the copy rule
+exists to preserve; the u32-LE prose in §5 is the deviation being recorded.
+
+**okf §3 per-writer ordinal: `seen/` view counter, after checking autobee's
+node.** As §3 instructs, autobee@1.0.10 was checked before resolving:
+`lib/writers.js` `createNode()` does expose a per-node `length` (and
+`_applyBatch` hands those nodes to apply), so a transport-side seq exists.
+Core nevertheless derives position from the stream itself via the
+view-kept `seen/<writerKey>` count (incremented for every node regardless
+of disposition), because core is transport-agnostic and the §8 unforgeable-
+position rule (`seqAtRemoval`, forged-clock) must bind to the same ordinal
+apply uses for `flag/rejected`/`hold/` keys. Under autobee's per-writer
+FIFO delivery the seen-count equals the node seq.
+
+**okf §8 hold buffer stores full payloads: acked optimistic nodes are NOT
+re-delivered to apply.** §8 requires verifying re-delivery before choosing
+between payload-holding and seq-dedup. autobee@1.0.10 `index.js`
+`_optimisticBatch()` applies an unacked writer's optimistic batch exactly
+once at its linearized position (rolling back only when
+`system.canApply()` fails); a later `host.ackWriter()`
+(`lib/apply-calls.js`) flips writer state without replaying prior nodes
+into apply. Therefore `hold/<writerKey>/<seq>` stores the full decoded
+payload (JSON-safe hydration) and the ack's `AddWriter` folds holds in seq
+order at its own linearized position, as specified for this branch.
