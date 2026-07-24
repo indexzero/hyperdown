@@ -285,11 +285,37 @@ export class IngestWatcher extends EventEmitter {
       return null
     }
     const res = await this._apply({ type: 'create-concept', payload: { path, type, id } })
-    // Adoption keeps the supplied id; a mint's id is the create op's tag
-    // (the store returns { seq, tag }).
-    const conceptId = id !== undefined ? id : res && res.tag
+    // Adoption keeps the supplied id. For a MINT the concept's id is knowable
+    // only from the view (§9/§6 P1): a squat pre-occupying this writer's
+    // tag-id makes apply mint a SHA fallback, so the op's tag can point at the
+    // squatter's concept, not the one we just created. Resolve it from the
+    // view — never trust the op tag for identity.
+    const conceptId = id !== undefined ? id : await this._resolveMintedId(res && res.tag, path)
     emitted.push({ type: 'create-concept', payload: { path, type, id: conceptId } })
     return conceptId
+  }
+
+  /**
+   * Resolve the id of a just-minted concept from the view (§6 P1). Common
+   * case (no squat on the tag-id): the op's tag IS the id — one O(1) read.
+   * If a squat fired the SHA fallback, the genuine concept claimed `path` at
+   * create and its `meta.created === tag`; find it via path/, else scan c/.
+   */
+  async _resolveMintedId(tag, path) {
+    if (typeof this.vault.update === 'function') await this.vault.update()
+    if (tag != null) {
+      const meta = await this.vault.val(K.cMeta(tag))
+      if (meta !== undefined && meta.created === tag) return tag
+    }
+    const holder = await this.vault.val(K.path(path))
+    if (holder !== undefined && holder !== tag) {
+      const hm = await this.vault.val(K.cMeta(holder))
+      if (hm !== undefined && hm.created === tag) return holder
+    }
+    for await (const { key, value } of this.vault.scan('c/')) {
+      if (key.endsWith('/meta') && value && value.created === tag) return K.parseKey(key)[1]
+    }
+    return tag
   }
 
   _fmType(fm) {

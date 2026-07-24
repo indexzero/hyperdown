@@ -257,9 +257,25 @@ export function createApply(config = {}) {
     for (const node of nodes) {
       const tx = new Tx(view)
       const a = new Applier(cfg, tx, host)
-      await a.ensureGenesis()
-      await a.applyNode(node)
-      await tx.flush()
+      try {
+        await a.ensureGenesis()
+        await a.applyNode(node)
+        await tx.flush()
+      } catch (err) {
+        // §3 (I1/I10): apply MUST NOT throw — a single hand-crafted op must
+        // never halt every peer's fold. The partial tx is discarded (its
+        // buffered writes never reach the view), then a FRESH tx records a
+        // deterministic per-op rejection (seen/ + ord/ + flag/rejected,
+        // reason 'apply-error'). Same node, same throw point, same
+        // containment on every peer, so the applied/rejected partition and
+        // the I2 view hash stay replay-stable. This is the last-resort net;
+        // the op handlers above reject cleanly (their own reasons) for every
+        // input we have found reachable.
+        const tx2 = new Tx(view)
+        const a2 = new Applier(cfg, tx2, host)
+        await a2.containThrow(node)
+        await tx2.flush()
+      }
     }
   }
 }
@@ -389,6 +405,22 @@ class Applier {
     // §3: rejections land in flag/rejected/<writerKey>/<seq>, never throw,
     // and never mutate c/ (I10).
     this.put(K.flagRejected(W, seq), { reason })
+  }
+
+  /**
+   * §3 last-resort containment: an op whose handling threw is reduced to a
+   * deterministic rejection. Re-derives the per-node ord and seq from the
+   * (unmutated, because the throwing tx was discarded) view so ordinals stay
+   * monotone and identical on every peer, then records flag/rejected. Pure
+   * over the linearized prefix — no clock, no randomness (I1).
+   */
+  async containThrow(node) {
+    const W = keyHex(node.key)
+    const pos = ((await this.val(K.ordGlobal())) ?? 0) + 1
+    this.put(K.ordGlobal(), pos)
+    const seq = (await this.val(K.seen(W))) ?? 0
+    this.put(K.seen(W), seq + 1)
+    this.put(K.flagRejected(W, seq), { reason: 'apply-error' })
   }
 
   async accepted(W) {
@@ -699,7 +731,16 @@ class Applier {
       // §5 (M4): tags mutate only via AddTag/RemTag; _id/_rev are never fields.
       return { rejected: true, reason: 'reserved-key' }
     }
-    const values = canonicalArray(op.value)
+    // §5: SetField.value is wire type `json` (arbitrary JSON). Canonicalizing
+    // a typed literal with a bad lexical (e.g. { value: 'abc', datatype:
+    // 'xsd:integer' }) throws inside canonicalArray — contain it as a clean
+    // rejection so a crafted value can never halt apply (§3; I1/I10).
+    let values
+    try {
+      values = canonicalArray(op.value)
+    } catch {
+      return { rejected: true, reason: 'bad-value' }
+    }
     if (key === 'type' && (values.length === 0 || (values.length === 1 && values[0] === ''))) {
       // §5 (N4): an empty type state is unreachable through accepted ops.
       return { rejected: true, reason: 'empty-type' }

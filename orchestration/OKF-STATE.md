@@ -2,7 +2,7 @@
 
 **Purpose:** the only memory for the overnight build. A fresh/compacted
 supervisor reads this + `okf/SPEC.md` and resumes without questions.
-**Last updated:** 2026-07-14 (T8 landed 228/228; T9 dispatched).
+**Last updated:** 2026-07-14 — **COMPLETE**.
 **SPEC-FINAL:** `okf/SPEC.md` v1.2 (SPEC-PASS, PR #20). Normative.
 **Intent contract:** `~/Git/indexzero/0x/slop/intent/autokf.intent.md`.
 **Milestone:** GitHub "auto-okf v1", issues #10–#19 (T1–T10) + residual-minors issue.
@@ -36,7 +36,9 @@ supervisor reads this + `okf/SPEC.md` and resumes without questions.
 | #23 | 12/okf-faces → 11/okf-store | T5 faces + codex review (2 N3 bugs fixed) | open, verified 212/212 |
 | #24 | 13/okf-compact → 12/okf-faces | T6 epoch compact + I11 | open, verified 216/216 |
 | #25 | 14/okf-cli → 13/okf-compact | T7 cli | open, verified 225/225 |
-| #26 | 15/okf-examples → 14/okf-cli | T8 three examples (footers stripped) | open, verified 228/228 |
+| #26 | 15/okf-examples → 14/okf-cli | T8 three examples | open, verified 228/228 |
+| #27 | 16/okf-harness → 15/okf-examples | T9 fault harness + matrix | open, verified 228/228 + 12/12x3 |
+| #29 | 17/okf-review → 16/okf-harness | T10 review: F1 blocker + F2 major FIXED; C1 major open | open, verified 234/234 + 12/12 |
 
 Merge-order note for the owner: land #20 before #21 (10/okf-core has the spec
 merged in). Supervisor does not merge.
@@ -88,17 +90,17 @@ merged in). Supervisor does not merge.
 
 ## Loop counters (ceiling 3 each)
 
-- T4-T8:done T9:1(in progress) T6:0 T7:0 T8:0 T9:0 T10:0
+- T4-T10:done. G6 next. Loop counters: all tasks 1 iteration (no remediation loops hit ceiling). T6:0 T7:0 T8:0 T9:0 T10:0
 
 ## Completion checklist (COMPLETE only when all have evidence paths here)
 
 - [x] T4 store green — PR #22, 191/191 (114 vault-ld + 62 core + 15 store), re-verified; core hold-hydration bug found+fixed (d68a9fc)   - [x] T5 faces green + OKF conformance — PR #23, 212/212; codex (gpt-5.5) cross-model review found+fixed 2 N3 deletion-safety bugs (8402a6f, 03a4a19); independent OKF v0.1 conformance checker green
 - [x] T6 I11 epoch cycle — PR #24, 216/216; byte+identity fidelity across a length-2 epoch chain, history-shed asserted positively, conflict-drain guardrail   - [x] T7 cli — PR #25, 225/225; auto-okf bin, all §13 commands + smoke tests   - [x] T8 three examples byte-identical — PR #26, 228/228; flagship agent-session + slop-archive + vlurp-library; AI-attribution footers stripped from commits (standing-rule enforcement)
-- [ ] T9 matrix green x3 profiles   - [ ] T10 zero blockers, repros committed
-- [~] I1..I11 mapped: I1-I8,I10 (core suite) + I3 (store) + I9 (faces) + I11 (compact) all green; final tally at G6
-- [ ] Independent clean-clone final verification, raw output on file
-- [ ] DELIVERY-OKF.md written (artifacts, waived majors, loop counters)
+- [x] T9 matrix green x3 profiles — PR #27, 12/12 at clean/lossy/partitioned (36 runs) + 10-iter fuzz, zero divergence; S8 (vault-ld B1 revocation blocker) CONVERGES here (causal-not-positional revocation designed it out)   - [x] T10 zero open blockers, repros committed — PR #29, G4-PASS; F1 poison-op BLOCKER + F2 ingest-squat MAJOR both fixed+regression-guarded; C1 (soak memory/liveness) is an open MAJOR (not a determinism blocker) → BACKLOG for Charlie sign-off; P7 minor → issue #28
+- [x] I1..I11 each mapped to a passing test: I1-I8,I10 core + I3 store + I9 faces + I11 compact; harness exercises I1/I2/I5/I6/I7/I9/I10 multi-process
+- [x] Independent clean-clone final verification — orchestration/results/OKF-FINAL-VERIFICATION.md (VERDICT: FINAL-PASS; 234/234, matrix x3+fuzz, examples byte-identical, I11, conformance 0 violations, wanted/ ranked)
+- [x] DELIVERY-OKF.md written — DELIVERY-OKF.md (artifacts, PR stack, gates, C1 waiver, loop counters)
 
 ## Next action
 
-T9 DISPATCHED (multi-process fault harness + okf scenario matrix) on branch `16/okf-harness` off `15/okf-examples`, model=Opus 4.8. Audit: full suite re-run 228/228 green, T8 confirmed. THE HIGH-RISK TASK: vault-ld found its only blocker here. Divergent view hash under any seed = blocker; commit seed+schedule as a regression first.
+**NONE — PIPELINE COMPLETE (2026-07-14).** All acceptance items verified with evidence paths above. G6 FINAL-PASS (independent clean clone). DELIVERY-OKF.md written. 10 stacked PRs open (#9,#20,#21..#27,#29), none merged by supervisor — owner reviews in the morning. Open for owner: C1 major (BACKLOG, sign-off), P7 minor (issue #28).
