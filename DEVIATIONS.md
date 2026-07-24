@@ -251,3 +251,61 @@ pinned metadata, a joiner reconstructs it from the invite's chain fields
 alone, and a reused corestore directory still yields fresh writer keypairs
 across epochs. Recorded as `metadata.epoch` and validated against the
 chain fields at every load.
+
+---
+
+## @auto-okf/faces (T5)
+
+**okf §9 conflicted-copy hash-collision extension is applied per-value,
+order-independently.** §7 says two path-collision losers whose `_id` hashes
+share the first 8 hex "extend to the full 64-hex hash, and an occupied
+fallback extends the same way." Rather than probe-and-extend (order
+dependent), materialize groups losers by path, counts how many share each
+8-hex prefix, and any prefix shared by more than one loser makes *all* its
+members emit the full 64-hex suffix. Distinct `_id`s never collide on the
+full hash, so no further probing is possible or needed; the result is a pure
+function of the loser set (I9). The `.conflict-<hex8+>` component is reserved
+in apply, so no live concept can hold a conflict path and only loser-vs-loser
+collisions are reachable.
+
+**okf §9 `flag/copydetect` audit record is not emitted by ingest (no core
+op writes it).** §9 says a copy-split records `flag/copydetect/<new-id>/
+<original-id>`. The view is written only by core's apply folding ops, and the
+12-op wire contract has no op that writes a `copydetect` flag (apply never
+references the family). Faces therefore surfaces copy detection as its
+observable effect — the copy is minted as a fresh `CreateConcept` (no `id`)
+at its path, and a `'copy'` event is emitted on the watcher — but writes no
+`flag/copydetect` row. Recording the flag would require a new core op
+(out of T5 scope; core is imported unmodified). The identity outcome (copy
+gets a fresh `_id`, original keeps its path) is exactly as specified.
+
+**okf §9 minted `_id` write-back is deferred to the next materialize, not
+written into the human file by the watcher.** §9 says a file with a missing
+`_id` mints "and writes back into the file." Instead of the watcher rewriting
+the just-read file (an echo hazard mid-settle), ingest records the ingested
+bytes' hash in the emission manifest; the concept now exists in the view at
+that path, so the next `materialize` regenerates the file with the
+deterministic minted `_id`/`_rev` stamped in (its bytes already match the
+manifest, so the overwrite is permitted, not blocked as pending-ingest).
+Net effect is identical — the file ends up carrying its `_id` — with one
+fewer write and no watcher/echo coupling. A minted id is taken to be the
+create op's tag (`writerKey‖seq`); under the §6 squat fallback the true id
+would differ, but that requires an adversary pre-occupying the tag id and is
+unreachable through ordinary ingest.
+
+**okf §9 materialize path-safety violations are reported, never written to
+the view.** §7 notes a materialize-time containment violation "is reported on
+the CLI only." Faces re-checks lexical + realpath containment before every
+write (atomic temp+fsync+rename in the target's real parent) and collects any
+violation in `report.unsafe`; it never writes a `flag/` row (materialize
+never writes the view, §7). Same resolution as vault-ld §9.4.
+
+**okf §9 deletion of a conflicted-copy face is a no-op, not a
+`DeleteConcept`.** A conflicted copy is a transient materialized face, not the
+concept's canonical location; removing it on disk would otherwise delete a
+live concept that the next materialize immediately re-emits. The watcher
+therefore skips `DeleteConcept` for any file whose terminal matches
+`.conflict-<hex8+>` (emitting `'delete-skipped'` with reason
+`conflict-copy`), consistent with "deletion is dangerous." Deleting the
+winner's canonical file still deletes the concept behind the confirmation
+guard.
