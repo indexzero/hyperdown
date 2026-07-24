@@ -68,7 +68,7 @@ independent clean clone (FINAL-PASS, recorded in `DELIVERY.md`).
 
 Best-effort, by explicit trade. Retention is the accepted cost of
 determinism and auditability: the log is never truncated in v1 (see
-"Retention" in the [README](../README.md)). Sustained-flood scale behavior
+"Retention" in the [README](./README.md)). Sustained-flood scale behavior
 (M2/L1) was backlogged, not guaranteed (`orchestration/BACKLOG.md`).
 
 ## Non-goals (v1)
