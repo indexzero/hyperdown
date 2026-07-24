@@ -9,6 +9,7 @@
     ".": "./index.js",
     "./materialize": "./lib/materialize.js",
     "./ingest": "./lib/ingest.js",
+    "./compact": "./lib/compact.js",
     "./wanted": "./lib/wanted.js",
     "./yaml": "./lib/yaml.js",
     "./view": "./lib/view.js"

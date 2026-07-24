@@ -309,3 +309,52 @@ therefore skips `DeleteConcept` for any file whose terminal matches
 `conflict-copy`), consistent with "deletion is dangerous." Deleting the
 winner's canonical file still deletes the concept behind the confirmation
 guard.
+
+---
+
+## okf §10 — epoch-cycle compaction (T6)
+
+**okf §10 epoch `log/` entry is a filesystem artifact, not a view `log/`
+record.** §10 requires compact to "record an epoch entry in the new vault's
+`log/`." The view's `log/<ordinal>` family is written only by `apply` from
+ops, and §3's wire contract is append-only with NO epoch op (and none may be
+added — core is a fixed built interface here). compact therefore writes the
+epoch entry as a durable JSON artifact at `<vaultDir>/log/epoch.json`
+(`{ kind:'epoch', epoch, predecessorKey, predecessorCheckpoint, conflictCopies,
+at, note }`). This satisfies "an entry in the new vault's `log/`" literally;
+the entry does NOT appear in the regenerated `log.md` (which re-derives from
+the view — §14 excludes `log.md` from I11 fidelity anyway).
+
+**okf §10 compaction stages a manifest-free, `_rev`-stripped copy for ingest.**
+Two facts about the built faces make a naive "materialize `toDir`, then ingest
+`toDir`" impossible, both proven under `sslop/033` probes:
+(1) `materialize` writes its emission manifest (`.okf-manifest.json`) into the
+bundle dir; the ingest watcher reads that manifest and skips every file as a
+self-echo — so ingesting `toDir` in place yields ZERO ops. (2) A materialized
+`_rev` is the base an ingest `SetBody` cites (§6); in a fresh vault that base
+does not exist, so the head is flagged `flag/conflict/<id>/-/<new>` and the
+concept materializes BODYLESS. compact therefore copies each concept note into
+a staging dir (default `<vaultDir>.compact-src`, a SIBLING of `vaultDir` —
+`new Corestore(vaultDir)` clears the vault dir on init, so a nested staging
+dir would be wiped before ingest reads it) with its `_rev` line stripped. Each
+head then re-roots at `base:null` — the only flag-free fresh start (§5) — so
+the body survives and `_rev` re-derives (§14: a former edit's revHash changes,
+the body text does not). Once a bundle has cycled once, every body is already
+`base:null`, so further cycles preserve even `_rev`.
+
+**okf §10 `compact` injects the `@auto-okf/store` `initVault` rather than
+importing it.** Consistent with the rest of `@auto-okf/faces` ("the substrate
+is injected — nothing here imports the substrate"), `compact(vault, opts)`
+takes `opts.initVault` (the store factory) instead of adding a hard
+`@auto-okf/store` dependency to the faces package. The CLI (`okf/cli`) wires
+the two together. The predecessor is never deleted by compact — its path is
+returned for the operator to archive/destroy out-of-band (§10 step 5).
+
+**okf §10 `--force` conflict-copy enumeration lists `from === to`.** Because
+`_id` and path both survive the cycle and the conflict suffix is
+`first-8-hex(SHA-256(_id))` (§7), a carried-across conflicted copy re-manifests
+at the SAME path in the new vault. The enumeration in `log/epoch.json`
+therefore records `{ from, to }` with `from === to` (deterministic
+identity-preserving carry-across, §9 conflict-copy awareness); it is truthful
+(the `from` list is the actual on-disk conflict files of the materialized
+predecessor bundle).
