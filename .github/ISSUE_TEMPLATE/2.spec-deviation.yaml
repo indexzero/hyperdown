@@ -1,0 +1,60 @@
+name: "📜 Spec deviation"
+description: The code and the SPEC disagree — needs a disposition (fix code, amend spec, or record it).
+title: "[spec] "
+labels: ["spec-deviation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when **implementation and specification diverge** and someone has to
+        decide which one is right. DEVIATIONS.md is a first-class artifact in this repo:
+        every resolved divergence ends up either fixed in code, upstreamed into the spec,
+        or recorded there as an accepted deviation.
+
+        The specs live at
+        [okf/SPEC.md](https://github.com/indexzero/hyperwiki2/blob/main/okf/SPEC.md) and
+        `prompts/01-implementation-spec-prompt.v*` (vault-ld).
+        For behavior that is simply *wrong* (no spec ambiguity), use the **Bug** template.
+  - type: dropdown
+    attributes:
+      label: System
+      options:
+        - "vault-ld"
+        - "okf"
+        - "both / substrate"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Spec reference
+      description: Section / version where the divergent language lives.
+      placeholder: "okf/SPEC.md §7.2  •  vault-ld spec v5.1 §13"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What the spec says
+      description: Quote the exact language.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What the code does
+      description: Actual behavior, with pointers into the package(s) involved.
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Proposed disposition
+      options:
+        - "Fix the code — the spec is right"
+        - "Amend the spec — the code is right (upstream it)"
+        - "Record as accepted deviation in DEVIATIONS.md"
+        - "Unsure — needs discussion"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Rationale / context
+      description: Why the divergence happened, related DEVIATIONS.md entries, dispatch records, PRs.

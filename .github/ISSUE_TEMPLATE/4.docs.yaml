@@ -1,0 +1,55 @@
+name: "📚 Docs"
+description: READMEs, glossaries, SPEC prose, delivery/deviation records — wrong, missing, or unclear.
+title: "[docs] "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for **prose problems**: a README that doesn't match behavior, a glossary
+        term that drifted, spec language that needs clarifying (without changing meaning —
+        if meaning changes, that's a **Spec deviation**), or gaps in the delivery records.
+
+        Vocabulary is pinned once per system:
+        [vault-ld/GLOSSARY.md](https://github.com/indexzero/hyperwiki2/blob/main/vault-ld/GLOSSARY.md) and
+        [okf/GLOSSARY.md](https://github.com/indexzero/hyperwiki2/blob/main/okf/GLOSSARY.md).
+        Do not redefine a term locally; fix it there.
+  - type: dropdown
+    attributes:
+      label: Doc surface
+      description: Where does the change land? (select all that apply)
+      multiple: true
+      options:
+        - "Top-level README"
+        - "Package README (vault-ld/*)"
+        - "Package README (okf/*)"
+        - "okf/SPEC.md"
+        - "vault-ld spec (prompts/01-implementation-spec-prompt.v*)"
+        - "GLOSSARY.md (vault-ld or okf)"
+        - "DELIVERY.md / DELIVERY-OKF.md / DEVIATIONS.md"
+        - "orchestration/ records"
+        - "Example READMEs"
+        - "Other"
+    validations:
+      required: true
+  - type: checkboxes
+    attributes:
+      label: Vocabulary impact
+      options:
+        - label: "This changes or adds a term pinned in a GLOSSARY.md"
+  - type: textarea
+    attributes:
+      label: What's wrong or missing
+      description: Quote the current prose (or name the gap) and say why it fails the reader.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed change
+      description: The replacement prose, or the shape of it. Draft text welcome.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Related issues/PRs, the code the prose should match.

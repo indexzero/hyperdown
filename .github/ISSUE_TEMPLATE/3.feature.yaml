@@ -1,0 +1,63 @@
+name: "✨ Feature / enhancement"
+description: Propose a new capability or improve an existing one, in either stack.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose something new or better — an op type, a face, a CLI command, a harness
+        capability. For something broken, use a **bug** template; for internal cleanup
+        with no behavior change, use **Chore / refactor**.
+
+        Note the pinned non-goals (text CRDT, HTTP API, SPARQL engine, Obsidian plugin) —
+        a proposal inside those needs to argue for reopening them, not just for itself.
+  - type: dropdown
+    attributes:
+      label: System
+      options:
+        - "vault-ld"
+        - "okf"
+        - "both / substrate"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Layer
+      description: Which part would this touch? (select all that apply)
+      multiple: true
+      options:
+        - "core (ops, reducers, deterministic view)"
+        - "store (vault lifecycle on autobee, replication, governance)"
+        - "faces (materialize, ingest watcher, wanted index)"
+        - "cli"
+        - "harness / fault scenarios"
+        - "examples"
+        - "docs"
+        - "Other / cross-cutting"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Problem / motivation
+      description: What's missing or frustrating today? Lead with the user value, not the implementation.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed solution
+      description: The behavior you want — the op shape, the CLI invocation, what materializes. Concrete examples very welcome.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you weighed and why this one wins.
+  - type: textarea
+    attributes:
+      label: Scope & non-goals
+      description: What this explicitly does NOT cover — and any pieces you'd defer to follow-ups.
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Prior art, related issues/PRs, BACKLOG.md entries, links.

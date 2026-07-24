@@ -1,0 +1,82 @@
+name: "🐛 Bug"
+description: Wrong behavior in vault-ld or okf — data loss, divergence, crash, wrong output.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for **behavior that is wrong** in either system. If the code and the
+        SPEC disagree and the right fix might be *changing the spec*, use the
+        **Spec deviation** template instead.
+
+        Severity is pinned in
+        [okf/GLOSSARY.md § severity](https://github.com/indexzero/hyperwiki2/blob/main/okf/GLOSSARY.md#severity) —
+        it is about *invariant impact*, not how alarming the prose sounds. A data-loss
+        bug outside the deterministic core is a major, not a blocker, when no hash diverges.
+
+        Please [search existing issues](https://github.com/indexzero/hyperwiki2/issues?q=is%3Aissue+label%3Abug) first.
+  - type: dropdown
+    attributes:
+      label: System
+      options:
+        - "vault-ld"
+        - "okf"
+        - "both / substrate (autobee, shared plumbing)"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Layer
+      description: Closest package(s) to the bug (select all that apply).
+      multiple: true
+      options:
+        - "core (ops, reducers, deterministic view)"
+        - "store (vault lifecycle on autobee, replication, governance)"
+        - "faces (materialize, ingest watcher, wanted index)"
+        - "cli"
+        - "harness / fault scenarios"
+        - "examples"
+        - "Other / unsure"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Severity
+      description: Per the glossary definition — invariant impact, not prose alarm.
+      options:
+        - "Blocker — an invariant is unachievable as specified, or a view hash diverges"
+        - "Major — real defect or risk that does not by itself falsify an invariant"
+        - "Minor — everything else"
+        - "Unsure"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Invariant / spec reference
+      description: If known — I1..I11, or a SPEC § reference.
+      placeholder: "I11  •  okf/SPEC.md §5.6"
+  - type: textarea
+    attributes:
+      label: What happened
+      description: Actual behavior, with error text / diverging output.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What should happen
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Smallest path to it — commands, a failing `node:test` case, or a harness scenario + fault profile.
+      render: shell
+      placeholder: |
+        1. pnpm install
+        2. node okf/harness/... --profile sustained-lossy
+        3. Observe …
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Related DEVIATIONS.md entries, PRs, sslop/ dispatch records.

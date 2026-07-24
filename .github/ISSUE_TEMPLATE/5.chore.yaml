@@ -1,0 +1,81 @@
+name: "🧹 Chore / refactor"
+description: Internal cleanup, refactor, tech debt, deps, test/harness infra — no behavior change.
+title: "[chore] "
+labels: ["chore"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For work that **doesn't change behavior**: refactors, migration debt, dependency
+        bumps, repo/tooling tidy, test or harness infrastructure. If a view hash would
+        move or a user would see a difference, it's a **feature**, **bug**, or
+        **spec deviation** instead.
+  - type: dropdown
+    attributes:
+      label: Kind
+      options:
+        - "Refactor (restructure existing code)"
+        - "Tech debt / migration debt"
+        - "Dependencies"
+        - "Build / CI / tooling"
+        - "Test or harness infrastructure"
+        - "Repo structure / docs hygiene"
+        - "Other"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: System
+      options:
+        - "vault-ld"
+        - "okf"
+        - "both / substrate"
+        - "repo-wide"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Layer
+      description: Which part? (select all that apply)
+      multiple: true
+      options:
+        - "core (ops, reducers, deterministic view)"
+        - "store (vault lifecycle on autobee, replication, governance)"
+        - "faces (materialize, ingest watcher, wanted index)"
+        - "cli"
+        - "harness / fault scenarios"
+        - "examples"
+        - "orchestration / pipeline records"
+        - "Other / cross-cutting"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Current state (the wart)
+      description: What's awkward today — the duplication, the encapsulation wart, the migration debt, the boundary that shouldn't exist.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Desired state
+      description: The target shape after the change.
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Behavior-neutral?
+      description: Should this be invisible — no view hash moves, `node:test` suite green as-is?
+      options:
+        - "Yes — behavior-neutral, no view hash moves, suite green unchanged"
+        - "Mostly — minor/intentional output change (describe below)"
+        - "No — this changes behavior (consider a feature/bug/spec-deviation instead)"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Risk / blast radius
+      description: What could this break, and how will it be verified (unit suite, harness matrix, byte-identical regeneration)?
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Related issues/PRs, BACKLOG.md entries, prior discussion.
