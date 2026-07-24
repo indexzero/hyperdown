@@ -2,11 +2,11 @@
 
 **Purpose:** the only memory for the overnight build. A fresh/compacted
 supervisor reads this + `okf/SPEC.md` and resumes without questions.
-**Last updated:** 2026-07-13 (T2/T3 landed).
+**Last updated:** 2026-07-13 (T4 dispatched).
 **SPEC-FINAL:** `okf/SPEC.md` v1.2 (SPEC-PASS, PR #20). Normative.
 **Intent contract:** `~/Git/indexzero/0x/slop/intent/autokf.intent.md`.
 **Milestone:** GitHub "auto-okf v1", issues #10–#19 (T1–T10) + residual-minors issue.
-**Subagent model:** Claude Fable 5, pinned. If unavailable → record + BLOCK.
+**Subagent model:** T4 (in flight) = Claude Fable 5. **T5 onward = Claude Opus 4.8** (owner directive 2026-07-13, effective once T4 lands: model='opus' on every T5–T10 dispatch). If the pinned model is unavailable → record + BLOCK.
 
 ## Standing rules (every dispatch)
 
@@ -83,7 +83,7 @@ merged in). Supervisor does not merge.
 
 ## Loop counters (ceiling 3 each)
 
-- T4:0 T5:0 T6:0 T7:0 T8:0 T9:0 T10:0
+- T4:1(in progress) T5:0 T6:0 T7:0 T8:0 T9:0 T10:0
 
 ## Completion checklist (COMPLETE only when all have evidence paths here)
 
@@ -96,4 +96,4 @@ merged in). Supervisor does not merge.
 
 ## Next action
 
-Dispatch T4 (@auto-okf/store), branch `11/okf-store` off `10/okf-core`.
+T4 DISPATCHED (D-okf-T4) on branch `11/okf-store` off `10/okf-core`; awaiting result + supervisor re-verify. Audit 2026-07-13: full suite re-run 176/176 green, T2/T3 confirmed.
