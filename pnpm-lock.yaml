@@ -54,6 +54,21 @@ importers:
         specifier: ^3.6.1
         version: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
 
+  okf/cli:
+    dependencies:
+      '@auto-okf/core':
+        specifier: workspace:*
+        version: link:../core
+      '@auto-okf/faces':
+        specifier: workspace:*
+        version: link:../faces
+      '@auto-okf/store':
+        specifier: workspace:*
+        version: link:../store
+      b4a:
+        specifier: ^1.8.1
+        version: 1.8.1
+
   okf/core:
     dependencies:
       b4a:

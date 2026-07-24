@@ -1,0 +1,24 @@
+{
+  "name": "@auto-okf/cli",
+  "version": "0.0.0",
+  "description": "auto-okf command line: init/join vaults, writer governance, materialize, ingest/watch human edits, wanted demand index, flag queue, conflict resolve/undelete, and epoch-cycle compaction — a thin veneer over @auto-okf/{core,store,faces}",
+  "license": "Apache-2.0",
+  "author": "Charlie Robbins <npm@charlie.dev>",
+  "type": "module",
+  "main": "lib/run.js",
+  "bin": {
+    "auto-okf": "bin/auto-okf.js"
+  },
+  "exports": {
+    ".": "./lib/run.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@auto-okf/core": "workspace:*",
+    "@auto-okf/faces": "workspace:*",
+    "@auto-okf/store": "workspace:*",
+    "b4a": "^1.8.1"
+  }
+}
