@@ -194,3 +194,60 @@ once at its linearized position (rolling back only when
 into apply. Therefore `hold/<writerKey>/<seq>` stores the full decoded
 payload (JSON-safe hydration) and the ack's `AddWriter` folds holds in seq
 order at its own linearized position, as specified for this branch.
+
+**okf §8 uniform topo weight is 2, not the literal `weight: 1`.** §8
+mandates `host.addWriter(key, { isIndexer: op.indexer, weight: 1 })` to
+avoid autobee's mixed defaults, but autobee@1.0.10's GENESIS auto-add is
+uncontrollable from apply and uses the defaults (`index.js`
+`_processApplyBatch` → `lib/apply-calls.js` `weight = isIndexer ? 2 : 1`
+with `isIndexer` defaulting true): the genesis writer is always weight 2.
+A literal `weight: 1` for admitted writers would therefore re-create
+exactly the mixed-weight condition §8 exists to prevent (`lib/topo.js`:
+`isOrderedBefore()` breaks the walk on `node.weight < link.weight` while
+`cmp()` sorts higher weight first — divergent linearizations under
+concurrency). §8's substance is the UNIFORM weight; the store's
+HostAdapter (`okf/store/lib/vault.js`) pins every `addWriter` at the
+genesis value `weight: 2` (the vault-ld harness-proven resolution),
+overriding the `weight: 1` core passes. Side effect: autobee's cosmetic
+`isIndexer` getter (`lib/writers.js`: `weight === 2`) reads true for all
+writers; §8 governance authority is decided from `gov/` by core, never
+from autobee state.
+
+**okf §8 optimistic nodes are acked at the DAG level inside the store's
+apply wrapper.** §8 places the ack at the linearization of the indexer's
+`AddWriter` (core calls `host.ackWriter` there), but autobee@1.0.10 rolls
+an unacked writer's optimistic batch back entirely unless the writer is in
+its system after apply (`index.js` `_optimisticBatch`: post-apply
+`system.get(key)` check, else view rollback + `removePending()`), which
+would discard the batch before any `AddWriter` could fold it. The store's
+`_apply` therefore calls `host.ackWriter(node.key)` for every
+optimistic-flagged node before folding (deterministic: the flag is
+oplog-encoded, so every peer makes the same call); core's `hold/` buffer
+remains the only VIEW-effect gate, so the §8 semantics (effects land at
+the in-log ack's linearized position) are unchanged. Same resolution as
+vault-ld §8.2 (harness-proven).
+
+**okf core fix required by T4 (out of store scope, minimal):
+`opFromJson`/`opToJson` hold hydration corrupted held `SetField` ops.**
+`okf/core/lib/ops.js` hex-converted any field named `key` when rehydrating
+a held op (`Buffer.from('status', 'hex')` → empty buffer), so an unacked
+writer's held `set-field` folded under an empty frontmatter key on every
+peer — converged (I2 held) but wrong, and unreachable by core's unit suite
+(its hold tests held only `create-concept`/`set-body`). Since governance
+ops (the only ops with a buffer `key`) are rejected before the hold branch,
+a held op can never carry a buffer: hydration is now a plain
+null-normalizing copy. View bytes are unchanged for every previously
+passing case (string fields always serialized as-is); the store's
+optimistic-onboarding integration test is the regression test. Full suite
+(114 vault-ld + 62 okf-core + 15 store) green after the fix.
+
+**okf §10 epoch namespace derivation (spec-silent detail).** §10 requires
+writer cores namespaced per epoch and "recorded in vault metadata" but not
+HOW the id is minted. The store derives it purely:
+`epoch = 'genesis'` when the chain fields are null, else
+`sha256(predecessorKey bytes || stableStringify(predecessorCheckpoint))`
+— so every peer of one vault computes the same namespace from the same
+pinned metadata, a joiner reconstructs it from the invite's chain fields
+alone, and a reused corestore directory still yields fresh writer keypairs
+across epochs. Recorded as `metadata.epoch` and validated against the
+chain fields at every load.

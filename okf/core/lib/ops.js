@@ -99,19 +99,20 @@ export function decodeOp(buf) {
   return { ok: true, type, op: decoded.value }
 }
 
-// --- JSON-safe (de)hydration of decoded ops for the hold/ buffer (§8):
-// buffers become hex strings in the view and are rehydrated at fold time.
-// The only buffer field on the okf wire is the governance `key` (never
-// held — governance ops from unacked writers reject), but hydration stays
-// total for robustness.
-const BUFFER_FIELDS = new Set(['key'])
-
+// --- JSON-safe (de)hydration of decoded ops for the hold/ buffer (§8).
+// Holds only ever contain CONTENT ops: governance ops from unacked writers
+// reject ('policy-governance') before apply's hold branch, and the
+// governance `key` is the only buffer field on the okf wire — so a held op
+// never carries a buffer, and hydration is a plain null-normalizing copy.
+// (A previous defensive version hex-converted any field named `key`, which
+// corrupted held SetField ops — `key` there is the frontmatter field NAME,
+// a string like 'status' that Buffer.from(…, 'hex') truncates to empty.
+// Found by the T4 store integration suite; see DEVIATIONS.md. View bytes
+// are unchanged by this fix: string fields always serialized as-is.)
 export function opToJson(op) {
   const out = {}
   for (const [k, v] of Object.entries(op)) {
-    if (v == null) out[k] = null
-    else if (BUFFER_FIELDS.has(k)) out[k] = Buffer.isBuffer(v) ? v.toString('hex') : String(v)
-    else out[k] = v
+    out[k] = v == null ? null : v
   }
   return out
 }
@@ -119,9 +120,7 @@ export function opToJson(op) {
 export function opFromJson(json) {
   const out = {}
   for (const [k, v] of Object.entries(json)) {
-    if (v == null) out[k] = null
-    else if (BUFFER_FIELDS.has(k)) out[k] = Buffer.from(v, 'hex')
-    else out[k] = v
+    out[k] = v == null ? null : v
   }
   return out
 }

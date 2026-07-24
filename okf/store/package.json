@@ -1,0 +1,25 @@
+{
+  "name": "@auto-okf/store",
+  "version": "0.0.0",
+  "description": "auto-okf on autobee: multiwriter vault lifecycle, metadata pinning (append-only constant + epoch chain), writer governance plumbing, hyperswarm replication, opt-in append backpressure",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./vault": "./lib/vault.js",
+    "./metadata": "./lib/metadata.js",
+    "./hash": "./lib/hash.js",
+    "./view": "./lib/view.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@auto-okf/core": "workspace:*",
+    "autobee": "^1.0.10",
+    "b4a": "^1.8.1",
+    "corestore": "^7.11.0",
+    "hyperswarm": "^4.17.0"
+  }
+}
