@@ -1,0 +1,21 @@
+{
+  "name": "auto-okf-example-slop-archive",
+  "version": "0.0.0",
+  "description": "A durable append-only auto-okf archive for LLM output: deletion is a recoverable tombstone and an agent cannot rm the archive",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "main": "archive.js",
+  "scripts": {
+    "start": "node archive.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@auto-okf/core": "workspace:*",
+    "@auto-okf/faces": "workspace:*",
+    "@auto-okf/store": "workspace:*",
+    "hypercore-crypto": "^3.6.1"
+  }
+}

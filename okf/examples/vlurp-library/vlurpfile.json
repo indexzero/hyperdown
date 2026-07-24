@@ -1,0 +1,24 @@
+{
+  "comment": "Declares an upstream context library to vlurp into this OKF bundle. vlurp (https://github.com/indexzero/vlurp) fetches text from GitHub, pins it to a commit, and hashes every file; we mirror that contract. The `sha256` pins are the provenance anchor: whether the bytes arrive from the vlurp binary or the committed offline fixture, they must hash to these values, so the import is byte-deterministic and drift is detectable.",
+  "source": "https://github.com/GoogleCloudPlatform/knowledge-catalog",
+  "repo": "GoogleCloudPlatform/knowledge-catalog",
+  "ref": "0.1.0",
+  "filter": "okf/**/*.md",
+  "files": [
+    {
+      "src": "knowledge-catalog/okf/overview.md",
+      "dest": "okf/overview",
+      "sha256": "5594a4f5141b00f2e9326d1d8e50c2eda105d970a463a08dcc879ad69119f9f2"
+    },
+    {
+      "src": "knowledge-catalog/okf/frontmatter.md",
+      "dest": "okf/frontmatter",
+      "sha256": "2e6a5d2f046939e5e058f609536aa67d2469eee7a1708365ea28daaedb681e7d"
+    },
+    {
+      "src": "knowledge-catalog/okf/linking.md",
+      "dest": "okf/linking",
+      "sha256": "105013da7db43cfb87788bd7a8f3f1f19ba94812465dbe3aee692d168e660444"
+    }
+  ]
+}
