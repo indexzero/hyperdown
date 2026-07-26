@@ -284,8 +284,15 @@ export class IngestWatcher extends EventEmitter {
     const P = rel.slice(0, -3) // strip '.md'
     const terminal = P.split('/').pop()
     const isConflictCopy = CONFLICT_SUFFIX_RE.test(terminal)
-    // §9 conflict-copy awareness: ingest at the suffix-stripped path.
-    const authoredPath = isConflictCopy ? P.replace(CONFLICT_SUFFIX_RE, '') : P
+    // §9 conflict-copy awareness: ingest at the suffix-stripped path. A
+    // human-authored file can carry MORE THAN ONE reserved suffix (materialize
+    // never emits such a path, §7); strip every trailing reserved suffix so the
+    // authored path is not itself reserved and rejected reserved-path — which
+    // would leave the file permanently pending-ingest (issue #28 / P7).
+    let authoredPath = P
+    while (CONFLICT_SUFFIX_RE.test(authoredPath.split('/').pop())) {
+      authoredPath = authoredPath.replace(CONFLICT_SUFFIX_RE, '')
+    }
 
     const emitted = []
     const id = await this._ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted)
