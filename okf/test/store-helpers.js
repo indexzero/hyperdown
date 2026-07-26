@@ -15,10 +15,10 @@ export {
   metadataHash,
   canonicalMetadataBytes,
   loadMetadata,
-  epochId,
+  generationId,
   viewHash,
   METADATA_FILE,
-  GENESIS_EPOCH
+  ROOT_GENERATION
 } from '../store/index.js'
 export { keyspace as K, canonical, makeTag } from '../core/index.js'
 

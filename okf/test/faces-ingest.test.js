@@ -166,7 +166,7 @@ test('deleting a file emits DeleteConcept only when the guard confirms', async (
   await v.close()
 })
 
-test('adopting an unknown _id creates the concept (epoch-cycle contract)', async () => {
+test('adopting an unknown _id creates the concept (generation-cycle contract)', async () => {
   const v = await initVault(await tmpDir('vault'))
   const dir = await tmpDir('bundle')
   await materialize(v, dir) // establish the manifest + reserved faces

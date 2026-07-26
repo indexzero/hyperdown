@@ -187,7 +187,7 @@ const handlers = {
   },
 
   /**
-   * S9 epoch cycle: materialize the live bundle, spin up a FRESH vault at
+   * S9 generation cycle: materialize the live bundle, spin up a FRESH vault at
    * `vaultDir`, ingest the bundle back with _id adoption, then adopt the new
    * (open) vault as this writer's vault. Returns the new vault's key so a
    * second peer can join it. Any live replication links must be torn down by
@@ -203,13 +203,13 @@ const handlers = {
     const old = vault
     attach(res.vault)
     await old.close()
-    // The new vault's epoch chain: a fresh peer MUST join with these
-    // overrides so it derives the SAME §10 per-epoch namespace (else its
-    // writer cores derive under 'genesis' and it cannot converge).
+    // The new vault's generation chain: a fresh peer MUST join with these
+    // overrides so it derives the SAME §10 per-generation namespace (else its
+    // writer cores derive under 'root' and it cannot converge).
     return {
       key: vault.keyHex,
       localKey: hex(vault.localKey),
-      epoch: res.epoch,
+      generation: res.generation,
       predecessorKey: res.predecessorKey ?? null,
       predecessorCheckpoint: sanitize(res.predecessorCheckpoint ?? null)
     }

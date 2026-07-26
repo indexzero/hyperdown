@@ -29,7 +29,7 @@ destroying that record. auto-okf makes destruction **unrepresentable**:
   12 ops and counts the ones that prune/compact/gc/destroy: **zero**. An agent
   cannot even *express* "erase this from history."
 
-Byte reclamation does exist — but only as an **operator-run epoch cycle**
+Byte reclamation does exist — but only as an **operator-run generation cycle**
 (`compact`, SPEC §10), which materializes the live bundle into a fresh vault
 and sheds history by design. It is a deliberate human act, never something an
 agent can do mid-session.

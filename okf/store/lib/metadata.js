@@ -14,16 +14,16 @@
 // cannot open. createMetadata likewise refuses an input trying to set it
 // to anything but true: an append-only:false vault is unrepresentable.
 //
-// §10 epoch chain: `{ predecessorKey, predecessorCheckpoint }` (both null
-// for a genesis vault) record which vault this one was compacted from.
+// §10 generation chain: `{ predecessorKey, predecessorCheckpoint }` (both null
+// for a root vault) record which vault this one was compacted from.
 // `predecessorCheckpoint = { viewHash, writerLengths, signer?, signature? }`
 // — signed by the operator key that ran compact; provenance metadata, not
-// proof (consumers MUST treat cross-epoch identity as trusted-operator
+// proof (consumers MUST treat cross-generation identity as trusted-operator
 // scope), so the signature is carried, never verified here.
 //
-// §10 writer-key freshness: writer cores derive under a per-epoch
-// corestore namespace recorded in the metadata (`epoch`). The epoch id is
-// a PURE FUNCTION of the predecessor fields — 'genesis' for a first-epoch
+// §10 writer-key freshness: writer cores derive under a per-generation
+// corestore namespace recorded in the metadata (`generation`). The generation id is
+// a PURE FUNCTION of the predecessor fields — 'root' for a first-generation
 // vault, else sha256(predecessorKey bytes || stableStringify(checkpoint))
 // — so every peer of one vault derives the same namespace from the same
 // pinned metadata, an operator re-initing in a REUSED corestore directory
@@ -37,7 +37,7 @@ import { canonical } from '@auto-okf/core'
 
 export const METADATA_VERSION = 1
 export const METADATA_FILE = 'okf-vault.json'
-export const GENESIS_EPOCH = 'genesis'
+export const ROOT_GENERATION = 'root'
 
 const HEX64 = /^[0-9a-f]{64}$/
 const HEX = /^[0-9a-f]+$/
@@ -56,12 +56,12 @@ export const METADATA_DEFAULTS = {
 }
 
 /**
- * The §10 per-epoch namespace id: 'genesis' when there is no predecessor,
+ * The §10 per-generation namespace id: 'root' when there is no predecessor,
  * else sha256 over the predecessor key bytes and the checkpoint's
  * canonical JSON. Deterministic from pinned metadata on every peer.
  */
-export function epochId(predecessorKey, predecessorCheckpoint) {
-  if (predecessorKey == null && predecessorCheckpoint == null) return GENESIS_EPOCH
+export function generationId(predecessorKey, predecessorCheckpoint) {
+  if (predecessorKey == null && predecessorCheckpoint == null) return ROOT_GENERATION
   if (predecessorKey == null || predecessorCheckpoint == null) {
     throw new TypeError('predecessorKey and predecessorCheckpoint must be set together (§10)')
   }
@@ -89,7 +89,7 @@ export function createMetadata(input = {}) {
     version: METADATA_VERSION,
     genesisKey: keyHex(input.genesisKey),
     appendOnly: true,
-    epoch: epochId(predecessorKey, predecessorCheckpoint),
+    generation: generationId(predecessorKey, predecessorCheckpoint),
     predecessorKey,
     predecessorCheckpoint,
     limits: { ...METADATA_DEFAULTS.limits, ...(input.limits || {}) },
@@ -113,7 +113,7 @@ export function validateMetadata(meta) {
     // §8: outside the log, no op — and no edited file — can flip it.
     throw new Error('metadata.appendOnly must be exactly true (§8 append-only guarantee)')
   }
-  validateEpochChain(meta)
+  validateGenerationChain(meta)
   for (const [group, keys] of [
     ['limits', ['maxOpBytes', 'maxPathBytes', 'maxPathDepth']],
     ['rate', ['defaultCeiling', 'unackedCeiling', 'holdMax']]
@@ -134,7 +134,7 @@ export function validateMetadata(meta) {
   return meta
 }
 
-function validateEpochChain(meta) {
+function validateGenerationChain(meta) {
   const pk = meta.predecessorKey
   const cp = meta.predecessorCheckpoint
   if ((pk == null) !== (cp == null)) {
@@ -170,8 +170,8 @@ function validateEpochChain(meta) {
       }
     }
   }
-  if (meta.epoch !== epochId(pk, cp)) {
-    throw new Error('metadata.epoch does not match its predecessor fields (§10 epoch chain)')
+  if (meta.generation !== generationId(pk, cp)) {
+    throw new Error('metadata.generation does not match its predecessor fields (§10 generation chain)')
   }
 }
 

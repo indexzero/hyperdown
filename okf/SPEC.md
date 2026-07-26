@@ -11,7 +11,7 @@ are NOT re-delivered, so no seq-dedup branch (§8); the per-writer seen-count
 ordinal resolution settled against autobee@1.0.10 (§3); `flag/copydetect`
 corrected to an ingest watcher event, not a view row (no core op writes it —
 §4, §9); conflicted-copy face deletion skip and deferred `_id` write-back
-documented (§9); the epoch `log/` entry clarified as a filesystem artifact
+documented (§9); the generation `log/` entry clarified as a filesystem artifact
 and the compaction `_rev`-stripped staging step documented (§10); a "Known
 limitations (v1)" note added (C1 soak scale limit, P7 double-conflict-suffix
 ingest, P4 empty-`type` ingest, plus the live-watcher directory-move
@@ -24,7 +24,7 @@ not have); the real v2 path is an atomic multi-concept path rewrite
 as the prior art (source: `sslop/041/FINDINGS.md`). v1.2 applies adversarial
 review round 2
 (`orchestration/results/OKF-SPEC-REVIEW-2.md`): majors N1–N5 fixed
-(squat-proof minting, epoch key freshness, manifest-gated mirror
+(squat-proof minting, generation key freshness, manifest-gated mirror
 reconciliation, apply-time `empty-type` rejection, conflict-copy ingest
 round-trip), minors n1–n14 applied. v1.1 applied adversarial review
 round 1 (`orchestration/results/OKF-SPEC-REVIEW-1.md`): blockers B1–B4
@@ -280,7 +280,7 @@ saga is the cautionary tale). The rules are frozen:
   zeros, `0` for seq 0) — or the squat-fallback id below when that tag-id
   is occupied. A `CreateConcept` with no explicit `id` mints; one carrying
   an id **adopts** it — an id the vault has never seen, supplied by ingest
-  (§9, §10; this is what makes epoch cycling identity-preserving). `_id`
+  (§9, §10; this is what makes generation cycling identity-preserving). `_id`
   is unique per vault; equality asserts same concept, nothing else. It
   survives deletion (tombstones keep it).
 - **Seen-id rule**: an **adopting** `CreateConcept` (explicit `id`) whose
@@ -304,8 +304,8 @@ saga is the cautionary tale). The rules are frozen:
   writer's seen-count is rejected (`flag/rejected`, reason
   `mint-collision-risk`), and an adopted id exactly equal to a 64-hex
   writer key is likewise rejected `mint-collision-risk` (empty seq
-  suffix). Epoch-cycle adoption never trips this rule because writer
-  keypairs MUST NOT recur across epochs (§10).
+  suffix). Generation-cycle adoption never trips this rule because writer
+  keypairs MUST NOT recur across generations (§10).
 - **`_rev`** is the body-head revHash at materialization time, emitted into
   frontmatter. On ingest, an edited file's `_rev` is the `base` its
   `SetBody` cites — the file carries its own causal context. A stale `_rev`
@@ -485,7 +485,7 @@ saga is the cautionary tale). The rules are frozen:
   shape pinned: one `# Update Log` title, then `## YYYY-MM-DD` UTC date
   headings (OKF §7 MUST), newest first, entries
   generated from the `log/` family: creations, renames (old → new),
-  deletions, conflict resolutions, epoch notes. The narration is a
+  deletions, conflict resolutions, generation notes. The narration is a
   *projection of the actual op log* — auto-okf's structural upgrade over
   hand-maintained convention. Dates come from each op's `at` field (§3),
   truncated to UTC `YYYY-MM-DD` (informational, never used for merge);
@@ -546,12 +546,12 @@ saga is the cautionary tale). The rules are frozen:
   `_id`. `_id` present but
   unknown to this vault → **adopt** it (`CreateConcept` with the supplied
   id, subject to the §6 seen-id and mint-collision rules) — the
-  epoch-cycle contract (§10).
+  generation-cycle contract (§10).
 - Conflict-copy awareness: a file whose terminal component matches
   `\.conflict-[0-9a-f]{8,}$` ingests at the **suffix-stripped path**.
   Known `_id` whose view path equals the stripped path → no `SetPath`
   (the file is the loser's materialized face; body/frontmatter diffs
-  ingest normally). Unknown `_id` (epoch cycle) → `CreateConcept` at the
+  ingest normally). Unknown `_id` (generation cycle) → `CreateConcept` at the
   stripped path; the collision re-manifests in the new vault under §7's
   ordinary rules, the loser re-flags and re-materializes at a conflict
   path — state, identity, and collision status all carry across. §10's
@@ -591,7 +591,7 @@ saga is the cautionary tale). The rules are frozen:
 - `index.md`/`log.md` are reserved: edits to them are ignored (regenerated
   faces), with a single narrated log entry.
 
-## 10. Compaction: epoch cycling (the CouchDB homage, part two)
+## 10. Compaction: generation cycling (the CouchDB homage, part two)
 
 Byte reclamation is an **operator act via the hydrated face**, never an op:
 
@@ -600,11 +600,11 @@ Byte reclamation is an **operator act via the hydrated face**, never an op:
 2. The operator optionally deletes files on disk.
 3. `init` a fresh vault; ingest the directory with **`_id` adoption** (§9).
    The fresh vault MUST use freshly generated writer keypairs: a writer
-   keypair MUST NOT recur across epochs (corestore-derived keys MUST be
-   namespaced by epoch). Otherwise adoption of the predecessor's
+   keypair MUST NOT recur across generations (corestore-derived keys MUST be
+   namespaced by generation). Otherwise adoption of the predecessor's
    mint-shaped ids is rejected `mint-collision-risk` and I11 is
    unachievable. `init` MUST enforce this by deriving writer cores under
-   a per-epoch namespace recorded in vault metadata.
+   a per-generation namespace recorded in vault metadata.
    **Delivered — staging step:** a materialized bundle cannot be ingested
    in place. Its emission manifest makes the ingest watcher skip every
    file as a self-echo (zero ops), and a materialized `_rev` cites a base
@@ -617,26 +617,26 @@ Byte reclamation is an **operator act via the hydrated face**, never an op:
    cycled once, every body is already `base: null`, so further cycles
    preserve `_rev` too.
 4. New vault metadata records `{ predecessorKey, predecessorCheckpoint }` —
-   the epoch chain. `predecessorCheckpoint = { viewHash: <the I2 full-range
+   the generation chain. `predecessorCheckpoint = { viewHash: <the I2 full-range
    hash>, writerLengths: [[key, len], ...] }`, signed by the operator key
    that ran compact; the chain is provenance metadata, not proof —
-   consumers MUST treat cross-epoch identity as trusted-operator scope.
+   consumers MUST treat cross-generation identity as trusted-operator scope.
 5. The old vault is archived or destroyed out-of-band.
 
 Effect = CouchDB compaction: live state and identity survive; history (old
 revisions, per-op attribution, clocks) is shed by design. The compact
 command MUST refuse (without `--force`) while `flag/conflict` **or
 `flag/pathcollision`** is non-empty; with `--force`, it MUST enumerate in
-the new vault's epoch `log/` entry every conflicted copy carried across,
+the new vault's generation `log/` entry every conflicted copy carried across,
 old conflict path → new conflict path (carry-across works because ingest
 strips the conflict suffix and lets the collision re-manifest — §9
 conflict-copy awareness; because `_id` and path both survive, a carried
 copy re-manifests at the **same** path, so these enumerations legitimately
-record `from === to`). It MUST record an epoch entry in the new vault's
-`log/`. **Delivered:** the wire contract has no epoch op, so this entry
+record `from === to`). It MUST record a generation entry in the new vault's
+`log/`. **Delivered:** the wire contract has no generation op, so this entry
 cannot be a view `log/<ordinal>` record — it is written as a filesystem
-artifact `<vaultDir>/log/epoch.json`
-(`{ kind:'epoch', epoch, predecessorKey, predecessorCheckpoint,
+artifact `<vaultDir>/log/generation.json`
+(`{ kind:'generation', generation, predecessorKey, predecessorCheckpoint,
 conflictCopies, at, note }`); it satisfies "an entry in the new vault's
 `log/`" literally and does not appear in the regenerated `log.md` (§14
 excludes `log.md` from I11 fidelity). State- and identity-fidelity across
@@ -667,7 +667,7 @@ a cycle is an acceptance criterion (§14).
 - **I10 Governance:** revoked-writer ops after the causal revocation point,
   unauthorized governance ops, and policy-violating ops never mutate `c/`;
   the applied/rejected partition is replay-stable.
-- **I11 Roundtrip:** materialize → ingest into a fresh vault (epoch cycle)
+- **I11 Roundtrip:** materialize → ingest into a fresh vault (generation cycle)
   preserves every live concept's `_id`, `type`, fields, tags, path, and
   head body byte-for-byte.
 
@@ -712,10 +712,10 @@ are honest scale/edge caveats recorded by the delivery (`DELIVERY.md`,
 okf/core       ops, wire codec, apply, keyspace (copied), canonical (copied),
                revhash (copied), memview test double
 okf/store      vault lifecycle on autobee, metadata pinning (incl. the
-               append-only constant + epoch chain), governance plumbing,
+               append-only constant + generation chain), governance plumbing,
                swarm replication, backpressure option
 okf/faces      materialize (bundle + index.md + log.md), ingest watcher,
-               wanted index, epoch-cycle compact command
+               wanted index, generation-cycle compact command
 okf/cli        init, join, add-writer, remove-writer, materialize, ingest,
                watch, wanted, flags, resolve, undelete, compact
 okf/root       the `auto-okf` root placeholder package (published as
@@ -738,10 +738,10 @@ usage-first READMEs per package plus example READMEs. Package names
 
 Complete when: I1..I11 each pass; the multi-process harness matrix (fault
 proxy, partitions, permutation replay — retargeted from `/harness`) is green
-at clean/lossy/partitioned; an epoch cycle round-trips a non-trivial bundle
+at clean/lossy/partitioned; a generation cycle round-trips a non-trivial bundle
 with identity-fidelity and byte-fidelity **modulo the `_rev` frontmatter
 lines and the regenerated `log.md`** (both necessarily re-derive in the
-new epoch; I11's property list is the normative fidelity set) including a
+new generation; I11's property list is the normative fidelity set) including a
 drained conflict; all three
 examples run from committed scripts and regenerate their committed output
 byte-identically; every emitted bundle passes an independent OKF v0.1

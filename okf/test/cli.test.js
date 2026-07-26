@@ -73,7 +73,7 @@ test('init creates a pinned vault and refuses to re-init', async () => {
   assert.equal(out.code, 0, out.stderr)
   assert.match(out.stdout, KEY_LINE)
   assert.match(out.stdout, /genesis indexer/)
-  assert.match(out.stdout, /epoch: {7}genesis/)
+  assert.match(out.stdout, /generation: {2}root/)
   await access(join(storage, 'okf-vault.json')) // metadata pin exists
 
   const again = await cli(['init', storage])
@@ -212,7 +212,7 @@ test('flags lists a seeded conflict; compact refuses until resolved; resolve cle
   assert.equal(rows.length, 1, 'exactly one open conflict')
 
   // compact MUST refuse while a conflict is open (SPEC §10 guardrail)
-  const refused = await cli(['compact', storage, join(base, 'epoch2')])
+  const refused = await cli(['compact', storage, join(base, 'generation2')])
   assert.equal(refused.code, 1, 'compact refuses on an open conflict')
   assert.match(refused.stderr, /refusing to compact with open conflicts/)
 
@@ -224,11 +224,11 @@ test('flags lists a seeded conflict; compact refuses until resolved; resolve cle
   const cleared = await cli(['flags', storage, 'conflict'])
   assert.match(cleared.stderr, /0 flag\(s\)/)
 
-  // now compact succeeds and produces a fresh epoch vault
-  const compacted = await cli(['compact', storage, join(base, 'epoch2')])
+  // now compact succeeds and produces a fresh generation vault
+  const compacted = await cli(['compact', storage, join(base, 'generation2')])
   assert.equal(compacted.code, 0, compacted.stderr)
-  assert.match(compacted.stdout, /compacted .* -> .* \(epoch [0-9a-f]{64}\)/)
-  await access(join(base, 'epoch2', 'okf-vault.json')) // fresh vault is pinned
+  assert.match(compacted.stdout, /compacted .* -> .* \(generation [0-9a-f]{64}\)/)
+  await access(join(base, 'generation2', 'okf-vault.json')) // fresh vault is pinned
 })
 
 test('undelete restores a tombstoned concept', async () => {
