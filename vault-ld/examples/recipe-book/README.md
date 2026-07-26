@@ -11,7 +11,7 @@ takes from a multi-agent writing session.
 Run it yourself (from the repo root, after `pnpm install`):
 
 ```sh
-node examples/recipe-book
+node vault-ld/examples/recipe-book
 ```
 
 The script is non-interactive and deterministic: writer key pairs come from

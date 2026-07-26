@@ -1,9 +1,10 @@
 // The flagship example is executable documentation AND an I9 fixture: this
-// test RUNS examples/recipe-book end to end (four real vault peers on
-// disk) into a fresh scratch dir and asserts the freshly generated output
-// is byte-identical to the committed examples/recipe-book/out/ tree.
-// If this fails after an intentional semantic change, regenerate with
-// `node examples/recipe-book` and commit the new out/ — never hand-edit it.
+// test RUNS vault-ld/examples/recipe-book end to end (four real vault
+// peers on disk) into a fresh scratch dir and asserts the freshly generated
+// output is byte-identical to the committed vault-ld/examples/recipe-book/out/
+// tree. If this fails after an intentional semantic change, regenerate with
+// `node vault-ld/examples/recipe-book` and commit the new out/ — never
+// hand-edit it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
@@ -13,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { treeHashes } from './faces-helpers.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const EXAMPLE = join(ROOT, 'examples', 'recipe-book')
+const EXAMPLE = join(ROOT, 'vault-ld', 'examples', 'recipe-book')
 const RUN = `run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 test('recipe-book example regenerates the committed out/ byte-identically (I9)', async () => {
@@ -45,10 +46,10 @@ test('recipe-book example regenerates the committed out/ byte-identically (I9)',
   // byte-identical regeneration of the committed tree (I9)
   const fresh = await treeHashes(outDir)
   const committed = await treeHashes(join(EXAMPLE, 'out'))
-  assert.ok(committed.size > 0, 'committed out/ exists (run `node examples/recipe-book`)')
+  assert.ok(committed.size > 0, 'committed out/ exists (run `node vault-ld/examples/recipe-book`)')
   assert.deepEqual(
     [...fresh.entries()],
     [...committed.entries()],
-    'fresh run differs from committed out/ — regenerate with `node examples/recipe-book` and commit'
+    'fresh run differs from committed out/ — regenerate with `node vault-ld/examples/recipe-book` and commit'
   )
 })

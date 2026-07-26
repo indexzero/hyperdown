@@ -12,7 +12,7 @@ import { setupVaultCluster } from './setup.js'
 import { checkCoherence } from './coherence.js'
 import { Rng } from './rng.js'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 const SUBJECTS = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Home', 'agents/x/Note', 'a/b/c']
 

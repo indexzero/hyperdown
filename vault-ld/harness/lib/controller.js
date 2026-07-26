@@ -13,8 +13,8 @@ import { Rng, resolveSeed } from './rng.js'
 import { FaultHub } from './hub.js'
 import { PROFILES, resolveProfile, quiesceTimeout } from './profiles.js'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const WRITER = join(ROOT, 'harness', 'lib', 'writer.js')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+const WRITER = join(ROOT, 'vault-ld', 'harness', 'lib', 'writer.js')
 const CMD_TIMEOUT = 120000
 
 export { PROFILES, resolveProfile, quiesceTimeout }
