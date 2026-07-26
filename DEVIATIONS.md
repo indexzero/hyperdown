@@ -5,6 +5,11 @@ one paragraph each (§0 rule 3). Only true deviations and spec-instructed
 recordings live here; implementation resolutions where the spec is silent are
 documented in code comments (with source citations) and package READMEs.
 
+Each entry is one deviation. The bold lead names it; skim those to find the
+one you need. Load-bearing terms link the glossary
+([vault-ld/GLOSSARY.md](vault-ld/GLOSSARY.md), [okf/GLOSSARY.md](okf/GLOSSARY.md))
+rather than re-defining a word this file has drifted on elsewhere.
+
 **node:test instead of brittle.** User mandate (project owner). The Holepunch
 convention is the brittle runner; this repo's entire suite runs on the Node
 core test runner (`node --test`). No test-runner code is imported by library
@@ -41,38 +46,43 @@ partition is honored only when an authored path is present; absent a path,
 layer is inferred from the `@type` element set, which MAY diverge from a
 folder-only vault-ld tool for locally-typed schema notes.
 
-**§13 store: SPEC-FINAL→autobee port mappings.** Verified against the
-installed autobee@1.0.10 source. (a) Apply node shape: autobee hands
-`{ key, value, length, optimistic }` (key = writer core key); the store
-wraps each node as `{ from: { key }, value, length }` before core's apply.
-(b) Host surface: core's `host.addWriter(key, { indexer })` maps to
-autobee's `host.addWriter(key, { isIndexer, weight })`; autobee's
-`removeWriter`/`removeable` are not exposed at all (see (d)).
-(c) `signedLength`-scoped clauses:
-autobee has no separate signing pipeline (`views()` reports
-`signedLength === length`; finality is flush/anchor —
-`host.createAnchor()` is the checkpoint primitive), so §8.5's
-"at or below signedLength" rate-partition scope and §11's quorum-signed
-snapshots have no 1:1 substrate; view convergence is asserted by full-scan
-hash equality and §11 snapshot machinery stays future work (P4 harness
-territory). (d) §8.3: revocation is decided solely by core's in-log clock
-rule; `opRemoveWriter` records `ctx/gov/removed/<W>` and deliberately never
-invokes autobee's positional `host.removeWriter` (positional removal cut
-W's concurrent nodes out of the remover's linearization while peers that
-had already linearized them kept them — permanent divergence; review
-finding B1). The removed writer stays admitted at the substrate level, so
-every node linearizes on every peer: ops linearized after the RemoveWriter
-are uniformly accepted/rejected (`revoked`) by the clock rule, and a racing
-op that linearizes before it (autobee orders concurrent nodes by node
-timestamp) is uniformly applied — either way one convergent view (I2), the
-partition a pure function of the final log (I10). Two store-side
-consequences: the emitted §3.2 clock counts the appending op itself in the
-writer's own entry (`seq + 1`; DAG heads alone give the pre-append length,
-which a removal that never delivered the op would dominate, mis-accepting
-racing ops), and containment of a revoked peer is app-level —
-`Vault.append` refuses new local ops (`VAULT_REVOKED`) once
-`ctx/gov/removed/<self>` exists and the op's clock does not causally
-precede it.
+**§13 store: SPEC-FINAL→autobee port mappings.** Four ports, verified against
+the installed autobee@1.0.10 source. Each is one mapping; read the bold label
+to find the one you need.
+
+- **Apply node shape.** autobee hands `{ key, value, length, optimistic }`
+  (key = the [writer](vault-ld/GLOSSARY.md#writer) core key); the store wraps
+  each node as `{ from: { key }, value, length }` before core's apply.
+- **Host surface.** Core's `host.addWriter(key, { indexer })` maps to autobee's
+  `host.addWriter(key, { isIndexer, weight })`. Autobee's `removeWriter` and
+  `removeable` are not exposed at all (see revocation, below).
+- **`signedLength`-scoped clauses.** autobee has no separate signing pipeline
+  (`views()` reports `signedLength === length`; finality is flush/anchor, with
+  `host.createAnchor()` as the checkpoint primitive). So §8.5's "at or below
+  signedLength" rate-partition scope and §11's quorum-signed snapshots have no
+  1:1 substrate. View convergence is asserted by full-scan hash equality
+  instead, and the §11 snapshot machinery stays future work.
+- **Revocation (§8.3).** Decided solely by core's in-log clock rule.
+  `opRemoveWriter` records `ctx/gov/removed/<W>` and deliberately never invokes
+  autobee's positional `host.removeWriter`.
+
+  Positional removal was rejected because it cut W's concurrent nodes out of
+  the remover's linearization while peers that had already linearized them kept
+  them — permanent divergence (review finding B1). Instead the removed writer
+  stays admitted at the substrate level, so every node linearizes on every
+  peer: ops after the RemoveWriter are uniformly accepted or rejected
+  (`revoked`) by the clock rule, and a racing op that linearizes before it
+  (autobee orders concurrent nodes by node timestamp) is uniformly applied.
+  Either way, one convergent view (I2), the partition a pure function of the
+  final log (I10).
+
+  Two store-side consequences follow. The emitted §3.2 clock counts the
+  appending op itself in the writer's own entry (`seq + 1`; DAG heads alone
+  give the pre-append length, which a removal that never delivered the op would
+  dominate, mis-accepting racing ops). And containment of a revoked peer is
+  app-level: `Vault.append` refuses new local ops (`VAULT_REVOKED`) once
+  `ctx/gov/removed/<self>` exists and the op's clock does not causally precede
+  it.
 
 **§8.2 optimistic onboarding on autobee (ackWriter port).** Autobee's
 optimistic path requires the batch to anchor in its system during apply or
@@ -87,18 +97,19 @@ linearizes and core folds the held range. Because the hold defers the op's
 the raw optimistic node linearized at different positions on different
 peers (observed and asserted in test/store-convergence.test.js).
 
-**Uniform autobee topo weight for all writers.** autobee@1.0.10's
-linearization comparators disagree for concurrent nodes of unequal weight
-(lib/topo.js: `isOrderedBefore` breaks its walk on
-`node.weight < link.weight` while `cmp` sorts higher weight first), so
-peers that receive concurrent indexer/non-indexer (weight 2/1) nodes in
-different arrival orders keep permanently divergent linearizations —
-observed empirically, fatal for I2 under core's order-sensitive apply (the
-reference codebases sidestep it with order-independent first-seen-wins
-applies). The store therefore admits every writer with weight 2 (the
-genesis auto-add weight), keeping the `isIndexer` bit for autobee's
-bookkeeping; §8.0 governance authority is decided from `ctx/gov` by core,
-never from autobee writer state, so spec semantics are unaffected.
+**Uniform autobee topo weight for all writers.** The store admits every
+[writer](vault-ld/GLOSSARY.md#writer) at autobee weight 2 (the genesis auto-add
+weight), keeping the `isIndexer` bit only for autobee's bookkeeping.
+
+The reason: autobee@1.0.10's linearization comparators disagree for concurrent
+nodes of unequal weight (`lib/topo.js`: `isOrderedBefore` breaks its walk on
+`node.weight < link.weight` while `cmp` sorts higher weight first). Peers that
+receive concurrent indexer/non-indexer (weight 2/1) nodes in different arrival
+orders then keep permanently divergent linearizations — observed empirically,
+fatal for I2 under core's order-sensitive apply.
+
+Governance authority is unaffected: §8.0 decides it from `ctx/gov` by core,
+never from autobee writer state, so spec semantics hold.
 
 **UNVERIFIED.** (1) `host.removeWriter` is guarded by `host.removeable(key)`;
 the autobase README does not state whether `removeable` is exact under all

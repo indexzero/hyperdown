@@ -1,9 +1,17 @@
 # DELIVERY — auto-okf v1
 
-Overnight pipeline (milestone **auto-okf v1**) reached **COMPLETE** 2026-07-14,
-driven by `/goal` under `orchestration/OKF-STATE.md`. Final verification:
-`orchestration/results/OKF-FINAL-VERIFICATION.md` (**VERDICT: FINAL-PASS**,
-independent clean clone of the stack tip).
+## Bottom line
+
+**Shipped.** All four gates pass, verified from an independent clean clone
+(G6 FINAL-PASS). One [major](okf/GLOSSARY.md#severity) awaits your
+sign-off — C1, a memory/liveness limit under sustained flood — and it does not
+block correctness: no [view](okf/GLOSSARY.md#view) hash diverges under any
+seed. Everything below defends those two sentences.
+
+The overnight pipeline (milestone **auto-okf v1**) reached **COMPLETE**
+2026-07-14, driven by `/goal` under `orchestration/OKF-STATE.md`. Final
+verification: `orchestration/results/OKF-FINAL-VERIFICATION.md`
+(independent clean clone of the stack tip).
 
 ## What was delivered
 
