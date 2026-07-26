@@ -1,23 +1,40 @@
 # Multi-writer knowledge vaults on autobee
 
-*This repository is `hyperdown`.*
-
-Agents and humans co-write shared knowledge, concurrently. Every readable file
-is *regenerated*, never authored in place: one op log is the source of truth,
-and the markdown you open is a byte-deterministic **face** of it.
+Agents write shared knowledge, concurrently or even adversarially, into an oplog a multi-writer
+key/value store (provided by [autobee], a multi-writer hyperbee). When needed, the contents of
+the underlying [autobee] can be *regenerated on disk* as markdown you open that is byte-deterministic
+representation ("face") of it.
 
 ## What's here, briefly
 
-- **[OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)**
-  (Open Knowledge Format) is a plain convention: a folder of markdown files with
+- **[OKF]** (Open Knowledge Format) is a plain convention: a folder of markdown files with
   YAML frontmatter — the kind of notes you keep in Obsidian or a docs repo.
   **[auto-okf](./okf/README.md)** makes that folder *multi-writer*. **Start here.**
 - **Vault-LD** is those same notes read as **linked data**: every field and link
   is an RDF triple you can query or export as Turtle.
   **[Vault-LD](./vault-ld/README.md)** is auto-okf *plus RDF*.
 
-Both run on [autobee](./okf/GLOSSARY.md#autobee) — a multi-writer key/value store
-(a Hyperbee that several peers append to at once).
+> [!NOTE]
+> **I decided to call this collection of tools `hyperdown`:**
+> `Hypertext + Markdown + bundling === hyperdown`
+>
+> All the machines told me **that was a bad idea.** But since when do we listen to them, right?
+
+## Caveat Emptor
+
+> [!WARNING]
+> **Status:** `PREVIEW`
+>
+> - Exensive tests, fuzz testing, and multi-writer harnesses to find
+>   non-deterministic edge cases
+> - A human (me, @indexzero) performed numerous passes to tidy up terminology
+>   (see: [okf/GLOSSARY.md](./okf/GLOSSARY.md) and [vault-ld/GLOSSARY.md](./vault-ld/GLOSSARY.md))
+> - Not (yet) published to `npm`
+> - A number of LLM orchestration files still in the source tree
+>
+> Nonetheless, [The smallest working example](#the-smallest-working-example) below
+> has real legs and has shown real promise as lightweight multi-writer native tooling
+> for OKF bundles
 
 ## The smallest working example
 
@@ -159,3 +176,6 @@ build specs are recorded per system, in
 ## License
 
 Apache-2.0
+
+[autobee]: https://github.com/holepunchto/autobee
+[OKF]: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
