@@ -19,6 +19,7 @@
     "@auto-okf/core": "workspace:*",
     "@auto-okf/faces": "workspace:*",
     "@auto-okf/store": "workspace:*",
-    "b4a": "^1.8.1"
+    "b4a": "^1.8.1",
+    "paparam": "^1.10.1"
   }
 }
