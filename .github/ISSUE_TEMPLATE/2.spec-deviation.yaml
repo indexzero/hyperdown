@@ -7,13 +7,14 @@ body:
     attributes:
       value: |
         Use this when **implementation and specification diverge** and someone has to
-        decide which one is right. DEVIATIONS.md is a first-class artifact in this repo:
+        decide which one is right. Each system's DEVIATIONS.md (`vault-ld/DEVIATIONS.md`,
+        `okf/DEVIATIONS.md`) is a first-class artifact in this repo:
         every resolved divergence ends up either fixed in code, upstreamed into the spec,
         or recorded there as an accepted deviation.
 
         The specs live at
         [okf/SPEC.md](https://github.com/indexzero/hyperwiki2/blob/main/okf/SPEC.md) and
-        `prompts/01-implementation-spec-prompt.v*` (vault-ld).
+        `orchestration/prompts/01-implementation-spec-prompt.v*` (vault-ld).
         For behavior that is simply *wrong* (no spec ambiguity), use the **Bug** template.
   - type: dropdown
     attributes:
@@ -50,7 +51,7 @@ body:
       options:
         - "Fix the code — the spec is right"
         - "Amend the spec — the code is right (upstream it)"
-        - "Record as accepted deviation in DEVIATIONS.md"
+        - "Record as accepted deviation in the system's DEVIATIONS.md"
         - "Unsure — needs discussion"
     validations:
       required: true

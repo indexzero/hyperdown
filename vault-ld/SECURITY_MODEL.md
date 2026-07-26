@@ -4,7 +4,7 @@ This is the trust story for Vault-LD: who the adversary is, which defenses
 stand between that adversary and the [view](GLOSSARY.md#view), and where the
 guarantees stop. Terms are pinned in [GLOSSARY.md](GLOSSARY.md). Spec §
 references cite the build spec,
-[`../prompts/01-implementation-spec-prompt.v5.md`](../prompts/01-implementation-spec-prompt.v5.md).
+[`../orchestration/prompts/01-implementation-spec-prompt.v5.md`](../orchestration/prompts/01-implementation-spec-prompt.v5.md).
 
 ## The adversary
 

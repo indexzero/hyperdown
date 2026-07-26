@@ -35,7 +35,7 @@ governance regime.
 | byte reclamation | `PruneRevisions`, a logged governance op | an epoch cycle: operator act, never an op |
 | invariants | I1–I10 | I1–I11 (adds the epoch roundtrip) |
 | flagship example | [recipe-book](./vault-ld/examples/recipe-book): four agents write a recipe book | [agent-session](./okf/examples/agent-session): four agents, partitioned, write a session bundle |
-| deep dive | [README](./vault-ld/README.md) · [SPEC](./prompts/01-implementation-spec-prompt.v5.md) · [SECURITY_MODEL](./vault-ld/SECURITY_MODEL.md) | [README](./okf/README.md) · [SPEC](./okf/SPEC.md) · [SECURITY_MODEL](./okf/SECURITY_MODEL.md) |
+| deep dive | [README](./vault-ld/README.md) · [SPEC](./orchestration/prompts/01-implementation-spec-prompt.v5.md) · [SECURITY_MODEL](./vault-ld/SECURITY_MODEL.md) | [README](./okf/README.md) · [SPEC](./okf/SPEC.md) · [SECURITY_MODEL](./okf/SECURITY_MODEL.md) |
 
 ## The smallest working example
 
@@ -73,7 +73,9 @@ pnpm test:okf-harness:clean    # okf fault harness (:lossy, :partitioned, :fuzz)
 ```
 
 Each system's README documents its full test surface. Deviations from the
-build specs are recorded in [`DEVIATIONS.md`](./DEVIATIONS.md).
+build specs are recorded per system, in
+[`vault-ld/DEVIATIONS.md`](./vault-ld/DEVIATIONS.md) and
+[`okf/DEVIATIONS.md`](./okf/DEVIATIONS.md).
 
 ## License
 

@@ -139,7 +139,7 @@ commands — add new ops as new commands and keep deprecated decoders forever.
 Every deviation from SPEC-FINAL, including the §8.2/§8.4 per-writer ordinal
 resolution (`seen/<W>` seen-count), the §10.1 layer/scope inference notes, the
 keyspace layout resolutions, and two UNVERIFIED items, is recorded with
-justification in [`../../DEVIATIONS.md`](../../DEVIATIONS.md).
+justification in [`../DEVIATIONS.md`](../DEVIATIONS.md).
 
 The invariant unit suite (I1..I10, §12) lives in
 [`../../test/`](../../test/) and runs with `pnpm test` from the repo root
