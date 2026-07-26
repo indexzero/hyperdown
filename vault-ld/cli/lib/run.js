@@ -4,103 +4,226 @@
 // face itself — every effect flows through the packages, so everything it
 // does is the same thing library callers do.
 //
+// The command surface is declared once as a paparam command tree (paparam
+// is Holepunch's own parser — pear's CLI runs on it); --help/-h and all
+// help text are paparam-generated.
+//
 // Exit codes: 0 success, 1 operational error, 2 usage error.
-import { parseArgs } from 'node:util'
 import { readFile, access } from 'node:fs/promises'
 import { join } from 'node:path'
 import b4a from 'b4a'
+import { command, flag, arg, summary, description, header, footer, validate, bail } from 'paparam'
 import { keyspace as K } from '@autovault-ld/core'
 import { Vault, METADATA_FILE } from '@autovault-ld/store'
 import { materialize, exportTurtle, createIngestWatcher } from '@autovault-ld/faces'
 
-const USAGE = `autovault-ld — multi-writer Vault-LD knowledge graphs on autobee
-
-Usage: autovault-ld <command> [arguments] [options]
-
-Commands:
-  init <storage>                         create a new vault; this peer's key is
-                                         the vault key and the genesis indexer
-  join <storage> <vault-key>             join an existing vault by key
-                                         (key optional when storage is pinned)
-  add-writer <storage> <writer-key>      admit a writer (indexer-issued op)
-  remove-writer <storage> <writer-key>   revoke a writer (indexer-issued op)
-  materialize <storage> <dir>            project the Markdown/Obsidian face
-  export <storage> <dir>                 export schema.ttl + data.ttl
-  flags <storage> [family]               list/inspect the flag queue
-  watch <storage> <dir>                  foreground ingest watcher (+ swarm)
-
-Options (per command):
-  init          --encryption-key <hex64>  --root-base <iri>
-  join          --encryption-key <hex64>  --metadata <invite.json>
-  add-writer    --indexer
-  export        --roundtrip
-  flags         --json
-  watch         --swarm  --confirm-deletes  --debounce <ms>
-
-Global: -h, --help          exit codes: 0 ok, 1 error, 2 usage
-`
+const TAGLINE = 'autovault-ld — multi-writer Vault-LD knowledge graphs on autobee'
+const ROOT_HEADER = `${TAGLINE}\nUsage: autovault-ld <command> [arguments] [options]`
+const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage'
 
 class UsageError extends Error {}
 
 /** Run the CLI. Returns the process exit code. */
 export async function run(argv) {
-  const [command, ...rest] = argv
-  if (!command || command === '-h' || command === '--help' || command === 'help') {
-    process.stdout.write(USAGE)
-    return command ? 0 : 2
+  let code = 0
+  let bailed = false
+
+  // Every subcommand runner owns the exit code and swallows its own errors,
+  // so paparam's bail path only ever sees parse/validation failures (exit 2).
+  const action = (name, fn) => async ({ args, flags }) => {
+    try {
+      code = await fn(args, flags)
+    } catch (err) {
+      process.stderr.write(`autovault-ld ${name}: ${err && err.message ? err.message : err}\n`)
+      code = err instanceof UsageError ? 2 : 1
+    }
   }
-  const handler = COMMANDS[command]
-  if (!handler) {
-    process.stderr.write(`autovault-ld: unknown command '${command}'\n\n${USAGE}`)
+
+  // paparam 1.10.1 enforces required args only on the root command
+  // (Command#parse checks the root's _definedArgs against the matched
+  // subcommand), so each subcommand validates its own arg modifiers.
+  const requires = (...argMods) => validate((parsed) => {
+    for (const a of argMods) {
+      if (!a.optional && !(a.name in parsed.args)) {
+        const err = new Error(`missing required argument ${a.help}`)
+        err.bail = { reason: err.message }
+        throw err
+      }
+    }
+    return true
+  })
+
+  // One subcommand: summary/description/args/flags declared once; paparam
+  // derives help, strict flag rejection, and camelCased args/flags from it.
+  const sub = ({ name, sum, desc, args = [], flags = [], run: fn }) => command(
+    name,
+    header(TAGLINE),
+    summary(sum),
+    ...(desc ? [description(desc)] : []),
+    ...args,
+    ...flags,
+    requires(...args),
+    action(name, fn)
+  )
+
+  const init = sub({
+    name: 'init',
+    sum: 'create a new vault; this peer\'s key is the vault key and the genesis indexer',
+    args: [arg('<storage>', 'vault storage directory')],
+    flags: [
+      flag('--encryption-key <hex64>', 'encryption key (64 hex characters)'),
+      flag('--root-base <iri>', 'root base IRI recorded in the vault metadata')
+    ],
+    run: cmdInit
+  })
+
+  const joinCmd = sub({
+    name: 'join',
+    sum: 'join an existing vault by key (key optional when storage is pinned)',
+    args: [
+      arg('<storage>', 'vault storage directory'),
+      arg('[vault-key]', 'vault key (64 hex characters); optional when storage is pinned')
+    ],
+    flags: [
+      flag('--encryption-key <hex64>', 'encryption key (64 hex characters)'),
+      flag('--metadata <invite.json>', 'invite metadata JSON file for non-default invites')
+    ],
+    run: cmdJoin
+  })
+
+  const addWriter = sub({
+    name: 'add-writer',
+    sum: 'admit a writer (indexer-issued op)',
+    args: [
+      arg('<storage>', 'vault storage directory'),
+      arg('<writer-key>', 'writer key (64 hex characters)')
+    ],
+    flags: [flag('--indexer', 'admit the writer as an indexer')],
+    run: cmdAddWriter
+  })
+
+  const removeWriter = sub({
+    name: 'remove-writer',
+    sum: 'revoke a writer (indexer-issued op)',
+    args: [
+      arg('<storage>', 'vault storage directory'),
+      arg('<writer-key>', 'writer key (64 hex characters)')
+    ],
+    run: cmdRemoveWriter
+  })
+
+  const materializeCmd = sub({
+    name: 'materialize',
+    sum: 'project the Markdown/Obsidian face',
+    args: [
+      arg('<storage>', 'vault storage directory'),
+      arg('<dir>', 'face directory to write')
+    ],
+    run: cmdMaterialize
+  })
+
+  const exportCmd = sub({
+    name: 'export',
+    sum: 'export schema.ttl + data.ttl',
+    args: [
+      arg('<storage>', 'vault storage directory'),
+      arg('<dir>', 'output directory for the Turtle files')
+    ],
+    flags: [flag('--roundtrip', 'emit vld:path for notes off their default location (§10.4)')],
+    run: cmdExport
+  })
+
+  const flagsCmd = sub({
+    name: 'flags',
+    sum: 'list/inspect the flag queue',
+    args: [
+      arg('<storage>', 'vault storage directory'),
+      arg('[family]', 'flag family (conflict, clobber, dangling, unmapped, rejected, …)')
+    ],
+    flags: [flag('--json', 'print the flag rows as JSON')],
+    run: cmdFlags
+  })
+
+  const watch = sub({
+    name: 'watch',
+    sum: 'foreground ingest watcher (+ swarm)',
+    args: [
+      arg('<storage>', 'vault storage directory'),
+      arg('<dir>', 'face directory to watch')
+    ],
+    flags: [
+      flag('--swarm', 'join the vault\'s hyperswarm topic for replication'),
+      flag('--confirm-deletes', 'allow deleted files to emit DeleteSubject'),
+      flag('--debounce <ms>', 'ingest debounce in milliseconds')
+    ],
+    run: cmdWatch
+  })
+
+  const root = command(
+    'autovault-ld',
+    header(ROOT_HEADER),
+    footer(FOOTER),
+    summary('multi-writer Vault-LD knowledge graphs on autobee'),
+    bail((b) => {
+      bailed = true
+      const c = b.command
+      const atRoot = c === root
+      const msg = bailMessage(b, atRoot)
+      const where = atRoot ? 'autovault-ld' : `autovault-ld ${c.name}`
+      process.stderr.write(`${where}: ${msg}\n\n${c.help()}`)
+      return msg
+    }),
+    init,
+    joinCmd,
+    addWriter,
+    removeWriter,
+    materializeCmd,
+    exportCmd,
+    flagsCmd,
+    watch
+  )
+
+  if (argv.length === 0) {
+    process.stdout.write(root.help())
     return 2
   }
-  try {
-    return await handler(rest)
-  } catch (err) {
-    if (err instanceof UsageError) {
-      process.stderr.write(`autovault-ld ${command}: ${err.message}\n\n${USAGE}`)
-      return 2
-    }
-    process.stderr.write(`autovault-ld ${command}: ${err && err.message ? err.message : err}\n`)
-    return 1
+  if (argv[0] === 'help') {
+    process.stdout.write(root.help())
+    return 0
   }
+
+  const parsed = root.parse(argv)
+  // parse() returns null both when it bailed (usage error) and when it
+  // printed --help; the bail handler above disambiguates.
+  if (parsed === null) return bailed ? 2 : 0
+  if (parsed === root) {
+    // flags-only invocation with no subcommand: same as no command at all
+    process.stdout.write(root.help())
+    return 2
+  }
+  if (parsed.running) await parsed.running
+  return code
 }
 
-const COMMANDS = {
-  init: cmdInit,
-  join: cmdJoin,
-  'add-writer': cmdAddWriter,
-  'remove-writer': cmdRemoveWriter,
-  materialize: cmdMaterialize,
-  export: cmdExport,
-  flags: cmdFlags,
-  watch: cmdWatch
+/** Human message for a paparam bail (reasons per paparam 1.10.1). */
+function bailMessage(b, atRoot) {
+  switch (b.reason) {
+    case 'UNKNOWN_FLAG':
+      return `unknown flag --${b.flag.name}`
+    case 'INVALID_FLAG':
+      return `invalid usage of flag --${b.flag.name} (missing or malformed value?)`
+    case 'UNKNOWN_ARG': {
+      const value = String((b.arg && b.arg.value) || '').split(' ')[0]
+      return atRoot ? `unknown command '${value}'` : `unexpected argument '${value}'`
+    }
+    case 'MISSING_ARG':
+      return `missing required argument ${b.arg && b.arg.value}`
+    default:
+      return b.reason
+  }
 }
 
 // ---------- argument helpers ----------
-
-function parse(rest, options, positionals) {
-  let parsed
-  try {
-    parsed = parseArgs({
-      args: rest,
-      options: { ...options, help: { type: 'boolean', short: 'h' } },
-      allowPositionals: true,
-      strict: true
-    })
-  } catch (err) {
-    throw new UsageError(err.message)
-  }
-  if (parsed.values.help) {
-    process.stdout.write(USAGE)
-    return null
-  }
-  const [min, max] = positionals
-  if (parsed.positionals.length < min || parsed.positionals.length > max) {
-    throw new UsageError(`expected ${min === max ? min : `${min}..${max}`} argument(s), got ${parsed.positionals.length}`)
-  }
-  return parsed
-}
 
 function hexKey(value, what) {
   const s = String(value).toLowerCase()
@@ -137,21 +260,16 @@ function printIdentity(vault) {
 
 // ---------- commands ----------
 
-async function cmdInit(rest) {
-  const parsed = parse(rest, {
-    'encryption-key': { type: 'string' },
-    'root-base': { type: 'string' }
-  }, [1, 1])
-  if (!parsed) return 0
-  const [storage] = parsed.positionals
+async function cmdInit(args, flags) {
+  const { storage } = args
   if (await isPinned(storage)) {
     throw new Error(`'${storage}' is already a vault (${METADATA_FILE} exists)`)
   }
   const opts = {}
-  if (parsed.values['encryption-key']) {
-    opts.encryptionKey = hexKey(parsed.values['encryption-key'], '--encryption-key')
+  if (flags.encryptionKey) {
+    opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
   }
-  if (parsed.values['root-base']) opts.metadata = { rootBase: parsed.values['root-base'] }
+  if (flags.rootBase) opts.metadata = { rootBase: flags.rootBase }
   const vault = await Vault.init(storage, opts)
   try {
     printIdentity(vault)
@@ -163,20 +281,15 @@ async function cmdInit(rest) {
   return 0
 }
 
-async function cmdJoin(rest) {
-  const parsed = parse(rest, {
-    'encryption-key': { type: 'string' },
-    metadata: { type: 'string' }
-  }, [1, 2])
-  if (!parsed) return 0
-  const [storage, key] = parsed.positionals
+async function cmdJoin(args, flags) {
+  const { storage, vaultKey } = args
   const opts = {}
-  if (key !== undefined) opts.key = hexKey(key, 'vault key')
-  if (parsed.values['encryption-key']) {
-    opts.encryptionKey = hexKey(parsed.values['encryption-key'], '--encryption-key')
+  if (vaultKey !== undefined) opts.key = hexKey(vaultKey, 'vault key')
+  if (flags.encryptionKey) {
+    opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
   }
-  if (parsed.values.metadata) {
-    opts.metadata = JSON.parse(await readFile(parsed.values.metadata, 'utf8'))
+  if (flags.metadata) {
+    opts.metadata = JSON.parse(await readFile(flags.metadata, 'utf8'))
   }
   return withVault(storage, opts, async (vault) => {
     printIdentity(vault)
@@ -186,13 +299,11 @@ async function cmdJoin(rest) {
   })
 }
 
-async function cmdAddWriter(rest) {
-  const parsed = parse(rest, { indexer: { type: 'boolean' } }, [2, 2])
-  if (!parsed) return 0
-  const [storage, writer] = parsed.positionals
-  const key = hexKey(writer, 'writer key')
+async function cmdAddWriter(args, flags) {
+  const { storage } = args
+  const key = hexKey(args.writerKey, 'writer key')
   return withVault(storage, {}, async (vault) => {
-    await vault.addWriter(key, { indexer: parsed.values.indexer === true })
+    await vault.addWriter(key, { indexer: flags.indexer === true })
     await vault.update()
     const rec = await vault.val(K.govWriter(b4a.toString(key, 'hex')))
     if (!rec) {
@@ -205,11 +316,9 @@ async function cmdAddWriter(rest) {
   })
 }
 
-async function cmdRemoveWriter(rest) {
-  const parsed = parse(rest, {}, [2, 2])
-  if (!parsed) return 0
-  const [storage, writer] = parsed.positionals
-  const key = hexKey(writer, 'writer key')
+async function cmdRemoveWriter(args) {
+  const { storage } = args
+  const key = hexKey(args.writerKey, 'writer key')
   return withVault(storage, {}, async (vault) => {
     await vault.removeWriter(key)
     await vault.update()
@@ -232,10 +341,8 @@ async function lastRejection(vault) {
   return last ? last.reason : null
 }
 
-async function cmdMaterialize(rest) {
-  const parsed = parse(rest, {}, [2, 2])
-  if (!parsed) return 0
-  const [storage, dir] = parsed.positionals
+async function cmdMaterialize(args) {
+  const { storage, dir } = args
   return withVault(storage, {}, async (vault) => {
     const report = await materialize(vault, dir)
     console.log(`materialized ${dir}: ${report.written.length} written, ${report.unchanged.length} unchanged`)
@@ -252,28 +359,24 @@ async function cmdMaterialize(rest) {
   })
 }
 
-async function cmdExport(rest) {
-  const parsed = parse(rest, { roundtrip: { type: 'boolean' } }, [2, 2])
-  if (!parsed) return 0
-  const [storage, dir] = parsed.positionals
+async function cmdExport(args, flags) {
+  const { storage, dir } = args
   return withVault(storage, {}, async (vault) => {
-    const out = await exportTurtle(vault, dir, { roundtrip: parsed.values.roundtrip === true })
+    const out = await exportTurtle(vault, dir, { roundtrip: flags.roundtrip === true })
     console.log(`schema.ttl: ${out.schema.triples} triple(s) (${out.schema.path})`)
     console.log(`data.ttl:   ${out.data.triples} triple(s) (${out.data.path})`)
     return 0
   })
 }
 
-async function cmdFlags(rest) {
-  const parsed = parse(rest, { json: { type: 'boolean' } }, [1, 2])
-  if (!parsed) return 0
-  const [storage, family] = parsed.positionals
+async function cmdFlags(args, flags) {
+  const { storage, family } = args
   const prefix = family ? `flag/${family}/` : 'flag/'
   return withVault(storage, {}, async (vault) => {
     await vault.update()
     const rows = []
     for await (const { key, value } of vault.scan(prefix)) rows.push({ key, value })
-    if (parsed.values.json) {
+    if (flags.json) {
       console.log(JSON.stringify(rows, null, 2))
     } else {
       for (const { key, value } of rows) console.log(`${key}\t${JSON.stringify(value)}`)
@@ -283,14 +386,8 @@ async function cmdFlags(rest) {
   })
 }
 
-async function cmdWatch(rest) {
-  const parsed = parse(rest, {
-    swarm: { type: 'boolean' },
-    'confirm-deletes': { type: 'boolean' },
-    debounce: { type: 'string' }
-  }, [2, 2])
-  if (!parsed) return 0
-  const [storage, dir] = parsed.positionals
+async function cmdWatch(args, flags) {
+  const { storage, dir } = args
   if (!(await isPinned(storage))) {
     throw new Error(`'${storage}' is not a vault (no ${METADATA_FILE}); run \`autovault-ld init\` or \`autovault-ld join\` first`)
   }
@@ -298,8 +395,8 @@ async function cmdWatch(rest) {
   let watcher = null
   try {
     watcher = await createIngestWatcher(vault, dir, {
-      confirmDelete: parsed.values['confirm-deletes'] ? async () => true : undefined,
-      debounce: parsed.values.debounce ? Number(parsed.values.debounce) : undefined
+      confirmDelete: flags.confirmDeletes ? async () => true : undefined,
+      debounce: flags.debounce ? Number(flags.debounce) : undefined
     })
     watcher.on('ops', ({ path, ops }) => {
       console.log(`ingested ${path}: ${ops.map((o) => o.type).join(', ')}`)
@@ -310,7 +407,7 @@ async function cmdWatch(rest) {
     })
     watcher.on('error', (err) => process.stderr.write(`watch error: ${err.message}\n`))
     vault.on('error', (err) => process.stderr.write(`vault error: ${err.message}\n`))
-    if (parsed.values.swarm) {
+    if (flags.swarm) {
       await vault.joinSwarm()
       console.log('joined hyperswarm on the vault discovery key')
     }
@@ -323,7 +420,7 @@ async function cmdWatch(rest) {
     return 0
   } finally {
     if (watcher) await watcher.close()
-    if (parsed.values.swarm) await vault.leaveSwarm().catch(() => {})
+    if (flags.swarm) await vault.leaveSwarm().catch(() => {})
     await vault.close()
   }
 }

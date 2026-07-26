@@ -5,6 +5,9 @@ The `autovault-ld` command line (SPEC-FINAL §13): a thin veneer over
 [`@autovault-ld/faces`](../faces) (materialize, ingest watcher, Turtle export).
 The CLI never writes the view or the face itself — every effect flows
 through the packages, so anything it does is exactly what library callers do.
+The command surface is declared once as a [paparam](https://github.com/holepunchto/paparam)
+command tree (Holepunch's own parser — pear's CLI runs on it); all help text
+below is what the generated `--help` prints.
 
 ```sh
 # create a vault; this peer's key is the vault key AND the genesis indexer
@@ -43,8 +46,8 @@ pnpm add @autovault-ld/cli    # or run the repo-local bin: vault-ld/cli/bin/auto
 
 | command | what it does |
 | --- | --- |
-| `init <storage>` | create a new vault at `<storage>`; prints the vault key (share it to invite peers) and this peer's writer key; refuses storage that is already pinned |
-| `join <storage> <vault-key>` | join an existing vault by key; `--metadata <invite.json>` and `--encryption-key <hex64>` carry non-default invites; with pinned storage the key is optional (reopen + reprint keys) |
+| `init <storage> [--encryption-key <hex64>] [--root-base <iri>]` | create a new vault at `<storage>`; prints the vault key (share it to invite peers) and this peer's writer key; refuses storage that is already pinned |
+| `join <storage> [vault-key]` | join an existing vault by key; `--metadata <invite.json>` and `--encryption-key <hex64>` carry non-default invites; with pinned storage the key is optional (reopen + reprint keys) |
 | `add-writer <storage> <writer-key> [--indexer]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8.0) |
 | `remove-writer <storage> <writer-key>` | append a `RemoveWriter` op; revocation is causal, not positional (§8.3) |
 | `materialize <storage> <dir>` | project the Markdown/Obsidian face; prints written/unchanged counts, and reports pending-ingest, unsafe-path, and stale files on stderr (§9.1/§9.4) |
@@ -58,7 +61,9 @@ watcher (edit the Markdown) or through the `@autovault-ld/store` API (agents).
 ## Exit codes
 
 `0` success · `1` operational error (including a governance op that apply
-rejected) · `2` usage error. `-h`/`--help` prints usage.
+rejected) · `2` usage error (unknown command/flag, missing or extra
+arguments, malformed keys). `-h`/`--help` prints the paparam-generated help
+for the root or any subcommand and exits `0`.
 
 ## Notes
 
