@@ -11,7 +11,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { generateSchedule, shrinkSchedule, saveRegression } from '../lib/fuzz.js'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 function countOps(s) {
   return s.rounds.reduce((n, r) => n + r.ops.length, 0)

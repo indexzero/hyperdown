@@ -15,7 +15,7 @@
 // node timestamp, so it linearizes before the RemoveWriter on every peer
 // and is uniformly APPLIED (it precedes the in-log revocation point); the
 // mirror arm — removal linearizes first, racing ops uniformly rejected
-// 'revoked' — is exercised by harness/scenarios/s06-revocation.test.js.
+// 'revoked' — is exercised by vault-ld/harness/scenarios/s06-revocation.test.js.
 // Either way: one convergent view. See orchestration/results/CODE-REVIEW.md
 // finding B1.
 import { test } from 'node:test'

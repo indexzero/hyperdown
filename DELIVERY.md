@@ -32,9 +32,9 @@ tag].
 | Faces (materialize, ingest watcher, turtle export) | `packages/faces` |
 | CLI (init/join/add-writer/remove-writer/materialize/export/flags/watch) | `packages/cli` |
 | Invariant unit suite (I1..I10, each ≥1 test) + regressions | `test/`, `test/regressions/` |
-| Multi-process fault-injection harness + S1..S10 + fuzz + soak | `harness/` |
-| Flagship example (4 agents co-write a recipe book; committed session dump) | `examples/recipe-book/` (+ `out/vault`, `out/rdf`) |
-| Top-level README (usage-first) + per-package READMEs | `README.md`, `packages/*/README.md`, `harness/README.md` |
+| Multi-process fault-injection harness + S1..S10 + fuzz + soak | `vault-ld/harness/` |
+| Flagship example (4 agents co-write a recipe book; committed session dump) | `vault-ld/examples/recipe-book/` (+ `out/vault`, `out/rdf`) |
+| Top-level README (usage-first) + per-package READMEs | `README.md`, `packages/*/README.md`, `vault-ld/harness/README.md` |
 | Deviations (terse; user-gutted standard) | `DEVIATIONS.md` |
 | Backlog (all minors) | `orchestration/BACKLOG.md` |
 | Code reviews | `orchestration/results/CODE-REVIEW.md`, `CODE-REVIEW-2.md` |

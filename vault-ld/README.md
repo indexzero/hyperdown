@@ -39,7 +39,7 @@ the whole workspace.
 ## The flagship example: four agents write a recipe book
 
 ```sh
-node examples/recipe-book   # from the repo root
+node vault-ld/examples/recipe-book   # from the repo root
 ```
 
 Four agent writers (each a real peer with its own writer core) build a
@@ -51,9 +51,9 @@ deterministic winner and flag the overwrite, wiki-links to not-yet-written
 notes mint IRIs and flag dangling, two agents conflict on the same prose
 body and an editor resolves it with a merge op. Then the session is dumped
 for humans: the committed, regenerated-byte-identically
-[`examples/recipe-book/out/`](../examples/recipe-book/out/) holds the
+[`examples/recipe-book/out/`](./examples/recipe-book/out/) holds the
 Markdown vault and the `schema.ttl`/`data.ttl` export. See
-[`examples/recipe-book/README.md`](../examples/recipe-book/README.md).
+[`examples/recipe-book/README.md`](./examples/recipe-book/README.md).
 
 The same substrate carries agentic communication structures — sessions,
 findings, determinations, RFCs — as sibling ontologies of the recipe book.

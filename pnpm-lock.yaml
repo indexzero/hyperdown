@@ -36,24 +36,6 @@ importers:
         specifier: ^2.8.0
         version: 2.9.0
 
-  examples/recipe-book:
-    dependencies:
-      '@autovault-ld/core':
-        specifier: workspace:*
-        version: link:../../vault-ld/core
-      '@autovault-ld/faces':
-        specifier: workspace:*
-        version: link:../../vault-ld/faces
-      '@autovault-ld/store':
-        specifier: workspace:*
-        version: link:../../vault-ld/store
-      b4a:
-        specifier: ^1.8.1
-        version: 1.8.1
-      hypercore-crypto:
-        specifier: ^3.6.1
-        version: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
-
   okf/cli:
     dependencies:
       '@auto-okf/core':
@@ -188,6 +170,24 @@ importers:
       hyperschema:
         specifier: ^1.21.0
         version: 1.21.0
+
+  vault-ld/examples/recipe-book:
+    dependencies:
+      '@autovault-ld/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@autovault-ld/faces':
+        specifier: workspace:*
+        version: link:../../faces
+      '@autovault-ld/store':
+        specifier: workspace:*
+        version: link:../../store
+      b4a:
+        specifier: ^1.8.1
+        version: 1.8.1
+      hypercore-crypto:
+        specifier: ^3.6.1
+        version: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
 
   vault-ld/faces:
     dependencies:

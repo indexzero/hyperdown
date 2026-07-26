@@ -3,8 +3,8 @@
 // Corestore directory growth per process, sampled every 30s into
 // <run>/soak.csv. Ends with a heal + convergence check.
 //
-//   node harness/soak/soak.js            # 32 minutes (default)
-//   SOAK_MINUTES=45 HARNESS_SEED=99 node harness/soak/soak.js
+//   node vault-ld/harness/soak/soak.js   # 32 minutes (default)
+//   SOAK_MINUTES=45 HARNESS_SEED=99 node vault-ld/harness/soak/soak.js
 //
 // Exit code 0 = converged at the end and no writer process died.
 import { appendFile, writeFile } from 'node:fs/promises'

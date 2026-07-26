@@ -3,7 +3,7 @@
 // vault — then a human operator dumps the result of the session as a
 // readable Markdown vault and a Turtle export (the committed out/ tree).
 //
-//   node examples/recipe-book            (from the repo root, after pnpm install)
+//   node vault-ld/examples/recipe-book   (from the repo root, after pnpm install)
 //
 // The cast (each agent is its own vault peer with its own writer core):
 //   Nova  — ontology architect (vault creator, genesis indexer)
@@ -43,7 +43,7 @@ import { materialize, exportTurtle } from '@autovault-ld/faces'
 import { keyspace as K, revHash } from '@autovault-ld/core'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const REPO = join(HERE, '..', '..')
+const REPO = join(HERE, '..', '..', '..')
 
 // Committed, human-readable output (override for tests).
 const OUT = process.env.RECIPE_BOOK_OUT ? resolve(process.env.RECIPE_BOOK_OUT) : join(HERE, 'out')

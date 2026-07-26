@@ -27,7 +27,7 @@ Every run logs a replay line:
 Reproduce a specific run by exporting its seed and profile:
 
 ```sh
-HARNESS_SEED=7 HARNESS_PROFILE=partitioned node --test harness/scenarios/s01-lww.test.js
+HARNESS_SEED=7 HARNESS_PROFILE=partitioned node --test vault-ld/harness/scenarios/s01-lww.test.js
 ```
 
 ## Environment

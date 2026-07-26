@@ -2,4 +2,4 @@ packages:
   - vault-ld/*
   - okf/*
   - okf/examples/*
-  - examples/*
+  - vault-ld/examples/*
