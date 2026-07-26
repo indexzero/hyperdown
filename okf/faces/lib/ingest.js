@@ -87,6 +87,11 @@ export class IngestWatcher extends EventEmitter {
     this._timers = new Map() // rel -> timeout
     this._ingested = new Map() // rel -> sha256 last ingested (echo suppression)
     this._fsw = null
+    this._inflight = 0 // settle/ingest passes currently running
+    this._pendingDeletes = new Set() // vanished paths awaiting the quiet-drain
+    this._drainTimer = null
+    this._scanTimer = null
+    this._scanChain = Promise.resolve() // serializes directory-event rescans
   }
 
   _start() {
@@ -103,7 +108,8 @@ export class IngestWatcher extends EventEmitter {
 
   _dirty(rel) {
     rel = rel.split(sep).join('/')
-    if (isIgnoredPath(rel) || !rel.endsWith('.md')) return
+    if (isIgnoredPath(rel)) return
+    if (!rel.endsWith('.md')) return this._dirtyMaybeDir(rel)
     const t = this._timers.get(rel)
     if (t) clearTimeout(t)
     this._timers.set(
@@ -115,18 +121,100 @@ export class IngestWatcher extends EventEmitter {
     )
   }
 
+  /**
+   * Non-`.md` watch path: possibly a DIRECTORY event. macOS delivers a
+   * subtree move (`mv Recipes Cooking`) as renames of the directories —
+   * never the nested new `.md` paths — so dropping these events loses the
+   * move entirely (issue #30). Probe after the debounce: a directory, or a
+   * path that no longer exists (renamed away), schedules one coalesced
+   * `scan()`, which is lossless by construction (ingest-first, then
+   * vacated-path deletes). A plain non-`.md` file stays ignored.
+   */
+  _dirtyMaybeDir(rel) {
+    const t = this._timers.get(rel)
+    if (t) clearTimeout(t)
+    this._timers.set(
+      rel,
+      setTimeout(() => {
+        this._timers.delete(rel)
+        this._probeDir(rel).catch((err) => this.emit('error', err))
+      }, this.debounceMs)
+    )
+  }
+
+  async _probeDir(rel) {
+    if (this.closed) return
+    const st = await statOrNull(join(this.root, rel))
+    if (st !== null && !st.isDirectory()) return
+    this._scheduleScan()
+  }
+
+  _scheduleScan() {
+    if (this._scanTimer) clearTimeout(this._scanTimer)
+    this._scanTimer = setTimeout(() => {
+      this._scanTimer = null
+      this._scanChain = this._scanChain
+        .then(() => (this.closed ? [] : this.scan()))
+        .catch((err) => this.emit('error', err))
+    }, this.debounceMs)
+  }
+
   /** §9 write-settle: read only once size+mtime are stable for one interval. */
   async _settleAndIngest(rel) {
-    let prev = await statOrNull(join(this.root, rel))
-    for (let i = 0; i < 100 && !this.closed; i++) {
-      if (prev === null) return this._maybeDelete(rel)
-      await sleep(this.settleMs)
-      const now = await statOrNull(join(this.root, rel))
-      if (now === null) return this._maybeDelete(rel)
-      if (now.size === prev.size && now.mtimeMs === prev.mtimeMs) break
-      prev = now
+    this._inflight++
+    try {
+      let prev = await statOrNull(join(this.root, rel))
+      for (let i = 0; i < 100 && !this.closed; i++) {
+        if (prev === null) return this._deferDelete(rel)
+        await sleep(this.settleMs)
+        const now = await statOrNull(join(this.root, rel))
+        if (now === null) return this._deferDelete(rel)
+        if (now.size === prev.size && now.mtimeMs === prev.mtimeMs) break
+        prev = now
+      }
+      if (!this.closed) await this.ingestFile(rel)
+    } finally {
+      this._inflight--
     }
-    if (!this.closed) await this.ingestFile(rel)
+  }
+
+  /**
+   * §9 live-watcher ordering (issue #30): a vanished path is never deleted
+   * from inside the event that noticed it — it is queued and drained only
+   * once the watcher is quiet (no pending timers, no in-flight ingest). A
+   * moved file's new path therefore ingests FIRST; its SetPath vacates the
+   * old `path/<p>` claim, so the drained delete finds no holder and emits
+   * nothing — the same ingest-before-delete order `scan()` has always had.
+   * A file that truly vanished still deletes, behind the confirmation
+   * guard, one quiet-window later.
+   */
+  _deferDelete(rel) {
+    this._pendingDeletes.add(rel)
+    this._scheduleDrain()
+  }
+
+  _scheduleDrain() {
+    if (this._drainTimer) clearTimeout(this._drainTimer)
+    this._drainTimer = setTimeout(() => {
+      this._drainTimer = null
+      if (this.closed) return
+      if (this._timers.size > 0 || this._inflight > 0) return this._scheduleDrain()
+      this._drainDeletes().catch((err) => this.emit('error', err))
+    }, this.debounceMs)
+  }
+
+  async _drainDeletes() {
+    const rels = [...this._pendingDeletes].sort(byteCmp)
+    this._pendingDeletes.clear()
+    for (const rel of rels) {
+      if (this.closed) return
+      // Reappeared (editor save cycle, move-back): an ingest, not a delete.
+      if ((await statOrNull(join(this.root, rel))) !== null) {
+        this._dirty(rel)
+        continue
+      }
+      await this._maybeDelete(rel)
+    }
   }
 
   // ---------- one-file ingest ----------
@@ -207,6 +295,18 @@ export class IngestWatcher extends EventEmitter {
     const state = await this._conceptState(id)
 
     const ops = []
+
+    // ---- tombstone (§9, issue #30): a file ON DISK bearing a known-but-
+    // tombstoned _id is intent-to-keep — the human kept, moved, or restored
+    // it. Undo the tombstone FIRST so the SetPath/SetBody below land on a
+    // live concept instead of flagging writeafterdelete while the concept
+    // stays suppressed from materialize (which would then unlink the file).
+    // Conflict copies are exempt: a transient face never resurrects the
+    // concept it mirrors (same rationale as the deletion skip). apply
+    // writes the permanent flag/undelete audit record. ----
+    if (!isConflictCopy && state.exists && state.deleted) {
+      ops.push({ type: 'undelete-concept', payload: { id } })
+    }
 
     // ---- path (§9): rename only, and never for a conflict copy sitting at
     // its stripped path (that IS the loser's materialized face) ----
@@ -376,9 +476,10 @@ export class IngestWatcher extends EventEmitter {
   // ---------- view reads ----------
 
   async _conceptState(id) {
-    const st = { exists: false, fields: new Map(), path: undefined, head: undefined, headText: '' }
+    const st = { exists: false, deleted: false, fields: new Map(), path: undefined, head: undefined, headText: '' }
     const meta = await this.vault.val(K.cMeta(id))
     st.exists = meta !== undefined
+    st.deleted = meta !== undefined && meta.deleted != null
     for await (const { key, value } of this.vault.scan(K.cFieldPrefix(id))) {
       st.fields.set(K.parseKey(key)[3], value)
     }
@@ -412,6 +513,8 @@ export class IngestWatcher extends EventEmitter {
         return this.vault.setPath(p.id, p.path)
       case 'delete-concept':
         return this.vault.deleteConcept(p.id)
+      case 'undelete-concept':
+        return this.vault.undeleteConcept(p.id)
       default:
         throw new Error('unknown ingest op: ' + op.type)
     }
@@ -484,6 +587,10 @@ export class IngestWatcher extends EventEmitter {
     if (this._fsw) this._fsw.close()
     for (const t of this._timers.values()) clearTimeout(t)
     this._timers.clear()
+    if (this._drainTimer) clearTimeout(this._drainTimer)
+    if (this._scanTimer) clearTimeout(this._scanTimer)
+    this._pendingDeletes.clear()
+    await this._scanChain
   }
 }
 

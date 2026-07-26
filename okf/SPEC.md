@@ -1,8 +1,16 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.3 (2026-07-15). RFC 2119
+**Status:** Normative build instruction, v1.4 (2026-07-26). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.3 upstreams the auto-okf delivery + deviation learnings
+**Changelog:** v1.4 closes the live-watcher directory-move
+data-preservation gap (issue #30) with three §9 ingest-watcher rules — a
+disk file bearing a known-but-tombstoned `_id` is intent-to-keep
+(`UndeleteConcept` first), vanished-path deletion defers to a quiet-window
+drain so present-file ingests land first, and directory watch events
+schedule a coalesced `scan()` instead of being dropped; the deterministic
+core is unchanged (a write to a tombstone still lands-and-flags, §8), and
+the corresponding Known-limitations entry is removed. v1.3 upstreams the
+auto-okf delivery + deviation learnings
 (sources: `DELIVERY.md`, `DEVIATIONS.md`) so the spec matches delivered
 reality: revHash length prefix corrected to u64 BE (§5); uniform writer
 weight corrected to 2 (§8); optimistic onboarding resolved as store-side
@@ -565,6 +573,33 @@ saga is the cautionary tale). The rules are frozen:
   removing a loser's face would delete a live concept the next
   `materialize` immediately re-emits. Deleting the winner's canonical file
   still deletes the concept behind the confirmation guard.
+- **Live-watcher deletion ordering (issue #30).** A vanished path MUST NOT
+  emit `DeleteConcept` from the event that noticed it: it is queued and
+  drained only once the watcher is quiet (no pending debounce timers, no
+  in-flight ingest). A moved file's new path therefore ingests first, and
+  its `SetPath` vacates the old `path/` claim, so the drained delete finds
+  no holder and emits nothing — `scan()`'s ingest-before-delete order,
+  event-driven. A file that truly vanished still deletes (behind the
+  guard) one quiet window later.
+- **Tombstoned `_id` on disk is intent-to-keep (issue #30).** A file whose
+  known `_id` resolves to a tombstoned concept MUST make ingest emit
+  `UndeleteConcept` before any other op for that file, so the follow-on
+  `SetPath`/`SetBody` land on a live concept; apply records the permanent
+  `flag/undelete` audit row. Conflict copies are exempt — a transient face
+  never resurrects the concept it mirrors (same rationale as the deletion
+  skip above). The deterministic core is deliberately unchanged: apply
+  never auto-resurrects on `SetPath` (any straggler rename from any writer
+  would make deletion impossible to make stick, and replay semantics of
+  existing logs would shift); a write to a tombstone still
+  lands-and-flags (§8). Intent-to-keep is decided at the ingest layer
+  because that is where the evidence — the file's presence on disk —
+  lives.
+- **Directory watch events MUST rescan, never drop.** A non-`.md` watch
+  path that stats as a directory — or no longer exists (renamed away) —
+  schedules one coalesced `scan()`: macOS delivers a subtree move as
+  directory-rename events only, never the nested new `.md` paths, so
+  dropping non-`.md` events loses the move entirely (issue #30). `scan()`
+  is lossless by construction (ingest-first, then vacated-path deletes).
 - Links: standard markdown links per OKF §5 (absolute bundle-relative
   preferred); extraction feeds `link/`, `bl/`, and `wanted/`. **A link
   whose target path does not resolve goes to `wanted/` — the ranked demand
@@ -697,14 +732,6 @@ are honest scale/edge caveats recorded by the delivery (`DELIVERY.md`,
   `type` register at the op level (§5, reason `empty-type`); the ingest edge
   around an empty-string `type` in an authored file is a documented
   minor.
-- **Directory moves through the live watcher (ingest-layer data-preservation
-  gap, GitHub issue #30).** Beyond v1's lack of move atomicity (§7), the live
-  `fs.watch` ingest watcher mishandles directory moves: on macOS the move
-  events can be missed (leaving a duplicated bundle), and a delete-guard-on
-  event ordering can tombstone + unlink moved files before their `SetPath`
-  lands (a `SetPath` on a tombstone is a silent no-op). The safe path for a
-  directory move is a one-shot reconciliation — `scan()` / `auto-okf ingest`
-  with the delete guard off — not the live watcher.
 
 ## 13. Deliverables
 
