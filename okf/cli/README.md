@@ -5,7 +5,10 @@ The `auto-okf` command line (okf SPEC §13): a thin veneer over
 [`@auto-okf/faces`](../faces) (materialize, ingest watcher, the `wanted/`
 demand index, epoch-cycle compaction). The CLI never writes the view or the
 face itself — every effect flows through the packages, so anything it does is
-exactly what a library caller does.
+exactly what a library caller does. The command surface is declared once as a
+[paparam](https://github.com/holepunchto/paparam) command tree (Holepunch's
+own CLI parser — pear runs on it), and all help text is generated from those
+declarations.
 
 ## A working example
 
@@ -80,7 +83,10 @@ There is no content-write command: content flows in through `ingest`/`watch`
 
 `0` success · `1` operational error (including a governance op that apply
 rejected, or a `materialize` blocked on a pending-ingest file) · `2` usage
-error. `-h`/`--help` prints usage (top-level and per command).
+error — unknown flags and commands, missing or extra arguments, and malformed
+values all exit 2 (paparam parses strictly; the wrapper maps every parse
+failure to 2). `-h`/`--help` prints the paparam-generated help (top-level and
+per command) and exits 0.
 
 ## Notes
 

@@ -4,77 +4,259 @@
 // or the face itself — every effect flows through the packages, so everything
 // it does is exactly what a library caller does.
 //
-// Exit codes: 0 success, 1 operational error, 2 usage error.
-import { parseArgs } from 'node:util'
+// The command surface is declared once as a paparam command tree (paparam is
+// Holepunch's own parser — pear's CLI runs on it): a root command composing
+// the 12 subcommands from command()/flag()/arg(), with --help|-h and all help
+// text generated from the declarations.
+//
+// Exit codes: 0 success, 1 operational error, 2 usage error. paparam's
+// parse() returns null on any parse failure; the wrapper maps that — unknown
+// flag/command, extra arguments, bad flag values, and (via per-command
+// validate()) missing required arguments — to 2, never letting paparam pick
+// the code. Unknown flags are rejected strictly, as before.
 import { readFile, access } from 'node:fs/promises'
 import { join } from 'node:path'
 import b4a from 'b4a'
+import { command, flag, arg, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
 import { initVault, openVault, joinVault, METADATA_FILE } from '@auto-okf/store'
 import { materialize, createIngestWatcher, wanted, compact } from '@auto-okf/faces'
 
-const USAGE = `auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)
-
-Usage: auto-okf <command> [arguments] [options]
-
-Commands:
-  init <dir>                             create a new vault; this peer's key is
-                                         the vault key and the genesis indexer
-  join <dir> <vault-key>                 join an existing vault by key
-                                         (key optional when <dir> is pinned)
-  add-writer <dir> <writer-key>          admit a writer (indexer-issued op)
-  remove-writer <dir> <writer-key>       revoke a writer (indexer-issued op)
-  materialize <dir> <bundle-dir>         project the OKF v0.1 bundle to disk
-  ingest <dir> <bundle-dir>              fold on-disk edits back in as ops (one-shot)
-  watch <dir> <bundle-dir>               foreground ingest watcher (+ optional swarm)
-  wanted <dir>                           print the ranked demand index (wanted/)
-  flags <dir> [family]                   list/inspect the flag queue (flag/)
-  compact <dir> <out-dir>                epoch-cycle compaction into a fresh vault
-  resolve <dir> <id> --keep <revHash>    resolve an open body conflict on <id>
-  undelete <dir> <id>                    restore a tombstoned concept
-
-Options (per command):
-  init           --encryption-key <hex64>
-  join           --encryption-key <hex64>  --metadata <invite.json>
-  add-writer     --indexer
-  materialize    --force-mirror
-  ingest         --confirm-deletes
-  watch          --swarm  --confirm-deletes  --debounce <ms>
-  wanted         --json
-  flags          --json
-  compact        --force  --face <dir>
-  resolve        --keep <revHash>  --supersede <revHash> (repeatable)  --text <string>
-
-Global: -h, --help          exit codes: 0 ok, 1 error, 2 usage
-`
+const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
+const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage'
 
 class UsageError extends Error {}
 
 /** Run the CLI. Returns the process exit code. */
 export async function run(argv) {
-  const [command, ...rest] = argv
-  if (!command || command === '-h' || command === '--help' || command === 'help') {
-    process.stdout.write(USAGE)
-    return command ? 0 : 2
+  const { root, captured } = buildCli()
+
+  // Parity with the pre-paparam CLI: `auto-okf help` prints help and exits 0.
+  if (argv[0] === 'help') {
+    process.stdout.write(root.help())
+    return 0
   }
-  const handler = COMMANDS[command]
-  if (!handler) {
-    process.stderr.write(`auto-okf: unknown command '${command}'\n\n${USAGE}`)
+
+  let parsed = null
+  try {
+    parsed = root.parse(argv, { run: false })
+  } catch (err) {
+    process.stderr.write(`auto-okf: ${err && err.message ? err.message : err}\n`)
     return 2
   }
+
+  if (parsed === null) {
+    // Either --help|-h (paparam printed the generated help; success) or a
+    // parse bail (captured by the bail handler; usage error).
+    if (captured.bail === null) return 0
+    const b = captured.bail
+    process.stderr.write(`${formatBail(b, root)}\n\n${(b.command || root).help()}`)
+    return 2
+  }
+
+  if (parsed === root) {
+    // Bare `auto-okf` with no command: print help, exit 2 (usage).
+    process.stdout.write(root.help())
+    return 2
+  }
+
+  const handler = HANDLERS[parsed.name]
   try {
-    return await handler(rest)
+    return await handler(parsed)
   } catch (err) {
     if (err instanceof UsageError) {
-      process.stderr.write(`auto-okf ${command}: ${err.message}\n\n${USAGE}`)
+      process.stderr.write(`auto-okf ${parsed.name}: ${err.message}\n\n${parsed.help()}`)
       return 2
     }
-    process.stderr.write(`auto-okf ${command}: ${err && err.message ? err.message : err}\n`)
+    process.stderr.write(`auto-okf ${parsed.name}: ${err && err.message ? err.message : err}\n`)
     return 1
   }
 }
 
-const COMMANDS = {
+// ---------- command tree (paparam) ----------
+
+/**
+ * Build the paparam command tree. Returns { root, captured }; captured.bail
+ * holds the paparam bail object after a failed parse (null otherwise), so the
+ * wrapper can map every parse failure to exit 2.
+ */
+function buildCli() {
+  const captured = { bail: null }
+
+  // Every subcommand carries the title header; the root adds the literal
+  // usage synopsis line beneath it (paparam's own oneliner renders as
+  // `auto-okf [flags] [command]`).
+  const sub = (name, sum, ...mods) => command(name, header(TITLE), summary(sum), ...mods)
+
+  const cmds = [
+    sub(
+      'init',
+      "create a new vault; this peer's key is the vault key and the genesis indexer",
+      arg('<dir>', 'vault storage directory'),
+      flag('--encryption-key <hex64>', 'encrypt the vault with this key (64 hex chars)'),
+      requiredArgs('<dir>')
+    ),
+    sub(
+      'join',
+      'join an existing vault by key (key optional when <dir> is pinned)',
+      arg('<dir>', 'vault storage directory'),
+      arg('[vault-key]', 'vault key (64 hex chars; optional when <dir> is pinned)'),
+      flag('--encryption-key <hex64>', 'encrypt the vault with this key (64 hex chars)'),
+      flag('--metadata <invite.json>', 'invite metadata file'),
+      requiredArgs('<dir>')
+    ),
+    sub(
+      'add-writer',
+      'admit a writer (indexer-issued op)',
+      arg('<dir>', 'vault storage directory'),
+      arg('<writer-key>', 'writer public key (64 hex chars)'),
+      flag('--indexer', 'admit the writer as an indexer'),
+      requiredArgs('<dir>', '<writer-key>')
+    ),
+    sub(
+      'remove-writer',
+      'revoke a writer (indexer-issued op)',
+      arg('<dir>', 'vault storage directory'),
+      arg('<writer-key>', 'writer public key (64 hex chars)'),
+      requiredArgs('<dir>', '<writer-key>')
+    ),
+    sub(
+      'materialize',
+      'project the OKF v0.1 bundle to disk',
+      arg('<dir>', 'vault storage directory'),
+      arg('<bundle-dir>', 'OKF bundle directory'),
+      flag('--force-mirror', 'restore unconditional mirroring'),
+      requiredArgs('<dir>', '<bundle-dir>')
+    ),
+    sub(
+      'ingest',
+      'fold on-disk edits back in as ops (one-shot)',
+      arg('<dir>', 'vault storage directory'),
+      arg('<bundle-dir>', 'OKF bundle directory'),
+      flag('--confirm-deletes', 'let a file deleted on disk emit DeleteConcept'),
+      requiredArgs('<dir>', '<bundle-dir>')
+    ),
+    sub(
+      'watch',
+      'foreground ingest watcher (+ optional swarm)',
+      arg('<dir>', 'vault storage directory'),
+      arg('<bundle-dir>', 'OKF bundle directory'),
+      flag('--swarm', "join the vault's hyperswarm topic for replication"),
+      flag('--confirm-deletes', 'let a file deleted on disk emit DeleteConcept'),
+      flag('--debounce <ms>', 'ingest debounce in milliseconds'),
+      requiredArgs('<dir>', '<bundle-dir>')
+    ),
+    sub(
+      'wanted',
+      'print the ranked demand index (wanted/)',
+      arg('<dir>', 'vault storage directory'),
+      flag('--json', 'print the structured rows'),
+      requiredArgs('<dir>')
+    ),
+    sub(
+      'flags',
+      'list/inspect the flag queue (flag/)',
+      arg('<dir>', 'vault storage directory'),
+      arg('[family]', 'flag family (conflict, clobber, pathcollision, …)'),
+      flag('--json', 'print the structured rows'),
+      requiredArgs('<dir>')
+    ),
+    sub(
+      'compact',
+      'epoch-cycle compaction into a fresh vault',
+      arg('<dir>', 'vault storage directory'),
+      arg('<out-dir>', 'directory for the fresh epoch vault'),
+      flag('--force', 'compact despite open conflict/pathcollision flags'),
+      flag('--face <dir>', 'hydrated face directory (default: <out-dir>.face)'),
+      requiredArgs('<dir>', '<out-dir>')
+    ),
+    sub(
+      'resolve',
+      'resolve an open body conflict on <id>',
+      arg('<dir>', 'vault storage directory'),
+      arg('<id>', 'concept id'),
+      flag('--keep <revHash>', 'revision hash to pin as the head (required)'),
+      flag('--supersede <revHash>', 'conflict revision to supersede (repeatable)').multiple(),
+      flag('--text <string>', 'replacement body text'),
+      requiredArgs('<dir>', '<id>')
+    ),
+    sub(
+      'undelete',
+      'restore a tombstoned concept',
+      arg('<dir>', 'vault storage directory'),
+      arg('<id>', 'concept id'),
+      requiredArgs('<dir>', '<id>')
+    )
+  ]
+
+  const root = command(
+    'auto-okf',
+    header(`${TITLE}\nUsage: auto-okf <command> [arguments] [options]`),
+    footer(FOOTER),
+    bail((b) => {
+      captured.bail = b
+      return formatBail(b, root)
+    }),
+    ...cmds
+  )
+  return { root, captured }
+}
+
+/**
+ * validate() modifier enforcing required positionals on a subcommand.
+ * paparam's own MISSING_ARG check inspects only the command parse() was
+ * called on (the root), so subcommands enforce theirs here; the thrown
+ * err.bail routes through the root bail handler to exit 2. Runs after the
+ * --help check, so `auto-okf <cmd> -h` still prints help without arguments.
+ */
+function requiredArgs(...specs) {
+  return validate((parsed) => {
+    for (const spec of specs) {
+      if (!(argName(spec) in parsed.args)) {
+        const reason = `missing required argument ${spec}`
+        const err = new Error(reason)
+        err.bail = { reason }
+        throw err
+      }
+    }
+    return true
+  })
+}
+
+/** camelCase an arg spec ('<writer-key>' → 'writerKey') the way paparam does. */
+function argName(spec) {
+  const parts = spec.match(/([a-zA-Z0-9-]+)/)[1].split(/-+/)
+  for (let i = 1; i < parts.length; i++) {
+    parts[i] = parts[i].slice(0, 1).toUpperCase() + parts[i].slice(1)
+  }
+  return parts.join('')
+}
+
+/** One usage-error line for a paparam bail object. */
+function formatBail(b, root) {
+  const where =
+    b.command && b.command !== root && b.command.name ? `auto-okf ${b.command.name}` : 'auto-okf'
+  switch (b.reason) {
+    case 'UNKNOWN_FLAG':
+      return `${where}: unknown flag ${flagLabel(b.flag)}`
+    case 'INVALID_FLAG':
+      return `${where}: invalid flag ${flagLabel(b.flag)} (missing or unexpected value)`
+    case 'UNKNOWN_ARG':
+      return b.command === root
+        ? `auto-okf: unknown command '${String(b.arg.value).split(' ')[0]}'`
+        : `${where}: unexpected argument '${b.arg.value}'`
+    case 'MISSING_ARG':
+      return `${where}: missing required argument ${b.arg.value}`
+    default:
+      return `${where}: ${b.reason}`
+  }
+}
+
+function flagLabel(f) {
+  return f ? (f.long ? `--${f.name}` : `-${f.name}`) : ''
+}
+
+const HANDLERS = {
   init: cmdInit,
   join: cmdJoin,
   'add-writer': cmdAddWriter,
@@ -90,31 +272,6 @@ const COMMANDS = {
 }
 
 // ---------- argument helpers ----------
-
-function parse(rest, options, positionals) {
-  let parsed
-  try {
-    parsed = parseArgs({
-      args: rest,
-      options: { ...options, help: { type: 'boolean', short: 'h' } },
-      allowPositionals: true,
-      strict: true
-    })
-  } catch (err) {
-    throw new UsageError(err.message)
-  }
-  if (parsed.values.help) {
-    process.stdout.write(USAGE)
-    return null
-  }
-  const [min, max] = positionals
-  if (parsed.positionals.length < min || parsed.positionals.length > max) {
-    throw new UsageError(
-      `expected ${min === max ? min : `${min}..${max}`} argument(s), got ${parsed.positionals.length}`
-    )
-  }
-  return parsed
-}
 
 function hexKey(value, what) {
   const s = String(value).toLowerCase()
@@ -163,16 +320,14 @@ async function rejectionFor(vault, seq) {
 
 // ---------- commands ----------
 
-async function cmdInit(rest) {
-  const parsed = parse(rest, { 'encryption-key': { type: 'string' } }, [1, 1])
-  if (!parsed) return 0
-  const [dir] = parsed.positionals
+async function cmdInit({ args, flags }) {
+  const dir = args.dir
   if (await isPinned(dir)) {
     throw new Error(`'${dir}' is already a vault (${METADATA_FILE} exists)`)
   }
   const opts = {}
-  if (parsed.values['encryption-key']) {
-    opts.encryptionKey = hexKey(parsed.values['encryption-key'], '--encryption-key')
+  if (flags.encryptionKey) {
+    opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
   }
   const vault = await initVault(dir, opts)
   try {
@@ -186,19 +341,14 @@ async function cmdInit(rest) {
   return 0
 }
 
-async function cmdJoin(rest) {
-  const parsed = parse(rest, {
-    'encryption-key': { type: 'string' },
-    metadata: { type: 'string' }
-  }, [1, 2])
-  if (!parsed) return 0
-  const [dir, key] = parsed.positionals
+async function cmdJoin({ args, flags }) {
+  const { dir, vaultKey: key } = args
   const opts = {}
-  if (parsed.values['encryption-key']) {
-    opts.encryptionKey = hexKey(parsed.values['encryption-key'], '--encryption-key')
+  if (flags.encryptionKey) {
+    opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
   }
-  if (parsed.values.metadata) {
-    opts.metadata = JSON.parse(await readFile(parsed.values.metadata, 'utf8'))
+  if (flags.metadata) {
+    opts.metadata = JSON.parse(await readFile(flags.metadata, 'utf8'))
   }
   // A pinned dir reopens without a key; a fresh dir needs the vault key.
   const pinned = await isPinned(dir)
@@ -218,13 +368,10 @@ async function cmdJoin(rest) {
   }
 }
 
-async function cmdAddWriter(rest) {
-  const parsed = parse(rest, { indexer: { type: 'boolean' } }, [2, 2])
-  if (!parsed) return 0
-  const [dir, writer] = parsed.positionals
-  const key = hexKey(writer, 'writer key')
-  return withVault(dir, {}, async (vault) => {
-    const { seq } = await vault.addWriter(key, { indexer: parsed.values.indexer === true })
+async function cmdAddWriter({ args, flags }) {
+  const key = hexKey(args.writerKey, 'writer key')
+  return withVault(args.dir, {}, async (vault) => {
+    const { seq } = await vault.addWriter(key, { indexer: flags.indexer === true })
     await vault.update()
     const rec = await vault.val(K.govWriter(b4a.toString(key, 'hex')))
     if (!rec) {
@@ -240,12 +387,9 @@ async function cmdAddWriter(rest) {
   })
 }
 
-async function cmdRemoveWriter(rest) {
-  const parsed = parse(rest, {}, [2, 2])
-  if (!parsed) return 0
-  const [dir, writer] = parsed.positionals
-  const key = hexKey(writer, 'writer key')
-  return withVault(dir, {}, async (vault) => {
+async function cmdRemoveWriter({ args }) {
+  const key = hexKey(args.writerKey, 'writer key')
+  return withVault(args.dir, {}, async (vault) => {
     const { seq } = await vault.removeWriter(key)
     await vault.update()
     const rec = await vault.val(K.govRemoved(b4a.toString(key, 'hex')))
@@ -262,13 +406,11 @@ async function cmdRemoveWriter(rest) {
   })
 }
 
-async function cmdMaterialize(rest) {
-  const parsed = parse(rest, { 'force-mirror': { type: 'boolean' } }, [2, 2])
-  if (!parsed) return 0
-  const [dir, bundleDir] = parsed.positionals
+async function cmdMaterialize({ args, flags }) {
+  const { dir, bundleDir } = args
   return withVault(dir, {}, async (vault) => {
     const report = await materialize(vault, bundleDir, {
-      forceMirror: parsed.values['force-mirror'] === true
+      forceMirror: flags.forceMirror === true
     })
     console.log(
       `materialized ${bundleDir}: ${report.written.length} written, ` +
@@ -289,14 +431,12 @@ async function cmdMaterialize(rest) {
   })
 }
 
-async function cmdIngest(rest) {
-  const parsed = parse(rest, { 'confirm-deletes': { type: 'boolean' } }, [2, 2])
-  if (!parsed) return 0
-  const [dir, bundleDir] = parsed.positionals
+async function cmdIngest({ args, flags }) {
+  const { dir, bundleDir } = args
   return withVault(dir, {}, async (vault) => {
     const watcher = await createIngestWatcher(vault, bundleDir, {
       watch: false,
-      confirmDelete: parsed.values['confirm-deletes'] ? async () => true : undefined
+      confirmDelete: flags.confirmDeletes ? async () => true : undefined
     })
     let files = 0
     let ops = 0
@@ -322,14 +462,8 @@ async function cmdIngest(rest) {
   })
 }
 
-async function cmdWatch(rest) {
-  const parsed = parse(rest, {
-    swarm: { type: 'boolean' },
-    'confirm-deletes': { type: 'boolean' },
-    debounce: { type: 'string' }
-  }, [2, 2])
-  if (!parsed) return 0
-  const [dir, bundleDir] = parsed.positionals
+async function cmdWatch({ args, flags }) {
+  const { dir, bundleDir } = args
   if (!(await isPinned(dir))) {
     throw new Error(
       `'${dir}' is not a vault (no ${METADATA_FILE}); run \`auto-okf init\` or \`auto-okf join\` first`
@@ -340,8 +474,8 @@ async function cmdWatch(rest) {
   let swarmed = false
   try {
     watcher = await createIngestWatcher(vault, bundleDir, {
-      confirmDelete: parsed.values['confirm-deletes'] ? async () => true : undefined,
-      debounce: parsed.values.debounce ? Number(parsed.values.debounce) : undefined
+      confirmDelete: flags.confirmDeletes ? async () => true : undefined,
+      debounce: flags.debounce ? Number(flags.debounce) : undefined
     })
     watcher.on('ops', ({ path, ops }) => {
       console.log(`ingested ${path}: ${ops.map((o) => o.type).join(', ') || '(no-op)'}`)
@@ -354,7 +488,7 @@ async function cmdWatch(rest) {
     )
     watcher.on('error', (err) => process.stderr.write(`watch error: ${err.message}\n`))
     vault.on('error', (err) => process.stderr.write(`vault error: ${err.message}\n`))
-    if (parsed.values.swarm) {
+    if (flags.swarm) {
       await vault.swarm()
       swarmed = true
       console.log('joined hyperswarm on the vault discovery key')
@@ -373,14 +507,11 @@ async function cmdWatch(rest) {
   }
 }
 
-async function cmdWanted(rest) {
-  const parsed = parse(rest, { json: { type: 'boolean' } }, [1, 1])
-  if (!parsed) return 0
-  const [dir] = parsed.positionals
-  return withVault(dir, {}, async (vault) => {
+async function cmdWanted({ args, flags }) {
+  return withVault(args.dir, {}, async (vault) => {
     await vault.update()
     const rows = await wanted(vault)
-    if (parsed.values.json) {
+    if (flags.json) {
       console.log(JSON.stringify(rows, null, 2))
     } else {
       for (const { path, count, referrers } of rows) {
@@ -392,16 +523,14 @@ async function cmdWanted(rest) {
   })
 }
 
-async function cmdFlags(rest) {
-  const parsed = parse(rest, { json: { type: 'boolean' } }, [1, 2])
-  if (!parsed) return 0
-  const [dir, family] = parsed.positionals
+async function cmdFlags({ args, flags }) {
+  const { dir, family } = args
   const prefix = family ? `flag/${family}/` : 'flag/'
   return withVault(dir, {}, async (vault) => {
     await vault.update()
     const rows = []
     for await (const { key, value } of vault.scan(prefix)) rows.push({ key, value })
-    if (parsed.values.json) {
+    if (flags.json) {
       console.log(JSON.stringify(rows, null, 2))
     } else {
       for (const { key, value } of rows) console.log(`${key}\t${JSON.stringify(value)}`)
@@ -411,20 +540,15 @@ async function cmdFlags(rest) {
   })
 }
 
-async function cmdCompact(rest) {
-  const parsed = parse(rest, {
-    force: { type: 'boolean' },
-    face: { type: 'string' }
-  }, [2, 2])
-  if (!parsed) return 0
-  const [dir, outDir] = parsed.positionals
-  const faceDir = parsed.values.face || `${outDir}.face`
+async function cmdCompact({ args, flags }) {
+  const { dir, outDir } = args
+  const faceDir = flags.face || `${outDir}.face`
   return withVault(dir, {}, async (vault) => {
     const res = await compact(vault, {
       initVault,
       toDir: faceDir,
       vaultDir: outDir,
-      force: parsed.values.force === true
+      force: flags.force === true
     })
     try {
       console.log(`compacted ${dir} -> ${outDir} (epoch ${res.epoch})`)
@@ -443,19 +567,13 @@ async function cmdCompact(rest) {
   })
 }
 
-async function cmdResolve(rest) {
-  const parsed = parse(rest, {
-    keep: { type: 'string' },
-    supersede: { type: 'string', multiple: true },
-    text: { type: 'string' }
-  }, [2, 2])
-  if (!parsed) return 0
-  const [dir, id] = parsed.positionals
-  const keep = parsed.values.keep
+async function cmdResolve({ args, flags }) {
+  const { dir, id } = args
+  const keep = flags.keep
   if (!keep) throw new UsageError('--keep <revHash> is required')
   return withVault(dir, {}, async (vault) => {
-    const opts = { supersede: parsed.values.supersede || [] }
-    if (parsed.values.text !== undefined) opts.text = parsed.values.text
+    const opts = { supersede: flags.supersede || [] }
+    if (flags.text !== undefined) opts.text = flags.text
     const { seq } = await vault.resolveConflict(id, keep, opts)
     await vault.update()
     const reason = await rejectionFor(vault, seq)
@@ -470,10 +588,8 @@ async function cmdResolve(rest) {
   })
 }
 
-async function cmdUndelete(rest) {
-  const parsed = parse(rest, {}, [2, 2])
-  if (!parsed) return 0
-  const [dir, id] = parsed.positionals
+async function cmdUndelete({ args }) {
+  const { dir, id } = args
   return withVault(dir, {}, async (vault) => {
     const { seq } = await vault.undeleteConcept(id)
     await vault.update()

@@ -68,6 +68,9 @@ importers:
       b4a:
         specifier: ^1.8.1
         version: 1.8.1
+      paparam:
+        specifier: ^1.10.1
+        version: 1.10.1
 
   okf/core:
     dependencies:
@@ -459,6 +462,9 @@ packages:
 
   noise-handshake@4.2.0:
     resolution: {integrity: sha512-9O/VTNX/E2/AToyMTTDU0J/4WhaXMTdqc2DHs9vf+snoZ0cenSBq0dNYTVV1snYYEkmo6QeRrYMxtqtoYnY+LA==}
+
+  paparam@1.10.1:
+    resolution: {integrity: sha512-viyQI64VIja0Za3njIzhoEP8ZVkgPowhZPuG0E96NwBfYJ6ZIyrrlhWGtFPkdN7eYLl2L8CTWL+wla0evm1KKQ==}
 
   process@0.11.10:
     resolution: {integrity: sha512-cdGef/drWFoydD1JsMzuFf8100nZl+GT+yacc2bEced5f9Rjk4z+WtFUTBu9PhOi9j/jfmBPu0mMEY4wIdAF8A==}
@@ -1148,6 +1154,8 @@ snapshots:
       - bare-url
       - react-native-b4a
       - sodium-javascript
+
+  paparam@1.10.1: {}
 
   process@0.11.10: {}
 
