@@ -3,7 +3,7 @@
 **Status:** Normative build instruction, v1.3 (2026-07-15). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
 **Changelog:** v1.3 upstreams the auto-okf delivery + deviation learnings
-(sources: `DELIVERY-OKF.md`, `DEVIATIONS.md`) so the spec matches delivered
+(sources: `DELIVERY.md`, `DEVIATIONS.md`) so the spec matches delivered
 reality: revHash length prefix corrected to u64 BE (§5); uniform writer
 weight corrected to 2 (§8); optimistic onboarding resolved as store-side
 DAG-level `host.ackWriter` with `hold/` full-payload folding — acked nodes
@@ -678,8 +678,8 @@ No text CRDT for bodies. No HTTP API. No vlurp codebase changes. No
 `viz.html`.
 
 **Known limitations (v1)** — determinism (I1/I2/I10) holds throughout; these
-are honest scale/edge caveats recorded by the delivery (`DELIVERY-OKF.md`,
-`orchestration/BACKLOG.md`), not correctness gaps:
+are honest scale/edge caveats recorded by the delivery (`DELIVERY.md`,
+`../orchestration/BACKLOG.md`), not correctness gaps:
 
 - **C1 — soak memory/liveness under sustained flood (scale limit, not a
   determinism issue).** Under a ~22-min sustained lossy flood with

@@ -5,12 +5,13 @@
 **Shipped.** Every gate passed, verified from an independent clean clone (G6
 FINAL-PASS): the invariant suite is green, the multi-process harness matrix is
 green at all fault profiles, and two converged peers emit byte-identical
-faces. No [major](vault-ld/GLOSSARY.md#severity) is waived; the open items are minors,
+faces. No [major](GLOSSARY.md#severity) is waived; the open items are minors,
 batched. Everything below defends those sentences.
 
-The pipeline completed 2026-07-04 under `prompts/04-supervisor-prompt.md`,
+The pipeline completed 2026-07-04 under
+`../orchestration/prompts/04-supervisor-prompt.md`,
 driven by `/goal`. Final verification:
-`orchestration/results/final-verification.md` (independent clean clone).
+`../orchestration/results/final-verification.md` (independent clean clone).
 
 ## What was delivered
 
@@ -25,21 +26,21 @@ tag].
 
 | Artifact | Path |
 |---|---|
-| SPEC-FINAL (v5; G1-PASS) | `prompts/01-implementation-spec-prompt.v5.md` |
-| Spec revisions v1..v4 + review chain | `prompts/01-implementation-spec-prompt*.md`, `orchestration/results/P1-1-SPEC-REVIEW.md`, `P2-{1,2}-SPEC-REVIEW.md`, `P2-{3,4}-CLOSURE.md`, `P2-{1..4}-DISPOSITIONS.md` |
+| SPEC-FINAL (v5; G1-PASS) | `../orchestration/prompts/01-implementation-spec-prompt.v5.md` |
+| Spec revisions v1..v4 + review chain | `../orchestration/prompts/01-implementation-spec-prompt*.md`, `../orchestration/results/P1-1-SPEC-REVIEW.md`, `P2-{1,2}-SPEC-REVIEW.md`, `P2-{3,4}-CLOSURE.md`, `P2-{1..4}-DISPOSITIONS.md` |
 | Core (ops, apply, keyspace, canonical forms, revHash) | `packages/core` |
 | Store (vault lifecycle on autobee, governance, replication) | `packages/store` |
 | Faces (materialize, ingest watcher, turtle export) | `packages/faces` |
 | CLI (init/join/add-writer/remove-writer/materialize/export/flags/watch) | `packages/cli` |
-| Invariant unit suite (I1..I10, each ≥1 test) + regressions | `test/`, `test/regressions/` |
-| Multi-process fault-injection harness + S1..S10 + fuzz + soak | `vault-ld/harness/` |
-| Flagship example (4 agents co-write a recipe book; committed session dump) | `vault-ld/examples/recipe-book/` (+ `out/vault`, `out/rdf`) |
-| Top-level README (usage-first) + per-package READMEs | `README.md`, `packages/*/README.md`, `vault-ld/harness/README.md` |
+| Invariant unit suite (I1..I10, each ≥1 test) + regressions | `../test/`, `../test/regressions/` |
+| Multi-process fault-injection harness + S1..S10 + fuzz + soak | `harness/` |
+| Flagship example (4 agents co-write a recipe book; committed session dump) | `examples/recipe-book/` (+ `out/vault`, `out/rdf`) |
+| Top-level README (usage-first) + per-package READMEs | `../README.md`, `packages/*/README.md`, `harness/README.md` |
 | Deviations (terse; user-gutted standard) | `DEVIATIONS.md` |
-| Backlog (all minors) | `orchestration/BACKLOG.md` |
-| Code reviews | `orchestration/results/CODE-REVIEW.md`, `CODE-REVIEW-2.md` |
-| Gate evidence | `orchestration/results/G3-verification.md`, `final-verification.md` |
-| Ledger (state, log, dispatches D-001..D-022) | `orchestration/` |
+| Backlog (all minors) | `../orchestration/BACKLOG.md` |
+| Code reviews | `../orchestration/results/CODE-REVIEW.md`, `CODE-REVIEW-2.md` |
+| Gate evidence | `../orchestration/results/G3-verification.md`, `final-verification.md` |
+| Ledger (state, log, dispatches D-001..D-022) | `../orchestration/` |
 | PR stack (never merged by the supervisor, per owner instruction) | #1 bootstrap → #2 spec → #3 core → #4 store → #5 faces → #6 cli/example/README → #7 harness/review/fixes |
 
 ## Gates
@@ -58,7 +59,7 @@ tag].
 
 None. Every blocker and major across both review lineages was FIXED (spec:
 F/B/M series across v2..v5; code: B1 8ff981b, M1 7222bf0, M2 5ae8147).
-Minors are batched in `orchestration/BACKLOG.md` (O1 sole-indexer guard,
+Minors are batched in `../orchestration/BACKLOG.md` (O1 sole-indexer guard,
 L1 post-load quiesce stall, lint sweep, stale harness README line, d.ts
 stubs).
 

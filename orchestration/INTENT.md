@@ -6,7 +6,7 @@ between a supervisor's recollection and this file, this file wins (subject to
 STATE.md for pipeline state).
 
 - **Outcome:** Vault-LD-on-Autobase delivered via the P1–P6 supervisor pipeline
-  (`prompts/04-supervisor-prompt.md`) to COMPLETE (or a genuine loop-ceiling /
+  (`orchestration/prompts/04-supervisor-prompt.md`) to COMPLETE (or a genuine loop-ceiling /
   human-only BLOCKED), every gate backed by artifact evidence in
   `orchestration/STATE.md`.
 - **User:** Charlie (indexzero), reviewing post-hoc via a stack of open PRs —
