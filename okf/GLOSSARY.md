@@ -158,7 +158,7 @@ Cunningham's sense. Sorted by referrer count. Queryable work for writers.
 **Not this:** not a flag. An unwritten concept is legitimate, healthy state,
 never an error.
 
-### epoch / compact
+### generation / compact
 Operator-only byte reclamation: materialize the live bundle, optionally delete
 files on disk, init a fresh vault, ingest with `_id` adoption, record the
 predecessor in the new vault's metadata. The CouchDB-compaction homage.
@@ -186,7 +186,7 @@ the log so it cannot be reached from inside it.
 A named correctness property the test suite maps to: I1 determinism, I2
 convergence, I3 rebuild equivalence, I4 no-silent-loss, I5 OR-set law, I6 LWW
 law, I7 flag/conflict lifecycle, I8 index coherence, I9 face determinism, I10
-governance, I11 epoch roundtrip.
+governance, I11 generation roundtrip.
 **Not this:** not a test — an invariant is the property; a test is evidence for
 it.
 

@@ -1,8 +1,8 @@
 // Store scope (okf SPEC §13, T4): vault-metadata determinism — the pinned
 // document is byte-identical across peers (incl. the §8 appendOnly
-// constant and the §10 epoch-chain fields), the appendOnly constant is
+// constant and the §10 generation-chain fields), the appendOnly constant is
 // immutable (unrepresentable off and refused at open when tampered), and
-// the per-epoch writer namespace derives deterministically from the
+// the per-generation writer namespace derives deterministically from the
 // predecessor fields.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,9 +14,9 @@ import {
   metadataHash,
   canonicalMetadataBytes,
   loadMetadata,
-  epochId,
+  generationId,
   METADATA_FILE,
-  GENESIS_EPOCH,
+  ROOT_GENERATION,
   tmpDir,
   pair,
   until
@@ -38,11 +38,11 @@ test('vault metadata is deterministic and identical across peers', async (t) => 
   // §8: the appendOnly constant, written at init, loaded at open
   assert.equal(a.metadata.appendOnly, true)
   assert.equal(b.metadata.appendOnly, true)
-  // §10: epoch-chain fields identical (genesis vault: both null)
+  // §10: generation-chain fields identical (root vault: both null)
   assert.equal(a.metadata.predecessorKey, null)
   assert.equal(a.metadata.predecessorCheckpoint, null)
-  assert.equal(a.metadata.epoch, GENESIS_EPOCH)
-  assert.equal(a.epoch, GENESIS_EPOCH)
+  assert.equal(a.metadata.generation, ROOT_GENERATION)
+  assert.equal(a.generation, ROOT_GENERATION)
 
   // cross-peer pin: same canonical bytes, same hash, on disk and in memory
   assert.equal(metadataHash(a.metadata), metadataHash(b.metadata))
@@ -93,7 +93,7 @@ test('a mismatched invite is refused (metadata is convergence-relevant)', async 
   )
 })
 
-test('epoch chain: predecessor fields pin a deterministic writer namespace (§10)', async (t) => {
+test('generation chain: predecessor fields pin a deterministic writer namespace (§10)', async (t) => {
   const checkpoint = {
     viewHash: '1'.repeat(64),
     writerLengths: [['a'.repeat(64), 12]],
@@ -102,56 +102,56 @@ test('epoch chain: predecessor fields pin a deterministic writer namespace (§10
   }
   const predecessorKey = 'd'.repeat(64)
 
-  // the epoch id is a pure function of the predecessor fields
-  const e1 = epochId(predecessorKey, checkpoint)
-  const e2 = epochId(predecessorKey, checkpoint)
+  // the generation id is a pure function of the predecessor fields
+  const e1 = generationId(predecessorKey, checkpoint)
+  const e2 = generationId(predecessorKey, checkpoint)
   assert.equal(e1, e2)
-  assert.notEqual(e1, GENESIS_EPOCH)
+  assert.notEqual(e1, ROOT_GENERATION)
   assert.match(e1, /^[0-9a-f]{64}$/)
 
   // half a chain is invalid
-  assert.throws(() => epochId(predecessorKey, null), /together/)
+  assert.throws(() => generationId(predecessorKey, null), /together/)
   assert.throws(
     () => createMetadata({ genesisKey: 'a'.repeat(64), predecessorKey }),
     /together/
   )
 
   // a fresh vault records the chain and derives its writer cores under the
-  // per-epoch namespace: same directory, different epoch → different vault
+  // per-generation namespace: same directory, different generation → different vault
   // (writer) key — the §10 keypair-freshness guarantee
-  const dir = await tmpDir('meta-epoch')
+  const dir = await tmpDir('meta-generation')
   const genesisVault = await Vault.init(dir)
   const genesisKey = genesisVault.keyHex
   await genesisVault.close()
 
-  const dir2 = await tmpDir('meta-epoch') // fresh dir, epoch-2 vault
+  const dir2 = await tmpDir('meta-generation') // fresh dir, generation-2 vault
   const next = await Vault.init(dir2, {
     metadata: { predecessorKey, predecessorCheckpoint: checkpoint }
   })
   t.after(() => next.close())
   assert.equal(next.metadata.predecessorKey, predecessorKey)
   assert.deepEqual(next.metadata.predecessorCheckpoint, checkpoint)
-  assert.equal(next.metadata.epoch, e1)
-  assert.equal(next.epoch, e1)
+  assert.equal(next.metadata.generation, e1)
+  assert.equal(next.generation, e1)
   assert.notEqual(next.keyHex, genesisKey)
 
-  // reopen from disk restores the same epoch and key
+  // reopen from disk restores the same generation and key
   await next.close()
   const reopened = await Vault.open(dir2)
   t.after(() => reopened.close())
-  assert.equal(reopened.epoch, e1)
-  assert.equal(reopened.metadata.epoch, e1)
+  assert.equal(reopened.generation, e1)
+  assert.equal(reopened.metadata.generation, e1)
 })
 
-test('same corestore directory, different epochs → fresh writer keypairs (§10)', async (t) => {
+test('same corestore directory, different generations → fresh writer keypairs (§10)', async (t) => {
   // the hazard §10 names: an operator re-inits in a REUSED directory; the
-  // per-epoch namespace must still yield a fresh local writer keypair
+  // per-generation namespace must still yield a fresh local writer keypair
   const dir = await tmpDir('meta-reuse')
   const v1 = await Vault.init(dir)
   const k1 = v1.keyHex
   await v1.close()
 
-  // simulate the epoch cycle re-using the directory: remove the pinned
+  // simulate the generation cycle re-using the directory: remove the pinned
   // metadata (operator archived the old vault), init with a predecessor
   const { rm } = await import('node:fs/promises')
   await rm(join(dir, METADATA_FILE))
@@ -162,6 +162,6 @@ test('same corestore directory, different epochs → fresh writer keypairs (§10
     }
   })
   t.after(() => v2.close())
-  assert.notEqual(v2.keyHex, k1, 'writer keypair does not recur across epochs')
+  assert.notEqual(v2.keyHex, k1, 'writer keypair does not recur across generations')
   assert.equal(v2.metadata.predecessorKey, k1, 'chain recorded')
 })

@@ -1,5 +1,5 @@
-// I11 Roundtrip (okf SPEC §10 epoch cycling, §11 I11, §14 acceptance):
-// materialize -> ingest into a FRESH vault (an epoch cycle) preserves every
+// I11 Roundtrip (okf SPEC §10 generation cycling, §11 I11, §14 acceptance):
+// materialize -> ingest into a FRESH vault (a generation cycle) preserves every
 // live concept's _id, type, fields, tags, path and head body byte-for-byte,
 // while HISTORY (old revisions, per-op attribution) is shed by design.
 //
@@ -76,7 +76,7 @@ async function readBundle(root, rel = '', out = new Map()) {
 }
 
 // §14: byte-fidelity is judged "modulo the _rev frontmatter lines and the
-// regenerated log.md" (both necessarily re-derive in the new epoch — a head
+// regenerated log.md" (both necessarily re-derive in the new generation — a head
 // that was an EDIT re-roots at base:null, changing its revHash). Everything
 // else — _id, type, all fields, tags, path (the filename), body — must be
 // byte-identical.
@@ -177,7 +177,7 @@ async function buildNonTrivial(v) {
   return { a, b, c, d }
 }
 
-test('I11: an epoch cycle round-trips a non-trivial bundle (state + identity fidelity)', async () => {
+test('I11: a generation cycle round-trips a non-trivial bundle (state + identity fidelity)', async () => {
   const old = await initVault(await tmpDir('old-vault'))
   const ids = await buildNonTrivial(old)
   await old.update()
@@ -193,7 +193,7 @@ test('I11: an epoch cycle round-trips a non-trivial bundle (state + identity fid
   assert.equal(rOld.ok, true)
   const oldBundle = await readBundle(oldDir)
 
-  // --- the epoch cycle ---
+  // --- the generation cycle ---
   const res = await compact(old, {
     toDir: await tmpDir('compact-face'),
     vaultDir: await tmpDir('new-vault'),
@@ -201,27 +201,27 @@ test('I11: an epoch cycle round-trips a non-trivial bundle (state + identity fid
   })
   const nu = res.vault
 
-  // §10 epoch chain metadata is recorded in the new vault.
+  // §10 generation chain metadata is recorded in the new vault.
   assert.equal(res.predecessorKey, old.keyHex)
   assert.equal(nu.metadata.predecessorKey, old.keyHex)
   assert.match(nu.metadata.predecessorCheckpoint.viewHash, /^[0-9a-f]{64}$/)
   assert.equal(res.predecessorPath, old.dir, 'compact must return the predecessor path (never deletes it)')
 
-  // §10/N2 epoch key-freshness: fresh epoch namespace + fresh writer keypair,
+  // §10/N2 generation key-freshness: fresh generation namespace + fresh writer keypair,
   // which is exactly why adoption of the predecessor's mint-shaped ids does
   // not deadlock on mint-collision-risk.
-  assert.notEqual(nu.epoch, 'genesis', 'new vault must have a fresh (non-genesis) epoch namespace')
+  assert.notEqual(nu.generation, 'root', 'new vault must have a fresh (non-root) generation namespace')
   assert.notEqual(
     Buffer.from(nu.localKey).toString('hex'),
     Buffer.from(old.localKey).toString('hex'),
-    'new vault must use a fresh writer keypair (a keypair MUST NOT recur across epochs)'
+    'new vault must use a fresh writer keypair (a keypair MUST NOT recur across generations)'
   )
 
-  // §10 epoch log entry recorded in the new vault's log/.
+  // §10 generation log entry recorded in the new vault's log/.
   const logEntry = JSON.parse(await readFile(res.logPath, 'utf8'))
-  assert.equal(logEntry.kind, 'epoch')
+  assert.equal(logEntry.kind, 'generation')
   assert.equal(logEntry.predecessorKey, old.keyHex)
-  assert.equal(logEntry.epoch, nu.epoch)
+  assert.equal(logEntry.generation, nu.generation)
 
   // --- I11 byte fidelity: new bundle == old bundle (modulo _rev + log.md) ---
   const newDir = await tmpDir('new-bundle')
@@ -309,44 +309,44 @@ test('I11 guardrail: compact refuses an undrained conflict without force, procee
   await nu.close()
 })
 
-test('I11: a second epoch cycle (epoch chain of length 2) still round-trips', async () => {
+test('I11: a second generation cycle (generation chain of length 2) still round-trips', async () => {
   const gen = await initVault(await tmpDir('gen-vault'))
   await buildNonTrivial(gen)
   await gen.update()
 
-  // cycle 1: genesis -> epoch1
+  // cycle 1: root -> generation1
   const dir1 = await tmpDir('e1-bundle')
   const res1 = await compact(gen, { toDir: await tmpDir('e1-face'), vaultDir: await tmpDir('e1-vault'), initVault })
   const e1 = res1.vault
   const b1 = await readBundle((await materialize(e1, dir1), dir1))
 
-  // cycle 2: epoch1 -> epoch2
+  // cycle 2: generation1 -> generation2
   const dir2 = await tmpDir('e2-bundle')
   const res2 = await compact(e1, { toDir: await tmpDir('e2-face'), vaultDir: await tmpDir('e2-vault'), initVault })
   const e2 = res2.vault
   const b2 = await readBundle((await materialize(e2, dir2), dir2))
 
-  // epoch chain of length 2: genesis <- epoch1 <- epoch2.
+  // generation chain of length 2: root <- generation1 <- generation2.
   assert.equal(e1.metadata.predecessorKey, gen.keyHex)
   assert.equal(e2.metadata.predecessorKey, e1.keyHex)
-  assert.notEqual(e2.epoch, e1.epoch)
-  assert.notEqual(e2.epoch, 'genesis')
+  assert.notEqual(e2.generation, e1.generation)
+  assert.notEqual(e2.generation, 'root')
 
   // The second cycle round-trips: once history is shed every body is a
   // base:null revision, so a further cycle preserves even _rev.
-  assert.equal(bundleDiff(normalizeBundle(b2), normalizeBundle(b1)), null, 'second epoch cycle did not round-trip')
+  assert.equal(bundleDiff(normalizeBundle(b2), normalizeBundle(b1)), null, 'second generation cycle did not round-trip')
 
-  // Identity still preserved end-to-end (genesis live ids == epoch2 live ids).
+  // Identity still preserved end-to-end (root live ids == generation2 live ids).
   const genLive = await liveConcepts(gen)
   const e2Live = await liveConcepts(e2)
-  assert.deepEqual([...e2Live.keys()].sort(), [...genLive.keys()].sort(), 'identity lost across two epoch cycles')
+  assert.deepEqual([...e2Live.keys()].sort(), [...genLive.keys()].sort(), 'identity lost across two generation cycles')
 
   await gen.close()
   await e1.close()
   await e2.close()
 })
 
-test('I11: --force carries a path-collision conflict copy across the epoch (old path -> new path)', async () => {
+test('I11: --force carries a path-collision conflict copy across the generation (old path -> new path)', async () => {
   const a = await initVault(await tmpDir('cc-a'))
   const b = await joinVault(await tmpDir('cc-b'), a.key)
   let unpair = pair(a, b)

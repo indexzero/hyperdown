@@ -82,7 +82,7 @@ showing off append-only) and [`vlurp-library`](./examples/vlurp-library/)
 No component ever treats a generated face as authoritative: human edits to
 the bundle re-enter as ops (§9), and a face can always be regenerated,
 byte-identically, from a converged view (I9). Byte reclamation is an
-[epoch cycle](./GLOSSARY.md#epoch--compact) — materialize, re-ingest into
+[generation cycle](./GLOSSARY.md#generation--compact) — materialize, re-ingest into
 a fresh vault with `_id` adoption — an operator act, never an op (§10).
 
 ## Packages
@@ -90,8 +90,8 @@ a fresh vault with `_id` adoption — an operator act, never an op (§10).
 | package | what it is |
 | --- | --- |
 | [`@auto-okf/core`](./core) | the op wire codec, the pure deterministic `apply`, the view keyspace, canonical forms |
-| [`@auto-okf/store`](./store) | vault lifecycle on autobee: op emission, §8 governance, metadata pinning (the append-only constant + epoch chain), swarm replication |
-| [`@auto-okf/faces`](./faces) | materialize (bundle + `index.md`/`log.md`), the ingest watcher, the `wanted/` demand index, epoch-cycle compact |
+| [`@auto-okf/store`](./store) | vault lifecycle on autobee: op emission, §8 governance, metadata pinning (the append-only constant + generation chain), swarm replication |
+| [`@auto-okf/faces`](./faces) | materialize (bundle + `index.md`/`log.md`), the ingest watcher, the `wanted/` demand index, generation-cycle compact |
 | [`@auto-okf/cli`](./cli) | `auto-okf init/join/add-writer/remove-writer/materialize/ingest/watch/wanted/flags/resolve/undelete/compact` |
 
 Each package README is usage-first with the full API surface.
@@ -115,7 +115,7 @@ pnpm test:okf:soak              # sustained-flood soak
 
 From the repo root. The invariant suite maps each of I1–I11 (determinism,
 convergence, rebuild equivalence, no-silent-loss, OR-set law, LWW law,
-conflict lifecycle, index coherence, face determinism, governance, epoch
+conflict lifecycle, index coherence, face determinism, governance, generation
 roundtrip) to at least one test; the harness drives real per-writer OS
 processes through a fault proxy; the example suites assert the committed
 `out/` trees regenerate byte-identically.

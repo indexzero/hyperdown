@@ -239,9 +239,9 @@ test('§4: hostile strings cannot escape their key family', async () => {
   assert.equal(K.parseKey(stale[0])[3], 'x/y')
 })
 
-test('§6: adopting an unknown _id (epoch-cycle contract) works and preserves identity', async () => {
+test('§6: adopting an unknown _id (generation-cycle contract) works and preserves identity', async () => {
   const env = new Env({ genesis: 'A' })
-  const carried = 'abcdef0123456789' // 16-hex id from a predecessor epoch
+  const carried = 'abcdef0123456789' // 16-hex id from a predecessor generation
   env.op('A', 'create-concept', { id: carried, path: 'epoch/doc', type: 'note' })
   env.op('A', 'set-body', { id: carried, base: null, text: 'carried across' })
   const view = await env.run()

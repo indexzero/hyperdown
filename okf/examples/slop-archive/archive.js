@@ -125,7 +125,7 @@ async function main() {
   say('DeleteConcept is a tombstone; there is no prune/compact/gc op to represent, so an agent')
   say('literally cannot express "erase this from history". appendOnly lives OUTSIDE the log — no')
   say('op can flip it, and a tampered okf-vault.json refuses to open. Byte reclamation is an')
-  say('operator-only epoch-cycle (compact), never an agent action.')
+  say('operator-only generation-cycle (compact), never an agent action.')
 
   // ---- 5. dump the archive ------------------------------------------------
   console.log('\n--- archive dump ---')

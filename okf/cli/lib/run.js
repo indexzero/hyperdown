@@ -1,6 +1,6 @@
 // auto-okf CLI (okf SPEC §13): a thin veneer over @auto-okf/store (vault
 // lifecycle + §8 governance ops) and @auto-okf/faces (materialize, ingest
-// watcher, wanted index, epoch-cycle compact). The CLI never writes the view
+// watcher, wanted index, generation-cycle compact). The CLI never writes the view
 // or the face itself — every effect flows through the packages, so everything
 // it does is exactly what a library caller does.
 //
@@ -163,9 +163,9 @@ function buildCli() {
     ),
     sub(
       'compact',
-      'epoch-cycle compaction into a fresh vault',
+      'generation-cycle compaction into a fresh vault',
       arg('<dir>', 'vault storage directory'),
-      arg('<out-dir>', 'directory for the fresh epoch vault'),
+      arg('<out-dir>', 'directory for the fresh generation vault'),
       flag('--force', 'compact despite open conflict/pathcollision flags'),
       flag('--face <dir>', 'hydrated face directory (default: <out-dir>.face)'),
       requiredArgs('<dir>', '<out-dir>')
@@ -333,7 +333,7 @@ async function cmdInit({ args, flags }) {
   try {
     printIdentity(vault)
     console.log(`storage:     ${dir}`)
-    console.log(`epoch:       ${vault.epoch}`)
+    console.log(`generation:  ${vault.generation}`)
     console.log('this peer is the genesis indexer (§8); share the vault key to invite peers')
   } finally {
     await vault.close()
@@ -551,7 +551,7 @@ async function cmdCompact({ args, flags }) {
       force: flags.force === true
     })
     try {
-      console.log(`compacted ${dir} -> ${outDir} (epoch ${res.epoch})`)
+      console.log(`compacted ${dir} -> ${outDir} (generation ${res.generation})`)
       console.log(`hydrated face:    ${faceDir}`)
       console.log(`predecessor:      ${res.predecessorPath} (NOT deleted — archive out-of-band)`)
       console.log(`new vault key:    ${res.vault.keyHex}`)

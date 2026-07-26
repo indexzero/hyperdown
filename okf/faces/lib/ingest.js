@@ -6,7 +6,7 @@
 //
 // Identity is the concept's `_id` (§6), not the filename: a known `_id` at a
 // new path is a rename (SetPath); a missing `_id` mints; an unknown `_id` is
-// ADOPTED (the epoch-cycle contract, §10). `_id`/`_rev` are stripped from
+// ADOPTED (the generation-cycle contract, §10). `_id`/`_rev` are stripped from
 // the frontmatter diff (identity + derived output, never fields, §5).
 //
 // Link handling is APPLY's job: a SetBody triggers core's normative link

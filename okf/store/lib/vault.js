@@ -1,8 +1,8 @@
 // Vault (okf SPEC §13 store deliverable): multiwriter vault lifecycle on
-// autobee — corestore in (writer cores derived under the §10 per-epoch
+// autobee — corestore in (writer cores derived under the §10 per-generation
 // namespace), Autobee up, @auto-okf/core's deterministic apply wired
 // through the ViewAdapter into autobee's apply — plus §8 governance op
-// emission, vault-metadata pinning (§8 append-only constant + §10 epoch
+// emission, vault-metadata pinning (§8 append-only constant + §10 generation
 // chain), hyperswarm replication, and opt-in append backpressure.
 // Pattern ancestor: vault-ld/store/lib/vault.js (patterns only, no code
 // path shared — SPEC §0 copy-don't-depend).
@@ -28,7 +28,7 @@
 //   snapshot), db.writable, db.isIndexer, append(buf|[bufs],{optimistic}),
 //   update()/updated()/flush(), replicate(isInitiator|stream).
 // - db.close() closes the corestore it was handed (index.js _close): we
-//   hand it the per-epoch namespace SESSION; the root corestore is closed
+//   hand it the per-generation namespace SESSION; the root corestore is closed
 //   by Vault.close() (corestore@7.11.0 index.js: closing a session never
 //   closes the root; closing the root closes every session).
 // - genesis: autobee auto-adds the first writer with full permissions
@@ -72,14 +72,14 @@ import {
   saveMetadata,
   metadataHash,
   applyConfig,
-  epochId,
+  generationId,
   keyHex
 } from './metadata.js'
 
 // §10: writer cores (and autobee's system/view cores) derive under this
-// prefix + metadata.epoch, so a writer keypair can never recur across
-// epochs even in a reused corestore directory.
-const EPOCH_NS = 'okf/epoch/'
+// prefix + metadata.generation, so a writer keypair can never recur across
+// generations even in a reused corestore directory.
+const GENERATION_NS = 'okf/generation/'
 
 // Defaults for the opt-in append backpressure (vault-ld M2 ancestry, the
 // measured finding ported wholesale: a local-fold-only throttle is NOT
@@ -119,7 +119,7 @@ export class Vault extends EventEmitter {
     this.store = this.dir ? new Corestore(this.dir) : storage
     this.db = null
     this.metadata = null
-    this.epoch = null
+    this.generation = null
     this.swarmInstance = opts.swarm || null
     this._ownSwarm = false
     this._onConnection = null
@@ -201,7 +201,7 @@ export class Vault extends EventEmitter {
     // constructed, so replayed/reorged nodes fold under pinned metadata.
     if (stored) this._setApply(stored)
 
-    // §10: the per-epoch namespace is derivable before the Autobee exists —
+    // §10: the per-generation namespace is derivable before the Autobee exists —
     // it is a pure function of the (stored or invited) predecessor fields.
     const predKey = stored
       ? stored.predecessorKey
@@ -209,8 +209,8 @@ export class Vault extends EventEmitter {
     const predCp = stored
       ? stored.predecessorCheckpoint
       : (overrides && overrides.predecessorCheckpoint) ?? null
-    this.epoch = epochId(predKey, predCp)
-    const session = this.store.namespace(EPOCH_NS + this.epoch)
+    this.generation = generationId(predKey, predCp)
+    const session = this.store.namespace(GENERATION_NS + this.generation)
 
     const bootKey = stored
       ? b4a.from(stored.genesisKey, 'hex')
@@ -385,7 +385,7 @@ export class Vault extends EventEmitter {
       this.swarmInstance = null
       this._ownSwarm = false
     }
-    // db.close() closes the epoch SESSION (autobee _close); the root
+    // db.close() closes the generation SESSION (autobee _close); the root
     // corestore — which the Vault owns either way — closes after it.
     if (this.db) await this.db.close()
     await this.store.close()
@@ -432,7 +432,7 @@ export class Vault extends EventEmitter {
   }
 
   /**
-   * §10 checkpoint material for the NEXT epoch's metadata:
+   * §10 checkpoint material for the NEXT generation's metadata:
    * `{ viewHash, writerLengths }` — writerLengths from the view's seen/
    * family (the §3 per-writer ordinal source), sorted by writer key.
    */

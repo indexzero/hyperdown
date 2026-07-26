@@ -69,7 +69,7 @@ pending-ingest, and the run exits nonzero (`--force-mirror` is the
 operator override) (§9).
 
 Ingest believes the disk, deliberately. An unknown `_id` is adopted — that
-is the §10 epoch contract — subject to the seen-id and mint-collision
+is the §10 generation contract — subject to the seen-id and mint-collision
 rules; a file deleted on disk becomes `DeleteConcept` only behind a
 confirmation guard, default on; edits to the generated `index.md`/`log.md`
 are ignored.
@@ -87,13 +87,13 @@ coincidence:
   human-authored double `.conflict-` suffix becomes permanent
   pending-ingest.
 
-### The epoch chain is provenance, not proof
+### The generation chain is provenance, not proof
 
 Compaction is an operator act via the hydrated face, never an op (§10).
 The new vault records `{ predecessorKey, predecessorCheckpoint }`, signed
-by the operator key that ran compact; consumers MUST treat cross-epoch
-identity as trusted-operator scope. Within one epoch, identity is checked
-by apply. Across epochs, you are trusting the operator.
+by the operator key that ran compact; consumers MUST treat cross-generation
+identity as trusted-operator scope. Within one generation, identity is checked
+by apply. Across generations, you are trusting the operator.
 
 History is shed by design: old revisions, per-op attribution, and clocks
 do not survive a cycle. [I11](GLOSSARY.md#invariant-i1i11) is the
@@ -114,7 +114,7 @@ Measured. [I1–I11](GLOSSARY.md#invariant-i1i11) each map to at least one
 test; the multi-process fault harness runs the full scenario matrix at
 three fault profiles (clean, lossy, partitioned) with no divergence, and
 its S8 revocation scenario converges where vault-ld's analogous B1 run
-originally diverged; the epoch roundtrip (I11) is an acceptance criterion
+originally diverged; the generation roundtrip (I11) is an acceptance criterion
 (§14).
 
 Best-effort, and open. **C1** (**major**, awaiting sign-off): under a

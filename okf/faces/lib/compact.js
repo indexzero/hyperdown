@@ -1,26 +1,26 @@
-// compact(vault, opts) — okf SPEC §10 epoch-cycle compaction (the CouchDB
+// compact(vault, opts) — okf SPEC §10 generation-cycle compaction (the CouchDB
 // homage, part two). Byte reclamation is an OPERATOR ACT VIA THE HYDRATED
 // FACE, never an op (§8: the wire contract has no prune/compact/byte-
 // destroying op at all). Compaction:
 //
 //   1. materialize the LIVE bundle (heads + _id/_rev; tombstoned concepts
 //      suppressed; open conflicts as conflicted copies) into `toDir`;
-//   2. init a FRESH vault whose writer keypairs cannot recur across epochs
-//      (@auto-okf/store derives writer cores under a per-epoch corestore
+//   2. init a FRESH vault whose writer keypairs cannot recur across generations
+//      (@auto-okf/store derives writer cores under a per-generation corestore
 //      namespace keyed by the predecessor fields — §10/N2, so adoption of
 //      the predecessor's mint-shaped ids never deadlocks `mint-collision-
 //      risk`);
 //   3. ingest the bundle into the fresh vault with `_id` ADOPTION (§6/§9:
 //      an incoming `_id` unknown to the fresh vault is authoritative on
-//      create, so identity lineage survives the epoch);
-//   4. record the epoch chain in the fresh vault's metadata
-//      ({ predecessorKey, predecessorCheckpoint }) and an epoch entry in the
+//      create, so identity lineage survives the generation);
+//   4. record the generation chain in the fresh vault's metadata
+//      ({ predecessorKey, predecessorCheckpoint }) and a generation entry in the
 //      fresh vault's `log/`.
 //
 // Effect = CouchDB compaction (SPEC §10, I11): live STATE and IDENTITY
 // survive byte-for-byte (every live concept's _id, type, fields, tags, path,
 // head body), while HISTORY (old revisions, per-op attribution, clocks) is
-// shed BY DESIGN. `_rev` and `log.md` necessarily re-derive in the new epoch
+// shed BY DESIGN. `_rev` and `log.md` necessarily re-derive in the new generation
 // (SPEC §14): a head that was an EDIT (non-null base) re-roots at `base:null`
 // in the fresh vault, so its revHash — the emitted `_rev` — changes even
 // though the head TEXT is identical.
@@ -53,10 +53,10 @@ import { parseNote, renderNote } from './yaml.js'
 import { walkNotes, isReservedFile } from './fsatomic.js'
 
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}\.md$/
-const EPOCH_LOG_REL = 'log/epoch.json'
+const GENERATION_LOG_REL = 'log/generation.json'
 
 /**
- * Run one epoch cycle. `vault` is the (open) predecessor @auto-okf/store
+ * Run one generation cycle. `vault` is the (open) predecessor @auto-okf/store
  * Vault. Options:
  *
  *   initVault    (REQUIRED) the @auto-okf/store `initVault(dir, opts)` — the
@@ -69,16 +69,16 @@ const EPOCH_LOG_REL = 'log/epoch.json'
  *   force        proceed even though `flag/conflict` or `flag/pathcollision`
  *                is non-empty (SPEC §10 guardrail). Without it, compact
  *                REFUSES (throws COMPACT_REFUSED) so live conflicts are never
- *                silently frozen into a new epoch.
+ *                silently frozen into a new generation.
  *   keyPair      custom signing keypair for the fresh vault's local writer
- *                (else the store generates a fresh one under the epoch ns).
+ *                (else the store generates a fresh one under the generation ns).
  *   encryptionKey  32-byte key for a private fresh vault (end to end).
  *   sign         async (checkpoint) => { signer, signature } (hex) — signs the
- *                predecessor checkpoint that anchors the epoch chain (§10:
+ *                predecessor checkpoint that anchors the generation chain (§10:
  *                operator-signed provenance, never verified here).
  *
  * Returns { ok, predecessorKey, predecessorPath, predecessorCheckpoint,
- *   vault (the fresh OPEN vault — the CALLER closes it), vaultDir, epoch,
+ *   vault (the fresh OPEN vault — the CALLER closes it), vaultDir, generation,
  *   bundleDir, stageDir, conflictCopies, logEntry, logPath, ingestOps }.
  *
  * compact NEVER deletes the predecessor: it returns `predecessorPath` for the
@@ -135,7 +135,7 @@ export async function compact(vault, opts = {}) {
     if (!fm) continue // no frontmatter => not a concept note
     const pairs = []
     for (const [k, v] of Object.entries(fm)) {
-      if (k === '_rev') continue // §6/§14: re-derives in the new epoch (see header)
+      if (k === '_rev') continue // §6/§14: re-derives in the new generation (see header)
       pairs.push([k, v])
     }
     await writeStaged(stageDir, rel, renderNote(pairs, body))
@@ -170,23 +170,23 @@ export async function compact(vault, opts = {}) {
   if (typeof newVault.update === 'function') await newVault.update()
   await watcher.close()
 
-  // ---- 6. record the epoch entry in the fresh vault's log/ (§10) ----
-  // The §3 append-only wire contract has NO epoch op and the view's log/
-  // family is apply-only, so the §10 epoch entry is a durable filesystem
+  // ---- 6. record the generation entry in the fresh vault's log/ (§10) ----
+  // The §3 append-only wire contract has NO generation op and the view's log/
+  // family is apply-only, so the §10 generation entry is a durable filesystem
   // artifact under the fresh vault's log/ (DEVIATIONS.md). It carries the
-  // epoch chain and, under --force, the conflicted-copy carry-across map.
+  // generation chain and, under --force, the conflicted-copy carry-across map.
   const logEntry = {
-    kind: 'epoch',
-    epoch: newVault.epoch,
+    kind: 'generation',
+    generation: newVault.generation,
     at: Date.now(),
     predecessorKey,
     predecessorCheckpoint,
     conflictCopies,
     note:
-      'epoch cycle (SPEC §10): live state + identity preserved byte-for-byte; ' +
+      'generation cycle (SPEC §10): live state + identity preserved byte-for-byte; ' +
       'history (old revisions, per-op attribution, clocks) shed by design.'
   }
-  const logPath = join(vaultDir, EPOCH_LOG_REL)
+  const logPath = join(vaultDir, GENERATION_LOG_REL)
   await mkdir(dirname(logPath), { recursive: true })
   await writeFile(logPath, JSON.stringify(logEntry, null, 2) + '\n')
 
@@ -197,7 +197,7 @@ export async function compact(vault, opts = {}) {
     predecessorCheckpoint,
     vault: newVault,
     vaultDir,
-    epoch: newVault.epoch,
+    generation: newVault.generation,
     bundleDir: report.root,
     stageDir,
     conflictCopies,

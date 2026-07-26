@@ -3,7 +3,7 @@
 The `auto-okf` command line (okf SPEC §13): a thin veneer over
 [`@auto-okf/store`](../store) (vault lifecycle + §8 governance ops) and
 [`@auto-okf/faces`](../faces) (materialize, ingest watcher, the `wanted/`
-demand index, epoch-cycle compaction). The CLI never writes the view or the
+demand index, generation-cycle compaction). The CLI never writes the view or the
 face itself — every effect flows through the packages, so anything it does is
 exactly what a library caller does. The command surface is declared once as a
 [paparam](https://github.com/holepunchto/paparam) command tree (Holepunch's
@@ -20,7 +20,7 @@ OKF bundle back to disk:
 $ auto-okf init ./vault
 vault key:   6671cacb…
 writer key:  6671cacb…
-epoch:       genesis
+generation:  root
 
 # 2. there is NO content-write command — content enters through ingest (edit
 #    markdown) or the @auto-okf/store API (agents). Hand-author a note:
@@ -63,7 +63,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 
 | command | what it does |
 | --- | --- |
-| `init <dir>` | create a new vault at `<dir>`; prints the vault key (share it to invite peers), this peer's writer key, and the epoch namespace; refuses a dir already pinned |
+| `init <dir>` | create a new vault at `<dir>`; prints the vault key (share it to invite peers), this peer's writer key, and the generation namespace; refuses a dir already pinned |
 | `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry non-default invites; when `<dir>` is already pinned the key is optional (reopen + reprint keys) |
 | `add-writer <dir> <writer-key> [--indexer]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8) |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
@@ -72,7 +72,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `watch <dir> <bundle-dir> [--swarm]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also joins the vault's hyperswarm topic for replication; `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
-| `compact <dir> <out-dir> [--force]` | epoch-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted |
+| `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted |
 | `resolve <dir> <id> --keep <revHash> [--supersede <h>…] [--text <s>]` | resolve open body conflicts on `<id>`: pin the head to `--keep`, clearing the cited `flag/conflict` entries (§5). `--supersede` is repeatable |
 | `undelete <dir> <id>` | restore a tombstoned concept (writes the `flag/undelete` audit, §8) |
 

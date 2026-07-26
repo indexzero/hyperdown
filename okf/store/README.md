@@ -56,12 +56,12 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
   contract has no prune/compact/byte-destroying op at all), nothing
   rewrites the file after init, and a tampered document refuses to open.
   `DeleteConcept` is a tombstone; bytes and `_id` remain.
-- **Epoch chain** (`predecessorKey`, `predecessorCheckpoint`) — SPEC §10:
+- **Generation chain** (`predecessorKey`, `predecessorCheckpoint`) — SPEC §10:
   which vault this one was compacted from, with the predecessor's I2 view
   hash and writer lengths (operator-signed; provenance, not proof).
-- **`epoch`** — the per-epoch corestore namespace, derived purely from the
-  predecessor fields (`'genesis'` when null). Writer cores derive under
-  it, so a writer keypair can never recur across epochs, even in a reused
+- **`generation`** — the per-generation corestore namespace, derived purely from the
+  predecessor fields (`'root'` when null). Writer cores derive under
+  it, so a writer keypair can never recur across generations, even in a reused
   directory (§10 freshness; adoption of predecessor mint ids stays safe).
 - `limits`, `rate`, `schemaVersion`, `encrypted` — the `createApply`
   config slice, identical on every peer (I2).
@@ -74,7 +74,7 @@ const vault = await openVault(dir, opts)        // reopen from disk
 const vault = await joinVault(dir, key, opts)   // join by vault key
 ```
 
-`opts`: `metadata` (invite overrides incl. epoch-chain fields),
+`opts`: `metadata` (invite overrides incl. generation-chain fields),
 `encryptionKey` (32 bytes, end to end — writer cores, system and view
 encrypted at rest; persisted so reopen needs no key), `keyPair`, `swarm`,
 `backpressure`.
@@ -85,7 +85,7 @@ encrypted at rest; persisted so reopen needs no key), `keyPair`, `swarm`,
 | --- | --- |
 | `id`, `key`, `discoveryKey` | vault identity (autobee bootstrap core) |
 | `localKey`, `writable`, `isIndexer` | this peer's writer |
-| `metadata`, `epoch` | the pinned document and the §10 namespace id |
+| `metadata`, `generation` | the pinned document and the §10 namespace id |
 | `append(type, payload, { optimistic, backpressure })` | encode + append one §3 op; fills `clock` (observed vector clock, self entry pinned to the op's seq) and `at`; returns `{ seq, tag }` |
 | `createConcept / setField / addTag / remTag / setBody / setPath / deleteConcept / undeleteConcept / resolveConflict` | content-op helpers (thin over `append`); `remTag` computes the §5 citation set from the view |
 | `writers.add(key, { indexer })` | §8 governance op (apply enforces the indexer-issuer rule) |
@@ -94,7 +94,7 @@ encrypted at rest; persisted so reopen needs no key), `keyPair`, `swarm`,
 | `view`, `get(key)`, `val(key)`, `scan(prefix)` | reads over the hyperbee2 view snapshot |
 | `update()`, `updated()`, `flush()` | autobee lifecycle passthrough |
 | `snapshotHash()` | I2/I3 full-range view hash, byte-compatible with core `MemView.hash()` |
-| `checkpoint()` | §10 `{ viewHash, writerLengths }` for the next epoch's metadata |
+| `checkpoint()` | §10 `{ viewHash, writerLengths }` for the next generation's metadata |
 | `replicate(isInitiator \| stream)` | direct replication stream |
 | `swarm([hyperswarm])`, `leaveSwarm()` | DHT replication on `discoveryKey` |
 | `close()` | closes autobee and the owned corestore |
@@ -127,7 +127,7 @@ pnpm test:okf     # core unit/invariant suite + these store tests
 two-writer convergence (view-hash equality), optimistic onboarding
 (hold → ack-anchored fold), backpressure, writer add/remove round trip
 with causal revocation across a partition, encryptionKey open/read,
-vault-metadata determinism (appendOnly + epoch chain), epoch-namespace
+vault-metadata determinism (appendOnly + generation chain), generation-namespace
 freshness, restart-from-disk rebuild equality, hyperswarm replication
 over a local testnet.
 
