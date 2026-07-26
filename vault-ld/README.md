@@ -83,7 +83,7 @@ findings, determinations, RFCs — as sibling ontologies of the recipe book.
 selection and not a new CRDT — it is the reflexive composition where the
 policy table (the JSON-LD `@context`) has no privileged channel: it is
 ordinary data in the very same single-total-order log, folded by the very
-same deterministic apply, at the cost of the epoch-sensitivity described
+same deterministic apply, at the cost of the regime-sensitivity described
 in [SECURITY_MODEL.md](./SECURITY_MODEL.md). An engineering composition
 (SU-Set semantics + autobee linearization + in-log mutable context), not a
 new merge theory.
@@ -103,7 +103,7 @@ Each package README is usage-first with the full API surface.
 
 The adversary is a writer that bypasses client libraries entirely and
 appends arbitrary bytes to its own core; every defense lives in `apply`.
-The full trust story — the defense inventory, the policy-epoch caveat
+The full trust story — the defense inventory, the context-regime caveat
 (read it before trusting a reorg), and what is guaranteed versus
 best-effort — is [SECURITY_MODEL.md](./SECURITY_MODEL.md).
 

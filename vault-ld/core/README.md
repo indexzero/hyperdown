@@ -94,18 +94,18 @@ governance ops that passed the §8.0 authority check. MemView additionally
 provides `hash()` (full-range-scan view hash, the I2 convergence check) and
 `dump(prefix)` for tests.
 
-## Policy-epoch caveat (§5.7 — read this)
+## Context-regime caveat (§5.7 — read this)
 
 Merge policy is read from the composed context in the view (`ctx/`) **at apply
 time**. A reorg that reorders a `DefineTerm` relative to dependent field ops
 can therefore change the merged result. This is still deterministic — any two
 nodes with the same linearized log produce identical views — but it can be
 semantically surprising: the same op may merge as an LWW register in one
-linearization epoch and as an OR-set add in another. The opt-in mitigation is
+context regime and as an OR-set add in another. The opt-in mitigation is
 **kind pinning**: `SetField`/`AddMember`/`RemMember` may carry
 `ctxKind: 'scalar' | 'set'`, the kind the writer resolved against. When the
 cited kind differs from the kind resolved at the op's linearized position, the
-op is applied under the **cited** kind and `flag/epoch/<s>/<term>/<tag>`
+op is applied under the **cited** kind and `flag/kindshift/<s>/<term>/<tag>`
 records `{ citedKind, applyKind }` so the reinterpretation is auditable.
 Pinning costs two bytes per op and should be the default for agent writers.
 

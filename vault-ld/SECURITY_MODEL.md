@@ -43,18 +43,18 @@ unmapped, or conflicting effect leaves a
 
 ## Trust boundaries and caveats
 
-### The policy-epoch caveat (read this before trusting a reorg)
+### The context-regime caveat (read this before trusting a reorg)
 
 Merge policy is read from the composed context in the view **at apply
 time**. A reorg that reorders a `DefineTerm` relative to dependent field
 ops can change the merged result. This is still deterministic — any two
 peers with the same linearized log produce identical views — but it can be
 semantically surprising: the same op may merge as an
-[LWW register](GLOSSARY.md#lww-register) in one linearization epoch and as
+[LWW register](GLOSSARY.md#lww-register) in one context regime and as
 an [OR-set](GLOSSARY.md#or-set) add in another. The opt-in mitigation is
 **kind pinning**: field ops may carry `ctxKind: 'scalar' | 'set'` (the
 kind the writer resolved against); a pinned op is applied under the cited
-kind and any divergence is audited under `flag/epoch`. Pinning costs two
+kind and any divergence is audited under `flag/kindshift`. Pinning costs two
 bytes per op and should be the default for agent writers: the ingest
 watcher always pins, and the recipe-book agents pin every field op.
 

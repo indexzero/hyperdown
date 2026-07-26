@@ -214,7 +214,7 @@ the same fold-rate ceiling.
 
 ## Caveats
 
-- **Policy epochs (§5.7):** merge policy is read from the in-log context at
+- **Context regimes (§5.7):** merge policy is read from the in-log context at
   apply time; a reorg that moves a `DefineTerm` can change the merged result
   deterministically. Agent writers should pin `ctxKind` on field ops.
 - **Writer topo weight:** all writers are admitted with equal autobee topo

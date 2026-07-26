@@ -47,7 +47,7 @@ novelty is that this table is itself a first-class, multi-writer-replicated
 object in the same op log as the data it governs.
 **Not this:** not a per-note header (Vault-LD forbids per-note `@context`; there
 is one composed context). Not static config — it evolves through `DefineTerm`
-and `DefineScope` ops, which is what makes the [policy epoch](#policy-epoch--ctxkind) hazard real.
+and `DefineScope` ops, which is what makes the [context regime](#context-regime--ctxkind) hazard real.
 
 ### IRI
 A subject's minted identity: governing [`@base`](#base--id) plus the
@@ -81,12 +81,12 @@ value is a canonical array (possibly length 1) that supersedes atomically.
 is recorded `flag/clobber`, so LWW loss is auditable, not silent (invariant I4,
 I6).
 
-### policy epoch / `ctxKind`
+### context regime / `ctxKind`
 Because a term's merge kind is read from the [context](#context--context) at
 apply time, a reorg that moves a `DefineTerm` across dependent writes can change
 a write's meaning — deterministically, but surprisingly. An op MAY carry
 `ctxKind` to pin the kind it was written against; a mismatch is applied under
-the cited kind and flagged `epoch`.
+the cited kind and flagged `kindshift`.
 **Not this:** not nondeterminism. Any two peers with the same linearized log
 compute the same view; only the *meaning* of an unpinned write can shift across
 two legal linearizations.
@@ -132,7 +132,7 @@ present, else inferred from `@type`.
 ### flag / flag-family
 A view record under `flag/…` meaning *something needs attention* — the I4
 no-silent-loss ledger. Families: `dangling`, `shadow`, `unmapped`, `conflict`,
-`clobber`, `staletag`, `kindmismatch`, `epoch`, `rejected`, `govoverride`.
+`clobber`, `staletag`, `kindmismatch`, `kindshift`, `rejected`, `govoverride`.
 **Not this:** not an error to reject the vault over. A flag is a queued item for
 a human or agent to resolve.
 
