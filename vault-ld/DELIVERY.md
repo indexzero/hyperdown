@@ -74,7 +74,7 @@ stubs).
 
 ## Known caveats (documented, non-gating)
 
-- Policy-epoch sensitivity (§5.7) — stated in README as SPEC-FINAL mandates.
+- Context-regime sensitivity (§5.7) — stated in README as SPEC-FINAL mandates.
 - Unthrottled multi-writer flood remains a liveness ceiling (L1, backlogged);
   the opt-in backpressure option is the mitigation.
 - autobee is experimental ("expect breaking changes"); port mappings are in

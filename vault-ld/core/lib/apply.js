@@ -18,7 +18,7 @@
 // source for n/hold/, flag/rejected/, and flag/optimistic/. Recorded in
 // DEVIATIONS.md.
 //
-// POLICY-EPOCH CAVEAT (§5.7): merge policy is read from ctx/ at apply time,
+// CONTEXT-REGIME CAVEAT (§5.7): merge policy is read from ctx/ at apply time,
 // so a reorg that moves a DefineTerm relative to dependent field ops can
 // change the merged result. This is still deterministic — any two nodes with
 // the same linearized log produce identical views — but is semantically
@@ -72,7 +72,7 @@ const META_TYPES = new Set([
 const CLEARABLE_FLAGS = new Set([
   'clobber',
   'staletag',
-  'epoch',
+  'kindshift',
   'govoverride',
   'danglingretarget',
   'undelete',
@@ -88,7 +88,7 @@ const CLEARABLE_FLAGS = new Set([
 const SUBJECT_FIRST_FLAGS = new Set([
   'clobber',
   'staletag',
-  'epoch',
+  'kindshift',
   'kindmismatch',
   'kindcollapse',
   'undelete',
@@ -579,16 +579,16 @@ class Applier {
     return { kind: 'unmapped' }
   }
 
-  /** §5.7 kind pinning: returns { applyKind, epoch } */
+  /** §5.7 kind pinning: returns { applyKind, shifted } */
   pinKind(resolvedKind, ctxKind) {
-    if (ctxKind !== 'scalar' && ctxKind !== 'set') return { applyKind: resolvedKind, epoch: false }
+    if (ctxKind !== 'scalar' && ctxKind !== 'set') return { applyKind: resolvedKind, shifted: false }
     const cited = ctxKind === 'scalar' ? 'lww' : 'set'
-    if (cited === resolvedKind) return { applyKind: resolvedKind, epoch: false }
-    return { applyKind: cited, epoch: true }
+    if (cited === resolvedKind) return { applyKind: resolvedKind, shifted: false }
+    return { applyKind: cited, shifted: true }
   }
 
-  async epochFlag(s, p, tag, citedKind, resolvedKind) {
-    await this.view.put(K.flag('epoch', s, p, tag), {
+  async kindshiftFlag(s, p, tag, citedKind, resolvedKind) {
+    await this.view.put(K.flag('kindshift', s, p, tag), {
       citedKind,
       applyKind: resolvedKind
     })
@@ -614,8 +614,8 @@ class Applier {
       return null
     }
 
-    const { applyKind, epoch } = this.pinKind(route.kind, op.ctxKind)
-    if (epoch) await this.epochFlag(s, p, tag, op.ctxKind, route.kind)
+    const { applyKind, shifted } = this.pinKind(route.kind, op.ctxKind)
+    if (shifted) await this.kindshiftFlag(s, p, tag, op.ctxKind, route.kind)
 
     if (applyKind === 'set') {
       return this.kindMismatch(s, p, tag, { op: 'set-field', kind: 'or-set' })
@@ -668,8 +668,8 @@ class Applier {
       return null
     }
 
-    const { applyKind, epoch } = this.pinKind(route.kind, op.ctxKind)
-    if (epoch) await this.epochFlag(s, p, tag, op.ctxKind, route.kind)
+    const { applyKind, shifted } = this.pinKind(route.kind, op.ctxKind)
+    if (shifted) await this.kindshiftFlag(s, p, tag, op.ctxKind, route.kind)
 
     if (applyKind === 'lww') {
       return this.kindMismatch(s, p, tag, { op: 'add-member', kind: 'lww' })
@@ -700,7 +700,7 @@ class Applier {
     let applyKind = isType ? 'set' : route.kind
     if (!isType) {
       const pin = this.pinKind(route.kind, op.ctxKind)
-      if (pin.epoch) await this.epochFlag(s, p, synth, op.ctxKind, route.kind)
+      if (pin.shifted) await this.kindshiftFlag(s, p, synth, op.ctxKind, route.kind)
       applyKind = pin.applyKind
     }
 
@@ -756,8 +756,8 @@ class Applier {
       return null
     }
 
-    const { applyKind, epoch } = this.pinKind(route.kind, op.ctxKind)
-    if (epoch) await this.epochFlag(s, p, tag, op.ctxKind, route.kind)
+    const { applyKind, shifted } = this.pinKind(route.kind, op.ctxKind)
+    if (shifted) await this.kindshiftFlag(s, p, tag, op.ctxKind, route.kind)
 
     if (applyKind === 'set') {
       return this.kindMismatch(s, p, tag, { op: 'unset-field', kind: 'or-set' })

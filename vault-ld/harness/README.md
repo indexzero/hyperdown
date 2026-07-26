@@ -82,7 +82,7 @@ run also writes `harness.log` (fault schedule + convergence events),
 | S2 `s02-orset`      | I5        | add/remove race; unobserved-tag remove          |
 | S3 `s03-dangling`   | I7        | dangling→materialize takeover, both heal orders |
 | S4 `s04-body-*`     | I4        | concurrent same-base SetBody, one conflict flag |
-| S5 `s05-policy-*`   | I1        | DefineTerm kind flip vs field writes            |
+| S5 `s05-context-*`   | I1        | DefineTerm kind flip vs field writes            |
 | S6 `s06-revocation` | I10       | ops racing their revocation — **fails, B1**     |
 | S7 `s07-crash-*`    | I3        | SIGKILL mid-apply; rebuild-from-scratch equality|
 | S8 `s08-faces`      | I9        | cross-peer byte-identical faces; minimal ingest |

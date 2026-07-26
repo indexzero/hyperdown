@@ -93,14 +93,14 @@ test('I4: depth-exceeded rejects (§8.4)', async () => {
   assert.deepEqual(reasons, ['depth-exceeded'])
 })
 
-test('I4: epoch divergence on a pinned op is applied under the cited kind and flagged (§5.7)', async () => {
+test('I4: kind-shift divergence on a pinned op is applied under the cited kind and flagged (§5.7)', async () => {
   const tag = makeTag(GEN, 5)
   const { view } = await run([
     defineSetTerm('topics'),
     // writer resolved 'topics' as scalar; ctx/ now says @set
     n(GEN, 'set-field', { s: 'A', p: 'topics', o: 'pinned', tag, ctxKind: 'scalar' })
   ])
-  const flag = (await view.get(K.flag('epoch', 'A', 'topics', tagHex(tag)))).value
+  const flag = (await view.get(K.flag('kindshift', 'A', 'topics', tagHex(tag)))).value
   assert.deepEqual(flag, { citedKind: 'scalar', applyKind: 'set' })
   const rec = (await view.get(K.nField('A', 'topics'))).value
   assert.deepEqual(rec.reg.values, ['pinned']) // applied as LWW register

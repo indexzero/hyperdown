@@ -74,7 +74,7 @@ export function prettyJson(v, indent = '') {
 /** Field record -> emitted YAML value per §5.1/§5.7 (or null to omit). */
 function fieldValue(rec) {
   if (rec.els && rec.reg) {
-    // §5.7 epoch divergence: a field holding both a register slot and an
+    // §5.7 kind-shift divergence: a field holding both a register slot and an
     // element map is emitted as the element map (the flag/kindmismatch
     // audit record is apply's, written when the divergence occurred).
     return orderedElements(rec.els)

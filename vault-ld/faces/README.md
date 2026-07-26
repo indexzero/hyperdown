@@ -163,7 +163,7 @@ Returns `{ schema: { path, triples }, data: { path, triples } }`.
 
 ## Semantics worth knowing
 
-- **Policy epochs (§5.7):** merge policy is read from the in-log context
+- **Context regimes (§5.7):** merge policy is read from the in-log context
   at apply time. The watcher pins `ctxKind` on every kind-resolved field
   op it emits, so a reorged `DefineTerm` cannot silently reinterpret a
   human edit.

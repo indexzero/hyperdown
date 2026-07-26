@@ -1,4 +1,4 @@
-// S5 (I1) policy epoch reorder. The indexer flips a term between scalar
+// S5 (I1) context regime reorder. The indexer flips a term between scalar
 // and @set concurrently with field writes to that term, healed such that
 // linearization can differ from any writer's local perception. Convergence
 // must hold regardless of the semantic surprise, and the two heal orders
@@ -13,7 +13,7 @@ test('S5: DefineTerm kind flip concurrent with field writes converges (I1)', asy
   t.after(() => ctl.stop())
   const [a, b, c] = writers
 
-  // epoch 0: 'tag' is a scalar
+  // regime 0: 'tag' is a scalar
   await a.call('defineTerm', 'core', 'tag', { '@id': 'ex:tag' })
   await b.call('setField', 'Home', 'tag', 'epoch0')
   await ctl.quiesce(writers)
@@ -47,13 +47,13 @@ test('S5: DefineTerm kind flip concurrent with field writes converges (I1)', asy
   assert.equal(hashL, hashR, `heal order changed the converged view (seed=${ctl.seed})`)
 
   // §5.7 semantics: identical term state everywhere; ctxKind-pinned writes
-  // that crossed the flip are epoch-flagged (auditable), never silent
+  // that crossed the flip are kindshift-flagged (auditable), never silent
   const states = new Set()
   for (const w of [...cloneL, ...cloneR]) {
     const term = await w.val('ctx/t/tag')
     const home = await w.val('n/Home/f/tag')
-    const epochFlags = Object.keys(await w.dump('flag/epoch/'))
-    states.add(JSON.stringify({ term, home, epochFlags }))
+    const kindshiftFlags = Object.keys(await w.dump('flag/kindshift/'))
+    states.add(JSON.stringify({ term, home, kindshiftFlags }))
   }
   assert.equal(states.size, 1, 'apply-time policy resolution identical everywhere')
   const st = JSON.parse([...states][0])
