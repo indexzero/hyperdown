@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, readFile, access, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, access, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Vault } from '../vault-ld/store/index.js'
@@ -74,6 +74,29 @@ test('commands on unpinned storage fail with guidance, not junk vaults', async (
     assert.equal(res.code, 1, args.join(' '))
     assert.match(res.stderr, /not a vault/)
   }
+})
+
+test('refuses an auto-okf vault by marker, naming the right tool (okf ADR-006)', async () => {
+  const dir = join(await tmpDir('wrong-tool'), 'vault')
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'okf-vault.json'), '{"vaultKey":"stub"}\n')
+
+  const attempts = [
+    ['flags', dir],
+    ['init', dir],
+    ['join', dir, 'f'.repeat(64)],
+    ['materialize', dir, dir + '-face']
+  ]
+  for (const args of attempts) {
+    const res = await cli(args)
+    assert.equal(res.code, 1, args.join(' '))
+    assert.match(
+      res.stderr,
+      /^error: .* is an auto-okf vault \(okf-vault\.json present\); use auto-okf, not autovault-ld$/m,
+      args.join(' ')
+    )
+  }
+  assert.deepEqual(await readdir(dir), ['okf-vault.json'], 'storage untouched')
 })
 
 test('join + add-writer + remove-writer round trip (§8.0/§8.3 plumbing)', async () => {

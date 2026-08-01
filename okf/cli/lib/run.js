@@ -29,6 +29,24 @@ const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage, 3 pending-ingest only (mater
 
 class UsageError extends Error {}
 
+// ADR-006 wrong-tool guardrail: the sibling system's marker file is stable
+// contract between the twin CLIs; auto-okf refuses vault-ld storage
+// pointedly (naming the right tool) instead of opening it.
+const SIBLING_MARKER = 'vault-ld.json'
+
+class WrongToolError extends Error {}
+
+async function refuseSiblingVault(dir) {
+  try {
+    await access(join(dir, SIBLING_MARKER))
+  } catch {
+    return
+  }
+  throw new WrongToolError(
+    `${dir} is a vault-ld vault (${SIBLING_MARKER} present); use autovault-ld, not auto-okf`
+  )
+}
+
 /** Run the CLI. Returns the process exit code. */
 export async function run(argv) {
   const { root, captured } = buildCli()
@@ -69,6 +87,12 @@ export async function run(argv) {
     if (err instanceof UsageError) {
       process.stderr.write(`auto-okf ${parsed.name}: ${err.message}\n\n${parsed.help()}`)
       return 2
+    }
+    if (err instanceof WrongToolError) {
+      // ADR-006: the refusal shape is pinned — `error: <dir> is a … vault
+      // (<marker> present); use <tool>, not <this tool>`.
+      process.stderr.write(`error: ${err.message}\n`)
+      return 1
     }
     process.stderr.write(`auto-okf ${parsed.name}: ${err && err.message ? err.message : err}\n`)
     return 1
@@ -292,6 +316,7 @@ async function isPinned(dir) {
 
 /** Open an EXISTING vault (pinned dir) and close it after fn. */
 async function withVault(dir, opts, fn) {
+  await refuseSiblingVault(dir)
   if (!(await isPinned(dir))) {
     throw new Error(
       `'${dir}' is not a vault (no ${METADATA_FILE}); run \`auto-okf init\` or \`auto-okf join\` first`
@@ -330,6 +355,7 @@ async function rejectionFor(vault, seq) {
 
 async function cmdInit({ args, flags }) {
   const dir = args.dir
+  await refuseSiblingVault(dir)
   if (await isPinned(dir)) {
     throw new Error(`'${dir}' is already a vault (${METADATA_FILE} exists)`)
   }
@@ -351,6 +377,7 @@ async function cmdInit({ args, flags }) {
 
 async function cmdJoin({ args, flags }) {
   const { dir, vaultKey: key } = args
+  await refuseSiblingVault(dir)
   const opts = {}
   if (flags.encryptionKey) {
     opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
@@ -492,6 +519,7 @@ async function cmdIngest({ args, flags }) {
 
 async function cmdWatch({ args, flags }) {
   const { dir, bundleDir } = args
+  await refuseSiblingVault(dir)
   if (!(await isPinned(dir))) {
     throw new Error(
       `'${dir}' is not a vault (no ${METADATA_FILE}); run \`auto-okf init\` or \`auto-okf join\` first`

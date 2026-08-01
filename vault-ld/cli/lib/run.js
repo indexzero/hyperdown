@@ -23,6 +23,24 @@ const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage'
 
 class UsageError extends Error {}
 
+// Wrong-tool guardrail (okf ADR-006): the sibling system's marker file is
+// stable contract between the twin CLIs; autovault-ld refuses auto-okf
+// storage pointedly (naming the right tool) instead of opening it.
+const SIBLING_MARKER = 'okf-vault.json'
+
+class WrongToolError extends Error {}
+
+async function refuseSiblingVault(storage) {
+  try {
+    await access(join(storage, SIBLING_MARKER))
+  } catch {
+    return
+  }
+  throw new WrongToolError(
+    `${storage} is an auto-okf vault (${SIBLING_MARKER} present); use auto-okf, not autovault-ld`
+  )
+}
+
 /** Run the CLI. Returns the process exit code. */
 export async function run(argv) {
   let code = 0
@@ -34,6 +52,13 @@ export async function run(argv) {
     try {
       code = await fn(args, flags)
     } catch (err) {
+      if (err instanceof WrongToolError) {
+        // ADR-006: the refusal shape is pinned — `error: <dir> is a … vault
+        // (<marker> present); use <tool>, not <this tool>`.
+        process.stderr.write(`error: ${err.message}\n`)
+        code = 1
+        return
+      }
       process.stderr.write(`autovault-ld ${name}: ${err && err.message ? err.message : err}\n`)
       code = err instanceof UsageError ? 2 : 1
     }
@@ -242,6 +267,7 @@ async function isPinned(storage) {
 
 /** Open an EXISTING vault (pinned storage) and close it after fn. */
 async function withVault(storage, opts, fn) {
+  await refuseSiblingVault(storage)
   if (!opts.key && !(await isPinned(storage))) {
     throw new Error(`'${storage}' is not a vault (no ${METADATA_FILE}); run \`autovault-ld init\` or \`autovault-ld join\` first`)
   }
@@ -262,6 +288,7 @@ function printIdentity(vault) {
 
 async function cmdInit(args, flags) {
   const { storage } = args
+  await refuseSiblingVault(storage)
   if (await isPinned(storage)) {
     throw new Error(`'${storage}' is already a vault (${METADATA_FILE} exists)`)
   }
@@ -388,6 +415,7 @@ async function cmdFlags(args, flags) {
 
 async function cmdWatch(args, flags) {
   const { storage, dir } = args
+  await refuseSiblingVault(storage)
   if (!(await isPinned(storage))) {
     throw new Error(`'${storage}' is not a vault (no ${METADATA_FILE}); run \`autovault-ld init\` or \`autovault-ld join\` first`)
   }
