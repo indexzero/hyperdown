@@ -117,6 +117,10 @@ per command) and exits 0.
 - A single body may not exceed `maxOpBytes` — 65,536 bytes; `ingest` refuses
   an oversize file by name (exit 1, siblings unaffected) — split the document
   into smaller linked concepts.
+- `auto-okf` refuses vault-ld storage by marker file (`vault-ld.json`),
+  naming the right tool (exit 1, storage untouched); `autovault-ld` refuses
+  `okf-vault.json` symmetrically — the twin CLIs never open each other's
+  vaults (ADR-006).
 
 ## Tests
 

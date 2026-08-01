@@ -76,6 +76,10 @@ for the root or any subcommand and exits `0`.
 - The encryption key is only needed at `init`/`join`; autobee pins it in the
   local core's user data and the metadata pin restores the encrypted bit on
   reopen.
+- `autovault-ld` refuses auto-okf storage by marker file (`okf-vault.json`),
+  naming the right tool (exit 1, storage untouched); `auto-okf` refuses
+  `vault-ld.json` symmetrically — the twin CLIs never open each other's
+  vaults (okf ADR-006).
 
 ## Tests
 
