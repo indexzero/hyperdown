@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, readFile, writeFile, access } from 'node:fs/promises'
+import { mkdir, readdir, readFile, writeFile, access } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
@@ -115,6 +115,29 @@ test('ingest a hand-authored file mints a concept; materialize round-trips it wi
   assert.match(emitted, /_id:/, 'the mint stamped an _id into the emitted frontmatter')
   assert.match(emitted, /_rev:/, 'the body head produced a _rev')
   assert.match(emitted, /A hand-authored body\./)
+})
+
+test('refuses a vault-ld vault by marker, naming the right tool (ADR-006)', async () => {
+  const dir = join(await tmpDir('wrong-tool'), 'vault')
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'vault-ld.json'), '{"vaultKey":"stub"}\n')
+
+  const attempts = [
+    ['flags', dir],
+    ['init', dir],
+    ['join', dir, 'f'.repeat(64)],
+    ['materialize', dir, dir + '-face']
+  ]
+  for (const args of attempts) {
+    const res = await cli(args)
+    assert.equal(res.code, 1, args.join(' '))
+    assert.match(
+      res.stderr,
+      /^error: .* is a vault-ld vault \(vault-ld\.json present\); use autovault-ld, not auto-okf$/m,
+      args.join(' ')
+    )
+  }
+  assert.deepEqual(await readdir(dir), ['vault-ld.json'], 'storage untouched')
 })
 
 test('materialize exit taxonomy: 0 clean, 3 pending-only, 1 failure (ADR-004)', async () => {
