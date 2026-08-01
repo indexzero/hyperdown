@@ -30,7 +30,7 @@ import { EventEmitter } from 'node:events'
 import { watch } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, sep } from 'node:path'
-import { keyspace as K, canonical } from '@auto-okf/core'
+import { keyspace as K, canonical, DEFAULT_LIMITS } from '@auto-okf/core'
 import { parseNote, yamlToValues } from './yaml.js'
 import {
   rootRegistry,
@@ -250,6 +250,16 @@ export class IngestWatcher extends EventEmitter {
       }
       const { fm, body, warnings } = parseNote(raw.toString('utf8'))
       for (const wmsg of warnings) this.emit('warning', { path: rel, message: wmsg })
+
+      // §9 oversize preflight (ADR-005): a body that would exceed the §3
+      // maxOpBytes limit is refused HERE, by name, before any op for this
+      // file is appended — apply's oversize-op reject stays as defense in
+      // depth. The file stays pending; sibling files are unaffected.
+      const bodyBytes = Buffer.byteLength(nfc(body), 'utf8')
+      if (bodyBytes > DEFAULT_LIMITS.maxOpBytes) {
+        this.emit('oversize', { path: rel, bytes: bodyBytes, limit: DEFAULT_LIMITS.maxOpBytes })
+        return []
+      }
 
       const { ops, established } = await this._ingestParsed(rel, fm || {}, body)
 

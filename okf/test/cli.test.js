@@ -174,6 +174,32 @@ test('ingest reports hash-match skips as already up to date (ADR-003)', async ()
   )
 })
 
+test('ingest preflights maxOpBytes: oversize file named, siblings unaffected (ADR-005)', async () => {
+  const base = await tmpDir('oversize')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  await cli(['init', storage])
+  await mkdir(bundle, { recursive: true })
+  await writeFile(join(bundle, 'big.md'), `---\ntype: note\n---\n${'x'.repeat(70000)}\n`)
+  await writeFile(join(bundle, 'small.md'), '---\ntype: note\n---\nComfortably under the limit.\n')
+
+  const ing = await cli(['ingest', storage, bundle])
+  assert.equal(ing.code, 1, 'an oversize preflight refusal is an error exit')
+  assert.match(ing.stderr, /^error: big\.md body is 70,000 bytes; maxOpBytes is 65,536$/m)
+  assert.match(ing.stdout, /ingested small\.md: create-concept/, 'the sibling still ingested')
+  assert.doesNotMatch(ing.stdout, /ingested big\.md/)
+
+  // zero ops were appended for the oversize file: no concept claims its path
+  const v = await Bundle.open(storage)
+  try {
+    await v.update()
+    assert.equal(await v.val(K.path('big')), undefined)
+    assert.notEqual(await v.val(K.path('small')), undefined)
+  } finally {
+    await v.close()
+  }
+})
+
 test('wanted lists an unresolved link, ranked', async () => {
   const base = await tmpDir('wanted')
   const storage = join(base, 'vault')

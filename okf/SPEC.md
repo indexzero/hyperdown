@@ -625,6 +625,11 @@ saga is the cautionary tale). The rules are frozen:
   ignored. Strip one trailing `.md`, strip any fragment (`#...`),
   NFC-normalize; the result keys `link/`. A `SetPath` on a concept re-runs
   resolution of its own relative-form edges.
+- **Oversize preflight (ADR-005).** A file whose body would exceed the §3
+  `maxOpBytes` limit is refused at ingest, by name, with the limit and the
+  actual size, before any op for that file is appended; sibling files in
+  the same run are unaffected. Apply's `oversize-op` reject stays
+  untouched — validate at the boundary, defend in depth.
 - Debounce, write-settle, in-flight-lock coordination with materialize.
 - `index.md`/`log.md` are reserved: edits to them are ignored (regenerated
   faces), with a single narrated log entry.

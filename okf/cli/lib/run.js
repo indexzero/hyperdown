@@ -309,6 +309,12 @@ function localHex(vault) {
   return b4a.toString(vault.localKey, 'hex')
 }
 
+/** `error: drafts/big.md body is 71,204 bytes; maxOpBytes is 65,536` (ADR-005). */
+function oversizeLine({ path, bytes, limit }) {
+  const n = (v) => v.toLocaleString('en-US')
+  return `error: ${path} body is ${n(bytes)} bytes; maxOpBytes is ${n(limit)}\n`
+}
+
 function printIdentity(vault) {
   console.log(`vault key:   ${vault.keyHex}`)
   console.log(`writer key:  ${localHex(vault)}`)
@@ -458,6 +464,13 @@ async function cmdIngest({ args, flags }) {
     watcher.on('skip', ({ reason }) => {
       if (reason === 'unchanged') upToDate++
     })
+    // ADR-005: an oversize body is refused per file, before any of its ops;
+    // sibling files in the same run still ingest, but the run exits 1.
+    let oversize = 0
+    watcher.on('oversize', (o) => {
+      oversize++
+      process.stderr.write(oversizeLine(o))
+    })
     watcher.on('warning', ({ path, message }) =>
       process.stderr.write(`warning (${path}): ${message}\n`)
     )
@@ -470,7 +483,7 @@ async function cmdIngest({ args, flags }) {
       // The skip clause is omitted (never "0") when no skips occurred.
       const skips = upToDate > 0 ? `; ${upToDate} file(s) already up to date` : ''
       console.log(`ingest complete: ${ops} op(s) from ${files} file(s)${skips}`)
-      return 0
+      return oversize > 0 ? 1 : 0
     } finally {
       await watcher.close()
     }
@@ -495,6 +508,7 @@ async function cmdWatch({ args, flags }) {
     watcher.on('ops', ({ path, ops }) => {
       console.log(`ingested ${path}: ${ops.map((o) => o.type).join(', ') || '(no-op)'}`)
     })
+    watcher.on('oversize', (o) => process.stderr.write(oversizeLine(o)))
     watcher.on('warning', (w) =>
       process.stderr.write(`warning: ${w && w.message ? w.message : JSON.stringify(w)}\n`)
     )
