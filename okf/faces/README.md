@@ -6,7 +6,8 @@ multi-writer op log and a plain
 bundle on disk. `materialize` projects a converged view into a
 byte-deterministic directory of markdown files; the ingest watcher folds
 human edits back into the log as *minimal* ops; `wanted` reports what the
-graph is asking to have written. The log stays the source of truth — a face
+graph is asking to have written; `status` reports each file's state against
+the log, read-only (ADR-002). The log stays the source of truth — a face
 can always be regenerated, byte-for-byte, and human edits always re-enter as
 ops (SPEC §2, §9).
 
@@ -100,7 +101,11 @@ mirroring for operator use.
 
 ### Verifying content is in the log
 
-A vault has no privileged bundle directory; the emission manifest
+`status(vault, dir)` is the quick check: one `{ path, state }` row per file,
+with `state` one of `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`
+(ADR-002) — strictly read-only (no ops, no writes, no manifest touch). For
+proof *from* the log, use a scratch materialize: a vault has no privileged
+bundle directory; the emission manifest
 (`.okf-manifest.json`) lives in each target directory, so materializing to
 a scratch directory never disturbs another bundle. That makes verification
 trivial: materialize to an empty scratch directory — an empty dir that

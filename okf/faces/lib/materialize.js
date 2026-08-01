@@ -105,15 +105,14 @@ function conflictHash(id) {
 }
 
 /**
- * Walk the view and emit the bundle. `opts.forceMirror` restores
- * unconditional mirroring (overwrite/delete regardless of manifest).
- * Returns a report:
- *   { root, ok, written, unchanged, pendingIngest, removed, stale, unsafe }
+ * The full byte plan for a converged view (materialize steps 1–4: concept
+ * files, per-directory index.md, root log.md) WITHOUT touching disk.
+ * Returns Map<rel, Buffer>. Shared with status() (ADR-002) so the
+ * porcelain's states are judged against the exact bytes materialize would
+ * write.
  */
-export async function materialize(vault, dir, opts = {}) {
+export async function planBundle(vault) {
   if (typeof vault.update === 'function') await vault.update()
-  const { realRoot, registry } = await rootRegistry(dir)
-  const forceMirror = opts.forceMirror === true
 
   const { concepts, collisions } = await readView(vault)
 
@@ -186,6 +185,21 @@ export async function materialize(vault, dir, opts = {}) {
 
   // ---- 4. root log.md (OKF §7) ----
   planned.set('log.md', Buffer.from(await renderLog(vault, concepts), 'utf8'))
+
+  return planned
+}
+
+/**
+ * Walk the view and emit the bundle. `opts.forceMirror` restores
+ * unconditional mirroring (overwrite/delete regardless of manifest).
+ * Returns a report:
+ *   { root, ok, written, unchanged, pendingIngest, removed, stale, unsafe }
+ */
+export async function materialize(vault, dir, opts = {}) {
+  const { realRoot, registry } = await rootRegistry(dir)
+  const forceMirror = opts.forceMirror === true
+
+  const planned = await planBundle(vault)
 
   // ---- 5. reconcile to disk through the manifest (§9) ----
   const report = {
