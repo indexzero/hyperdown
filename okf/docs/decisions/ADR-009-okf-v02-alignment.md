@@ -1,7 +1,7 @@
 # ADR-009: Align okf with upstream OKF v0.2 — vocabulary migration + conformance audit
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-08-01

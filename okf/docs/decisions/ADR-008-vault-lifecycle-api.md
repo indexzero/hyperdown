@@ -1,7 +1,7 @@
 # ADR-008: okf's lifecycle API is `Bundle.init/open/join`; the free-function wrappers go
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-07-31 (amended 2026-08-01: `Vault` → `Bundle` per maintainer review)

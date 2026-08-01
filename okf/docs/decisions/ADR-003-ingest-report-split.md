@@ -1,7 +1,7 @@
 # ADR-003: Ingest report distinguishes "already in log" from "nothing found"
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-07-31

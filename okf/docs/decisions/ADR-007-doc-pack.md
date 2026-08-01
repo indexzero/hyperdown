@@ -1,7 +1,7 @@
 # ADR-007: First-contact documentation pack (no behavior change)
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-07-31
