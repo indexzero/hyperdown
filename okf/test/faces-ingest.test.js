@@ -186,3 +186,29 @@ test('adopting an unknown _id creates the concept (generation-cycle contract)', 
   await w.close()
   await v.close()
 })
+
+test('oversize body preflight: named refusal, zero ops, siblings unaffected (ADR-005)', async () => {
+  const v = await Bundle.init(await tmpDir('vault'))
+  const dir = await tmpDir('bundle')
+  await materialize(v, dir) // establish the manifest + reserved faces
+
+  // One byte over the limit, plus a comfortably-under sibling. The preflight
+  // boundary is body bytes vs maxOpBytes; the per-op encoding overhead on top
+  // of the body stays apply's defense-in-depth territory (oversize-op).
+  const limit = 65536
+  await writeFile(join(dir, 'big.md'), `---\ntype: note\n---\n${'x'.repeat(limit + 1)}\n`)
+  await writeFile(join(dir, 'small.md'), `---\ntype: note\n---\n${'y'.repeat(60000)}\n`)
+
+  const w = await createIngestWatcher(v, dir, { watch: false })
+  const oversize = []
+  w.on('oversize', (e) => oversize.push(e))
+  const ops = await w.scan()
+
+  assert.deepEqual(oversize, [{ path: 'big.md', bytes: limit + 1, limit }])
+  assert.ok(!ops.some((o) => o.payload && o.payload.path === 'big'), 'zero ops for the oversize file')
+  await v.update()
+  assert.equal(await v.val(K.path('big')), undefined, 'no concept claims the oversize path')
+  assert.notEqual(await v.val(K.path('small')), undefined, 'the sibling still ingested')
+  await w.close()
+  await v.close()
+})

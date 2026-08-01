@@ -41,9 +41,18 @@ import {
 } from './ops.js'
 import { extractLinks, dirOf } from './links.js'
 
+// §3 default limits, exported so boundary layers (faces ingest, ADR-005)
+// can preflight against the same values apply defends with — never a
+// duplicated constant.
+export const DEFAULT_LIMITS = Object.freeze({
+  maxOpBytes: 65536,
+  maxPathBytes: 1024,
+  maxPathDepth: 64
+})
+
 const DEFAULTS = {
   // §3 limits: fixed check order, single recorded reason.
-  limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
+  limits: DEFAULT_LIMITS,
   // §8: unacked writers use a fixed default ceiling (64) until admitted;
   // H_max = 512 held ops per writer. defaultCeiling is the admitted-writer
   // ceiling when no SetWriterPolicy has set one (spec-silent; pinned here

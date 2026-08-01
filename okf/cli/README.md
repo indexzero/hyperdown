@@ -114,6 +114,9 @@ per command) and exits 0.
   the reason.
 - The encryption key is only needed at `init`/`join`; the store pins the
   encrypted bit in vault metadata so a reopen needs no key.
+- A single body may not exceed `maxOpBytes` — 65,536 bytes; `ingest` refuses
+  an oversize file by name (exit 1, siblings unaffected) — split the document
+  into smaller linked concepts.
 
 ## Tests
 
