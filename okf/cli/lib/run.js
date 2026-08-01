@@ -440,10 +440,16 @@ async function cmdIngest({ args, flags }) {
     })
     let files = 0
     let ops = 0
+    let upToDate = 0
     watcher.on('ops', ({ path, ops: emitted }) => {
       files++
       ops += emitted.length
       console.log(`ingested ${path}: ${emitted.map((o) => o.type).join(', ') || '(no-op)'}`)
+    })
+    // ADR-003: count the hash-match skips so "0 op(s) from 0 file(s)" cannot
+    // mean both "nothing found" and "everything already converged".
+    watcher.on('skip', ({ reason }) => {
+      if (reason === 'unchanged') upToDate++
     })
     watcher.on('warning', ({ path, message }) =>
       process.stderr.write(`warning (${path}): ${message}\n`)
@@ -454,7 +460,9 @@ async function cmdIngest({ args, flags }) {
     try {
       await watcher.scan()
       await vault.update()
-      console.log(`ingest complete: ${ops} op(s) from ${files} file(s)`)
+      // The skip clause is omitted (never "0") when no skips occurred.
+      const skips = upToDate > 0 ? `; ${upToDate} file(s) already up to date` : ''
+      console.log(`ingest complete: ${ops} op(s) from ${files} file(s)${skips}`)
       return 0
     } finally {
       await watcher.close()
