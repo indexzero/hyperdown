@@ -9,7 +9,9 @@
 // the 12 subcommands from command()/flag()/arg(), with --help|-h and all help
 // text generated from the declarations.
 //
-// Exit codes: 0 success, 1 operational error, 2 usage error. paparam's
+// Exit codes: 0 success, 1 operational error, 2 usage error, 3 materialize
+// projected everything owned but left pending-ingest file(s) in place
+// (ADR-004). paparam's
 // parse() returns null on any parse failure; the wrapper maps that — unknown
 // flag/command, extra arguments, bad flag values, and (via per-command
 // validate()) missing required arguments — to 2, never letting paparam pick
@@ -23,7 +25,7 @@ import { Bundle, METADATA_FILE } from '@auto-okf/store'
 import { materialize, createIngestWatcher, wanted, compact } from '@auto-okf/faces'
 
 const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
-const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage'
+const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage, 3 pending-ingest only (materialize)'
 
 class UsageError extends Error {}
 
@@ -417,17 +419,22 @@ async function cmdMaterialize({ args, flags }) {
         `${report.unchanged.length} unchanged, ${report.removed.length} removed`
     )
     for (const rel of report.pendingIngest) {
-      process.stderr.write(`pending ingest (unsaved external edit, left in place): ${rel}\n`)
+      process.stderr.write(`notice: pending ingest (unsaved external edit, left in place): ${rel}\n`)
     }
     for (const u of report.unsafe || []) {
-      const label = typeof u === 'string' ? u : `${u.path || u.id} (${u.reason})`
-      process.stderr.write(`unsafe path (skipped, §9): ${label}\n`)
+      const label = typeof u === 'string' ? u : `${u.rel || u.path || u.id} (${u.reason})`
+      process.stderr.write(`error: unsafe path (skipped, §9): ${label}\n`)
     }
     for (const rel of report.stale || []) {
-      process.stderr.write(`stale (no longer produced, left in place): ${rel}\n`)
+      process.stderr.write(`notice: stale (no longer produced, left in place): ${rel}\n`)
     }
-    // N3: a pending-ingest file makes report.ok false — surface it as an error.
-    return report.ok ? 0 : 1
+    // N3 exit taxonomy (ADR-004): an unsafe path means part of the owned
+    // projection was NOT written — a real failure (1). Pending-ingest files
+    // are a healthy multi-writer state: everything owned was projected and
+    // the foreign files were left in place (3). Otherwise clean (0); stale
+    // is a notice either way (left in place, per spec).
+    if ((report.unsafe || []).length > 0) return 1
+    return report.ok ? 0 : 3
   })
 }
 
