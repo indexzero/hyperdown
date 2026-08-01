@@ -20,6 +20,7 @@ export {
 } from './lib/ops.js'
 export {
   createApply,
+  DEFAULT_LIMITS,
   normalizePath,
   casefoldPath,
   validatePath,
