@@ -16,10 +16,10 @@
 // flag/command, extra arguments, bad flag values, and (via per-command
 // validate()) missing required arguments — to 2, never letting paparam pick
 // the code. Unknown flags are rejected strictly, as before.
-import { readFile, access } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readFile, access, stat } from 'node:fs/promises'
+import { join, relative, resolve, sep } from 'node:path'
 import b4a from 'b4a'
-import { command, flag, arg, summary, header, footer, bail, validate } from 'paparam'
+import { command, flag, arg, rest, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
 import { Bundle, METADATA_FILE } from '@auto-okf/store'
 import { materialize, createIngestWatcher, wanted, compact } from '@auto-okf/faces'
@@ -159,6 +159,7 @@ function buildCli() {
       'fold on-disk edits back in as ops (one-shot)',
       arg('<dir>', 'vault storage directory'),
       arg('<bundle-dir>', 'OKF bundle directory'),
+      rest('[...paths]', 'bundle-relative concept files restricting the scan set (ADR-001)'),
       flag('--confirm-deletes', 'let a file deleted on disk emit DeleteConcept'),
       requiredArgs('<dir>', '<bundle-dir>')
     ),
@@ -471,8 +472,52 @@ async function cmdMaterialize({ args, flags }) {
   })
 }
 
-async function cmdIngest({ args, flags }) {
+/**
+ * ADR-001: resolve the trailing path arguments to bundle-relative concept
+ * files, validating BEFORE any op is appended. Literal paths only — the
+ * shell expands globs; a path that does not exist, resolves outside the
+ * bundle root, or is not a concept `.md` file is an error naming it.
+ * Returns null for the zero-path form (full scan, unchanged).
+ */
+async function scopedIngestPaths(bundleDir, given) {
+  if (given.length === 0) return null
+  const root = resolve(bundleDir)
+  const rels = new Set()
+  for (const p of given) {
+    const abs = resolve(root, p)
+    if (abs !== root && !abs.startsWith(root + sep)) {
+      throw new Error(`path resolves outside the bundle root: ${p}`)
+    }
+    let st = null
+    try {
+      st = await stat(abs)
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err
+    }
+    if (st === null) throw new Error(`no such file in the bundle: ${p}`)
+    if (!st.isFile() || !abs.endsWith('.md')) throw new Error(`not a concept file (.md): ${p}`)
+    rels.add(relative(root, abs).split(sep).join('/'))
+  }
+  return [...rels].sort()
+}
+
+async function cmdIngest(parsed) {
+  const { args, flags } = parsed
   const { dir, bundleDir } = args
+  // paparam's rest is greedy: once both positionals are filled, everything
+  // remaining — flags included — lands in rest. Re-recognize ingest's own
+  // flags so the pre-ADR-001 `ingest <dir> <bundle> --confirm-deletes` form
+  // keeps working; the remainder is the ADR-001 path set.
+  const trailing = []
+  for (const t of parsed.rest || []) {
+    if (t === '--confirm-deletes') flags.confirmDeletes = true
+    else if (t === '--help' || t === '-h') {
+      process.stdout.write(parsed.help())
+      return 0
+    } else if (t.startsWith('-')) throw new UsageError(`unknown flag ${t}`)
+    else trailing.push(t)
+  }
+  const paths = await scopedIngestPaths(bundleDir, trailing)
   return withVault(dir, {}, async (vault) => {
     const watcher = await createIngestWatcher(vault, bundleDir, {
       watch: false,
@@ -505,7 +550,8 @@ async function cmdIngest({ args, flags }) {
       process.stderr.write(`delete skipped (no --confirm-deletes): ${path}\n`)
     )
     try {
-      await watcher.scan()
+      if (paths === null) await watcher.scan()
+      else for (const rel of paths) await watcher.ingestFile(rel)
       await vault.update()
       // The skip clause is omitted (never "0") when no skips occurred.
       const skips = upToDate > 0 ? `; ${upToDate} file(s) already up to date` : ''
