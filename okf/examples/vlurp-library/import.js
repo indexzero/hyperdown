@@ -33,7 +33,7 @@ import { mkdir, readFile, writeFile, cp, rm } from 'node:fs/promises'
 import { join, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'hypercore-crypto'
-import { initVault } from '@auto-okf/store'
+import { Bundle } from '@auto-okf/store'
 import { materialize } from '@auto-okf/faces'
 import { keyspace as K, normalizePath } from '@auto-okf/core'
 
@@ -170,7 +170,7 @@ async function main() {
   say(`staged ${staged.size} files under ${relative(process.cwd(), STAGING)}/ (transient scratch, never committed)\n`)
 
   // ---- 2. import: stamp _id + provenance ----------------------------------
-  const vault = await initVault(join(STORAGE, 'vault'), { keyPair: crypto.keyPair(Buffer.alloc(32, 77)) })
+  const vault = await Bundle.init(join(STORAGE, 'vault'), { keyPair: crypto.keyPair(Buffer.alloc(32, 77)) })
 
   say('--- first import ---')
   const first = await importStaged(vault, spec.files, staged, spec)

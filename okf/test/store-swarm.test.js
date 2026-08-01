@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { Vault, K, tmpDir, until } from './store-helpers.js'
+import { Bundle, K, tmpDir, until } from './store-helpers.js'
 
 const storeRequire = createRequire(new URL('../store/index.js', import.meta.url))
 const Hyperswarm = storeRequire('hyperswarm')
@@ -15,8 +15,8 @@ test('two vaults replicate over hyperswarm (discoveryKey join)', async (t) => {
   const tn = await createTestnet(3)
   const swarmA = new Hyperswarm({ bootstrap: tn.bootstrap })
   const swarmB = new Hyperswarm({ bootstrap: tn.bootstrap })
-  const a = await Vault.init(await tmpDir('swarm-a'), { swarm: swarmA })
-  const b = await Vault.join(await tmpDir('swarm-b'), a.key, { swarm: swarmB })
+  const a = await Bundle.init(await tmpDir('swarm-a'), { swarm: swarmA })
+  const b = await Bundle.join(await tmpDir('swarm-b'), a.key, { swarm: swarmB })
   t.after(async () => {
     await a.close()
     await b.close()

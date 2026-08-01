@@ -27,7 +27,7 @@ import { mkdir } from 'node:fs/promises'
 import { join, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'hypercore-crypto'
-import { initVault } from '@auto-okf/store'
+import { Bundle } from '@auto-okf/store'
 import { materialize } from '@auto-okf/faces'
 import { keyspace as K, OP_TYPES } from '@auto-okf/core'
 
@@ -75,7 +75,7 @@ async function main() {
   await mkdir(STORAGE, { recursive: true })
   console.log('=== slop-archive: an append-only archive an agent cannot rm ===\n')
 
-  const vault = await initVault(join(STORAGE, 'vault'), { keyPair: crypto.keyPair(Buffer.alloc(32, 42)) })
+  const vault = await Bundle.init(join(STORAGE, 'vault'), { keyPair: crypto.keyPair(Buffer.alloc(32, 42)) })
   say(`opened the archive vault (key ${vault.keyHex.slice(0, 16)}…)`)
   say(`vault-metadata constant: appendOnly = ${vault.metadata.appendOnly} (§8, loaded from disk, immutable)\n`)
 

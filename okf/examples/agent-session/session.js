@@ -45,7 +45,7 @@ import { join, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
-import { initVault, Vault } from '@auto-okf/store'
+import { Bundle } from '@auto-okf/store'
 import { materialize, wanted } from '@auto-okf/faces'
 import { keyspace as K, revHash } from '@auto-okf/core'
 
@@ -127,10 +127,10 @@ async function main() {
   console.log('=== agent-session: four agents, one shared vault, partitioned then healed ===\n')
 
   // ---- session setup: one vault, four writers -----------------------------
-  const alpha = await initVault(join(STORAGE, 'alpha'), { keyPair: crypto.keyPair(seed('alpha')) })
-  const beta = await Vault.join(join(STORAGE, 'beta'), alpha.key, { keyPair: crypto.keyPair(seed('beta')) })
-  const gamma = await Vault.join(join(STORAGE, 'gamma'), alpha.key, { keyPair: crypto.keyPair(seed('gamma')) })
-  const delta = await Vault.join(join(STORAGE, 'delta'), alpha.key, { keyPair: crypto.keyPair(seed('delta')) })
+  const alpha = await Bundle.init(join(STORAGE, 'alpha'), { keyPair: crypto.keyPair(seed('alpha')) })
+  const beta = await Bundle.join(join(STORAGE, 'beta'), alpha.key, { keyPair: crypto.keyPair(seed('beta')) })
+  const gamma = await Bundle.join(join(STORAGE, 'gamma'), alpha.key, { keyPair: crypto.keyPair(seed('gamma')) })
+  const delta = await Bundle.join(join(STORAGE, 'delta'), alpha.key, { keyPair: crypto.keyPair(seed('delta')) })
   const agents = [alpha, beta, gamma, delta]
 
   say('alpha', `opened the vault (key ${alpha.keyHex.slice(0, 16)}…); alpha is the genesis indexer`)

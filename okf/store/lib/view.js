@@ -58,7 +58,7 @@ export class ViewAdapter {
 
   /**
    * `{ seq, key: string, value: string } | null` — value is the raw stored
-   * JSON string (core's Tx.val JSON-parses it; Vault.val does too).
+   * JSON string (core's Tx.val JSON-parses it; Bundle.val does too).
    */
   async get(key) {
     const node = await this.bee.get(toBuf(key))

@@ -42,8 +42,8 @@
 //     the body survives and the new `_rev` re-derives (§14).
 //
 // This module imports NO substrate (consistent with the rest of @auto-okf/
-// faces: "the substrate is injected"). The @auto-okf/store `initVault` is
-// passed in as `opts.initVault`; the CLI (okf/cli) wires the two together.
+// faces: "the substrate is injected"). The @auto-okf/store `Bundle.init` is
+// passed in as `opts.initBundle`; the CLI (okf/cli) wires the two together.
 import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { keyspace as K } from '@auto-okf/core'
@@ -57,9 +57,9 @@ const GENERATION_LOG_REL = 'log/generation.json'
 
 /**
  * Run one generation cycle. `vault` is the (open) predecessor @auto-okf/store
- * Vault. Options:
+ * Bundle. Options:
  *
- *   initVault    (REQUIRED) the @auto-okf/store `initVault(dir, opts)` — the
+ *   initBundle   (REQUIRED) the @auto-okf/store `Bundle.init(dir, opts)` — the
  *                fresh-vault factory. Injected so faces stays substrate-free.
  *   toDir        (REQUIRED) directory to materialize the hydrated face into
  *                (the operator's archival OKF bundle — keeps _id/_rev).
@@ -86,9 +86,9 @@ const GENERATION_LOG_REL = 'log/generation.json'
  */
 export async function compact(vault, opts = {}) {
   const { toDir, vaultDir, force = false, keyPair, encryptionKey, sign } = opts
-  const initVault = opts.initVault
-  if (typeof initVault !== 'function') {
-    throw compactError('COMPACT_NO_INITVAULT', 'opts.initVault (@auto-okf/store initVault) is required')
+  const initBundle = opts.initBundle
+  if (typeof initBundle !== 'function') {
+    throw compactError('COMPACT_NO_INITBUNDLE', 'opts.initBundle (@auto-okf/store Bundle.init) is required')
   }
   if (!toDir) throw compactError('COMPACT_NO_TODIR', 'opts.toDir is required')
   if (!vaultDir) throw compactError('COMPACT_NO_VAULTDIR', 'opts.vaultDir is required')
@@ -158,7 +158,7 @@ export async function compact(vault, opts = {}) {
     if (sig && sig.signature !== undefined) predecessorCheckpoint.signature = sig.signature
   }
 
-  const newVault = await initVault(vaultDir, {
+  const newVault = await initBundle(vaultDir, {
     metadata: { predecessorKey, predecessorCheckpoint },
     ...(keyPair !== undefined ? { keyPair } : {}),
     ...(encryptionKey !== undefined ? { encryptionKey } : {})

@@ -21,12 +21,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { initVault, createIngestWatcher, materialize, K, until, tmpDir } from '../faces-helpers.js'
+import { Bundle, createIngestWatcher, materialize, K, until, tmpDir } from '../faces-helpers.js'
 
 const BODY = 'A precious body the human wrote.\n'
 
 async function seededBundle(name, path = 'Recipes/Soup') {
-  const v = await initVault(await tmpDir(name))
+  const v = await Bundle.init(await tmpDir(name))
   const { tag: id } = await v.createConcept(path, 'Recipe')
   await v.setField(id, 'title', 'Soup')
   await v.setBody(id, null, BODY)

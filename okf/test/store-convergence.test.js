@@ -4,11 +4,11 @@
 // writer's own peer, ack-anchored fold, cross-peer hash equality).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Vault, K, tmpDir, pair, until, converged } from './store-helpers.js'
+import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
 
 test('two writers converge to bit-identical views (hash equality)', async (t) => {
-  const a = await Vault.init(await tmpDir('conv-a'))
-  const b = await Vault.join(await tmpDir('conv-b'), a.key)
+  const a = await Bundle.init(await tmpDir('conv-a'))
+  const b = await Bundle.join(await tmpDir('conv-b'), a.key)
   const unpair = pair(a, b)
   t.after(async () => {
     unpair()
@@ -60,8 +60,8 @@ test('two writers converge to bit-identical views (hash equality)', async (t) =>
 })
 
 test('optimistic onboarding: held locally, folded at the ack position (§8)', async (t) => {
-  const a = await Vault.init(await tmpDir('opt-a'))
-  const c = await Vault.join(await tmpDir('opt-c'), a.key)
+  const a = await Bundle.init(await tmpDir('opt-a'))
+  const c = await Bundle.join(await tmpDir('opt-c'), a.key)
   const unpair = pair(a, c)
   t.after(async () => {
     unpair()
@@ -116,8 +116,8 @@ test('optimistic onboarding: held locally, folded at the ack position (§8)', as
 })
 
 test('opt-in append backpressure throttles without deadlocking', async (t) => {
-  const a = await Vault.init(await tmpDir('bp-a'))
-  const b = await Vault.join(await tmpDir('bp-b'), a.key, {
+  const a = await Bundle.init(await tmpDir('bp-a'))
+  const b = await Bundle.join(await tmpDir('bp-b'), a.key, {
     backpressure: { maxInflight: 2, ackTimeout: 250 }
   })
   const unpair = pair(a, b)

@@ -10,7 +10,7 @@
 //
 // The bundle format is normative to the OKF v0.1 SPEC; the canonical YAML
 // emitter is hand-rolled for byte-determinism (I9). Nothing here imports
-// autobee — a @auto-okf/store Vault (or any { val, scan, update } + content
+// autobee — a @auto-okf/store Bundle (or any { val, scan, update } + content
 // helpers) is passed in.
 export { materialize, renderIndex, renderLog } from './lib/materialize.js'
 export { createIngestWatcher, IngestWatcher } from './lib/ingest.js'

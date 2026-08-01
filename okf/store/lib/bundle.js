@@ -1,4 +1,4 @@
-// Vault (okf SPEC §13 store deliverable): multiwriter vault lifecycle on
+// Bundle (okf SPEC §13 store deliverable): multiwriter vault lifecycle on
 // autobee — corestore in (writer cores derived under the §10 per-generation
 // namespace), Autobee up, @auto-okf/core's deterministic apply wired
 // through the ViewAdapter into autobee's apply — plus §8 governance op
@@ -29,7 +29,7 @@
 //   update()/updated()/flush(), replicate(isInitiator|stream).
 // - db.close() closes the corestore it was handed (index.js _close): we
 //   hand it the per-generation namespace SESSION; the root corestore is closed
-//   by Vault.close() (corestore@7.11.0 index.js: closing a session never
+//   by Bundle.close() (corestore@7.11.0 index.js: closing a session never
 //   closes the root; closing the root closes every session).
 // - genesis: autobee auto-adds the first writer with full permissions
 //   (index.js _processApplyBatch: `if (this.system.isGenesis())
@@ -92,7 +92,7 @@ const GENERATION_NS = 'okf/generation/'
 const DEFAULT_MAX_INFLIGHT = 1
 const DEFAULT_ACK_TIMEOUT = 1500
 
-export class Vault extends EventEmitter {
+export class Bundle extends EventEmitter {
   /**
    * @param {string|Corestore} storage directory (preferred: metadata is
    *   pinned to `<dir>/okf-vault.json`) or a dedicated Corestore the vault
@@ -149,21 +149,21 @@ export class Vault extends EventEmitter {
 
   /** Create a brand-new vault (writes pinned metadata at init). */
   static async init(storage, opts = {}) {
-    const vault = new Vault(storage, opts)
+    const vault = new Bundle(storage, opts)
     await vault.ready()
     return vault
   }
 
   /** Open a vault previously initialized/joined at `storage`. */
   static async open(storage, opts = {}) {
-    const vault = new Vault(storage, opts)
+    const vault = new Bundle(storage, opts)
     await vault.ready()
     return vault
   }
 
   /** Join an existing vault by key (plus invite metadata/encryptionKey). */
   static async join(storage, key, opts = {}) {
-    const vault = new Vault(storage, { ...opts, key })
+    const vault = new Bundle(storage, { ...opts, key })
     await vault.ready()
     return vault
   }
@@ -386,7 +386,7 @@ export class Vault extends EventEmitter {
       this._ownSwarm = false
     }
     // db.close() closes the generation SESSION (autobee _close); the root
-    // corestore — which the Vault owns either way — closes after it.
+    // corestore — which the Bundle owns either way — closes after it.
     if (this.db) await this.db.close()
     await this.store.close()
   }

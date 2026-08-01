@@ -5,14 +5,13 @@
 // hub over local TCP (see hub.js).
 //
 // This is the vault-ld harness writer retargeted to speak the auto-okf op
-// vocabulary over a REAL @auto-okf/store Vault (autobee + corestore on
+// vocabulary over a REAL @auto-okf/store Bundle (autobee + corestore on
 // disk). The command surface is unchanged (init/join/open, call/append/
 // appendRaw, hash, dump, link/unlink for pause/resume replication, crash =
 // SIGKILL, restart = respawn) — only the imported store/faces and the op
 // helpers differ.
 import net from 'node:net'
-import { Vault } from '../../store/index.js'
-import { initVault } from '../../store/index.js'
+import { Bundle } from '../../store/index.js'
 import { materialize, createIngestWatcher, wanted, compact } from '../../faces/index.js'
 
 let vault = null
@@ -51,17 +50,17 @@ function attach(v) {
 
 const handlers = {
   async init({ dir, metadata }) {
-    attach(await Vault.init(dir, metadata ? { metadata } : {}))
+    attach(await Bundle.init(dir, metadata ? { metadata } : {}))
     return info()
   },
 
   async join({ dir, key, metadata }) {
-    attach(await Vault.join(dir, key, metadata ? { metadata } : {}))
+    attach(await Bundle.join(dir, key, metadata ? { metadata } : {}))
     return info()
   },
 
   async open({ dir }) {
-    attach(await Vault.open(dir))
+    attach(await Bundle.open(dir))
     return info()
   },
 
@@ -199,7 +198,7 @@ const handlers = {
       stream.destroy()
     }
     links.clear()
-    const res = await compact(vault, { toDir, vaultDir, initVault, force })
+    const res = await compact(vault, { toDir, vaultDir, initBundle: Bundle.init, force })
     const old = vault
     attach(res.vault)
     await old.close()

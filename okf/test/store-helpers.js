@@ -7,10 +7,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export {
-  Vault,
-  initVault,
-  openVault,
-  joinVault,
+  Bundle,
   createMetadata,
   metadataHash,
   canonicalMetadataBytes,

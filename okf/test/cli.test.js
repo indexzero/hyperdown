@@ -10,7 +10,7 @@ import { execFile, spawn } from 'node:child_process'
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { initVault } from '../store/index.js'
+import { Bundle } from '../store/index.js'
 import { keyspace as K } from '../core/index.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -182,7 +182,7 @@ test('join + add-writer + remove-writer round trip (§8 governance plumbing)', a
  * ResolveConflict. Returns { id, keep, supersede }.
  */
 async function seedConflict(storage) {
-  const v = await initVault(storage)
+  const v = await Bundle.init(storage)
   const { tag: id } = await v.createConcept('notes/a', 'note')
   await v.setBody(id, null, 'version one')
   await v.update()
@@ -234,7 +234,7 @@ test('flags lists a seeded conflict; compact refuses until resolved; resolve cle
 test('undelete restores a tombstoned concept', async () => {
   const base = await tmpDir('undelete')
   const storage = join(base, 'vault')
-  const v = await initVault(storage)
+  const v = await Bundle.init(storage)
   const { tag: id } = await v.createConcept('notes/gone', 'note')
   await v.setBody(id, null, 'still here')
   await v.deleteConcept(id)

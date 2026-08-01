@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import b4a from 'b4a'
 import { command, flag, arg, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
-import { initVault, openVault, joinVault, METADATA_FILE } from '@auto-okf/store'
+import { Bundle, METADATA_FILE } from '@auto-okf/store'
 import { materialize, createIngestWatcher, wanted, compact } from '@auto-okf/faces'
 
 const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
@@ -295,7 +295,7 @@ async function withVault(dir, opts, fn) {
       `'${dir}' is not a vault (no ${METADATA_FILE}); run \`auto-okf init\` or \`auto-okf join\` first`
     )
   }
-  const vault = await openVault(dir, opts)
+  const vault = await Bundle.open(dir, opts)
   try {
     return await fn(vault)
   } finally {
@@ -329,7 +329,7 @@ async function cmdInit({ args, flags }) {
   if (flags.encryptionKey) {
     opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
   }
-  const vault = await initVault(dir, opts)
+  const vault = await Bundle.init(dir, opts)
   try {
     printIdentity(vault)
     console.log(`storage:     ${dir}`)
@@ -356,8 +356,8 @@ async function cmdJoin({ args, flags }) {
     throw new UsageError('a vault key is required to join fresh storage')
   }
   const vault = pinned && key === undefined
-    ? await openVault(dir, opts)
-    : await joinVault(dir, hexKey(key, 'vault key'), opts)
+    ? await Bundle.open(dir, opts)
+    : await Bundle.join(dir, hexKey(key, 'vault key'), opts)
   try {
     printIdentity(vault)
     console.log('hand the writer key to an indexer (`auto-okf add-writer`), then replicate')
@@ -469,7 +469,7 @@ async function cmdWatch({ args, flags }) {
       `'${dir}' is not a vault (no ${METADATA_FILE}); run \`auto-okf init\` or \`auto-okf join\` first`
     )
   }
-  const vault = await openVault(dir)
+  const vault = await Bundle.open(dir)
   let watcher = null
   let swarmed = false
   try {
@@ -545,7 +545,7 @@ async function cmdCompact({ args, flags }) {
   const faceDir = flags.face || `${outDir}.face`
   return withVault(dir, {}, async (vault) => {
     const res = await compact(vault, {
-      initVault,
+      initBundle: Bundle.init,
       toDir: faceDir,
       vaultDir: outDir,
       force: flags.force === true

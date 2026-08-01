@@ -6,8 +6,7 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
-  initVault,
-  joinVault,
+  Bundle,
   materialize,
   createIngestWatcher,
   K,
@@ -28,7 +27,7 @@ async function seedOne(v) {
 }
 
 test('ingest of a single field edit emits exactly one op (minimality)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   await seedOne(v)
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
@@ -48,7 +47,7 @@ test('ingest of a single field edit emits exactly one op (minimality)', async ()
 })
 
 test('ingest of a body edit emits exactly one SetBody citing the file _rev', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const id = await seedOne(v)
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
@@ -71,7 +70,7 @@ test('ingest of a body edit emits exactly one SetBody citing the file _rev', asy
 })
 
 test('full roundtrip: materialize -> edit -> ingest -> materialize is stable', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   await seedOne(v)
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
@@ -100,12 +99,12 @@ test('full roundtrip: materialize -> edit -> ingest -> materialize is stable', a
 })
 
 test('rename + concurrent edit merge survives the roundtrip', async () => {
-  const a = await initVault(await tmpDir('vault-a'))
+  const a = await Bundle.init(await tmpDir('vault-a'))
   const { tag: id } = await a.createConcept('notes/draft', 'Note')
   await a.setBody(id, null, 'version zero')
   await a.update()
 
-  const b = await joinVault(await tmpDir('vault-b'), a.key)
+  const b = await Bundle.join(await tmpDir('vault-b'), a.key)
   let unpair = pair(a, b)
   assert.ok(await converged([a, b]), 'initial converge failed')
   await a.writers.add(b.localKey)
@@ -139,7 +138,7 @@ test('rename + concurrent edit merge survives the roundtrip', async () => {
 })
 
 test('deleting a file emits DeleteConcept only when the guard confirms', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const id = await seedOne(v)
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
@@ -167,7 +166,7 @@ test('deleting a file emits DeleteConcept only when the guard confirms', async (
 })
 
 test('adopting an unknown _id creates the concept (generation-cycle contract)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const dir = await tmpDir('bundle')
   await materialize(v, dir) // establish the manifest + reserved faces
 

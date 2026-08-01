@@ -13,8 +13,7 @@ import assert from 'node:assert/strict'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
-  initVault,
-  joinVault,
+  Bundle,
   createIngestWatcher,
   K,
   makeTag,
@@ -25,8 +24,8 @@ import {
 } from '../faces-helpers.js'
 
 test('P1: a squatted mint id does not capture an ingested file’s fields', async () => {
-  const A = await initVault(await tmpDir('A'))
-  const E = await joinVault(await tmpDir('E'), A.keyHex)
+  const A = await Bundle.init(await tmpDir('A'))
+  const E = await Bundle.join(await tmpDir('E'), A.keyHex)
   const unpair = pair(A, E)
   await converged([A, E])
 
