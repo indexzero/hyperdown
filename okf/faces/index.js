@@ -7,6 +7,8 @@
 //     ops (per-key frontmatter diff, body diff citing _rev, the §6 _id
 //     rules, conflict-copy awareness, guarded deletes).
 //   - wanted(vault): the ranked demand index from wanted/ + wantedrank/.
+//   - status(vault, dir): read-only per-file bundle state porcelain
+//     (in-log / pending-ingest / dirty / absent / foreign, ADR-002).
 //
 // The bundle format is normative to the OKF v0.1 SPEC; the canonical YAML
 // emitter is hand-rolled for byte-determinism (I9). Nothing here imports
@@ -16,6 +18,7 @@ export { materialize, renderIndex, renderLog } from './lib/materialize.js'
 export { createIngestWatcher, IngestWatcher } from './lib/ingest.js'
 export { compact } from './lib/compact.js'
 export { wanted } from './lib/wanted.js'
+export { status } from './lib/status.js'
 export { readView, readLog, memViewReader } from './lib/view.js'
 export {
   renderNote,

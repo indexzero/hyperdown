@@ -70,6 +70,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. `--force-mirror` restores unconditional mirroring |
 | `ingest <dir> <bundle-dir> [paths…]` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9). Trailing bundle-relative paths restrict the scan to exactly those concept files (ADR-001 — concurrent-writer politeness; the shell expands globs): a named path that does not exist, escapes the bundle root, or is not a `.md` file exits 1 naming the path, with zero ops appended. Zero paths = full scan, unchanged. `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default) |
 | `watch <dir> <bundle-dir> [--swarm]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also joins the vault's hyperswarm topic for replication; `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
+| `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
 | `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted |
@@ -79,9 +80,31 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 There is no content-write command: content flows in through `ingest`/`watch`
 (edit the markdown) or through the `@auto-okf/store` API (agents).
 
+## Per-file state: `status`
+
+`auto-okf status ./vault ./bundle` answers the per-file state question
+*before* you run anything — one `<state>\t<path>` line per file, sorted by
+path, strictly read-only (it appends no ops, writes no files, touches no
+manifest; ADR-002). Five states:
+
+- `in-log` — on-disk bytes match the log's canonical projection (hash match)
+- `pending-ingest` — hand-authored, not yet in the log; `ingest` would fold
+  it in as a new concept
+- `dirty` — in the log but on-disk bytes diverge from the projection (a hand
+  edit `ingest` folds in as diffs, or a log that moved past the last
+  `materialize`)
+- `absent` — in the log, missing from disk (`materialize` would restore it)
+- `foreign` — not in the log, not manifest-tracked, and not (yet) ingestable
+  (e.g. another writer's mid-write WIP without a parseable `type`)
+
+`--json` emits the same rows as a stable array of `{ path, state }` objects —
+byte-identical across runs with no intervening ops (the schema is contract).
+
 ## Verifying content is in the log
 
-A vault has no privileged bundle directory; the emission manifest
+`status` is the quick check: `in-log` means the on-disk bytes hash-match the
+log's projection. For proof *from* the log, materialize to a scratch
+directory — a vault has no privileged bundle directory; the emission manifest
 (`.okf-manifest.json`) lives in each target directory, so materializing to
 a scratch directory never disturbs another bundle:
 
@@ -127,7 +150,8 @@ per command) and exits 0.
 From the repo root: `pnpm test` (or `pnpm test:okf`). The CLI smoke suite
 (`okf/test/cli.test.js`) spawns the real `auto-okf` binary against real
 vaults on disk: init→materialize produces a bundle; a hand-authored file
-ingests to the expected ops; add-writer/remove-writer round trip; `wanted`
+ingests to the expected ops; path-scoped ingest folds only the named files;
+`status` reports the five per-file states read-only; add-writer/remove-writer round trip; `wanted`
 lists an unresolved link; `flags` lists a seeded conflict; `compact` refuses
 on an open conflict and succeeds after `resolve`; `undelete` restores a
 tombstone; `watch` ingests a foreground edit and exits cleanly on SIGINT.

@@ -11,6 +11,7 @@
     "./ingest": "./lib/ingest.js",
     "./compact": "./lib/compact.js",
     "./wanted": "./lib/wanted.js",
+    "./status": "./lib/status.js",
     "./yaml": "./lib/yaml.js",
     "./view": "./lib/view.js"
   },
