@@ -515,10 +515,13 @@ saga is the cautionary tale). The rules are frozen:
   directories are then removed. A `.md` file whose current bytes differ
   from its manifest entry — or that has no entry (human-authored, not yet
   ingested) — is **never deleted or overwritten**: it is left in place,
-  reported as pending-ingest (an ingest candidate, surfaced on the CLI),
-  and the run exits nonzero unless ingest is run first
-  (`materialize --force-mirror` restores unconditional mirroring for
-  operator use). Deletion honors the same containment checks as writes.
+  reported as pending-ingest (an ingest candidate, surfaced on the CLI as
+  a `notice:`, never an `error:`), and the run exits 3 — pending-only:
+  everything owned was projected; a clean run exits 0, a real failure
+  (I/O, corrupt vault, bad args, an unsafe path) exits 1 (ADR-004) —
+  unless ingest is run first (`materialize --force-mirror` restores
+  unconditional mirroring for operator use). Stale files (derived faces a
+  human edited) are likewise a notice accompanying exit 0/3. Deletion honors the same containment checks as writes.
   The ingest watcher treats manifest-gated reconciliation deletions as
   materialize-authored (in-flight-lock coordination), never as human
   deletes. Converged-peer I9 is judged on the emitted set; pending-ingest

@@ -117,6 +117,38 @@ test('ingest a hand-authored file mints a concept; materialize round-trips it wi
   assert.match(emitted, /A hand-authored body\./)
 })
 
+test('materialize exit taxonomy: 0 clean, 3 pending-only, 1 failure (ADR-004)', async () => {
+  const base = await tmpDir('taxonomy')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  await cli(['init', storage])
+
+  const clean = await cli(['materialize', storage, bundle])
+  assert.equal(clean.code, 0, 'clean run exits 0')
+
+  // a concurrent writer's not-yet-ingested file: healthy, not a failure
+  await writeFile(join(bundle, 'foreign.md'), '---\ntype: note\n---\nMid-authoring.\n')
+  const pending = await cli(['materialize', storage, bundle])
+  assert.equal(pending.code, 3, `pending-only exits 3, stderr:\n${pending.stderr}`)
+  assert.match(
+    pending.stderr,
+    /^notice: pending ingest \(unsaved external edit, left in place\): foreign\.md$/m
+  )
+  assert.match(pending.stdout, /^materialized /m, 'the owned projection still completed')
+  const kept = await readFile(join(bundle, 'foreign.md'), 'utf8')
+  assert.match(kept, /Mid-authoring\./, 'the foreign file was left in place')
+
+  // real failure still exits 1
+  const broken = await cli(['materialize', join(base, 'no-vault'), bundle])
+  assert.equal(broken.code, 1)
+  assert.match(broken.stderr, /not a vault/)
+
+  // once the foreign file is ingested the same bundle materializes clean
+  await cli(['ingest', storage, bundle])
+  const after = await cli(['materialize', storage, bundle])
+  assert.equal(after.code, 0, after.stderr)
+})
+
 test('ingest reports hash-match skips as already up to date (ADR-003)', async () => {
   const base = await tmpDir('uptodate')
   const storage = join(base, 'vault')

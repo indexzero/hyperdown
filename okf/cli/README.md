@@ -67,7 +67,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry non-default invites; when `<dir>` is already pinned the key is optional (reopen + reprint keys) |
 | `add-writer <dir> <writer-key> [--indexer]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8) |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
-| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; reports pending-ingest, unsafe-path and stale files on stderr; exits non-zero if a human-authored file is pending ingest (N3). `--force-mirror` restores unconditional mirroring |
+| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. `--force-mirror` restores unconditional mirroring |
 | `ingest <dir> <bundle-dir>` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9); `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default) |
 | `watch <dir> <bundle-dir> [--swarm]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also joins the vault's hyperswarm topic for replication; `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
@@ -95,10 +95,13 @@ the log — everything that appears came from it.
 ## Exit codes
 
 `0` success · `1` operational error (including a governance op that apply
-rejected, or a `materialize` blocked on a pending-ingest file) · `2` usage
+rejected, or an unsafe path skipped during `materialize`) · `2` usage
 error — unknown flags and commands, missing or extra arguments, and malformed
 values all exit 2 (paparam parses strictly; the wrapper maps every parse
-failure to 2). `-h`/`--help` prints the paparam-generated help (top-level and
+failure to 2) · `3` (`materialize` only) everything owned was projected but
+human-authored file(s) were left in place pending ingest — a normal
+multi-writer state, listed as `notice:` lines on stderr, not a failure
+(ADR-004). `-h`/`--help` prints the paparam-generated help (top-level and
 per command) and exits 0.
 
 ## Notes
