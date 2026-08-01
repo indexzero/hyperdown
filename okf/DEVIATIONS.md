@@ -179,10 +179,10 @@ the body survives and `_rev` re-derives (§14: a former edit's revHash changes,
 the body text does not). Once a bundle has cycled once, every body is already
 `base:null`, so further cycles preserve even `_rev`.
 
-**okf §10 `compact` injects the `@auto-okf/store` `initVault` rather than
+**okf §10 `compact` injects the `@auto-okf/store` `Bundle.init` rather than
 importing it.** Consistent with the rest of `@auto-okf/faces` ("the substrate
 is injected — nothing here imports the substrate"), `compact(vault, opts)`
-takes `opts.initVault` (the store factory) instead of adding a hard
+takes `opts.initBundle` (the store factory) instead of adding a hard
 `@auto-okf/store` dependency to the faces package. The CLI (`okf/cli`) wires
 the two together. The predecessor is never deleted by compact — its path is
 returned for the operator to archive/destroy out-of-band (§10 step 5).

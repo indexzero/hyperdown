@@ -8,8 +8,7 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile, stat, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
-  initVault,
-  joinVault,
+  Bundle,
   materialize,
   createIngestWatcher,
   K,
@@ -30,7 +29,7 @@ const exists = async (p) => {
 }
 
 test('N3: a hand-authored .md is never deleted or overwritten by materialize', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setBody(id, null, 'concept a')
   await v.update()
@@ -52,7 +51,7 @@ test('N3: a hand-authored .md is never deleted or overwritten by materialize', a
 })
 
 test('N3: a failed ingest (type-less file) never lets materialize delete the human file', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setBody(id, null, 'a')
   await v.update()
@@ -78,7 +77,7 @@ test('N3: a failed ingest (type-less file) never lets materialize delete the hum
 })
 
 test('N3: a renamed concept\'s old path is pruned from the manifest (no stale later delete)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setBody(id, null, 'body')
   await v.update()
@@ -107,7 +106,7 @@ test('N3: a renamed concept\'s old path is pruned from the manifest (no stale la
 })
 
 test('N3: a human EDIT to a materialized concept file is preserved, not clobbered', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setField(id, 'title', 'A')
   await v.setBody(id, null, 'body')
@@ -127,7 +126,7 @@ test('N3: a human EDIT to a materialized concept file is preserved, not clobbere
 })
 
 test('materialize removes only its own prior outputs (renamed concept old path)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('old/name', 'Note')
   await v.setBody(id, null, 'x')
   await v.update()
@@ -147,7 +146,7 @@ test('materialize removes only its own prior outputs (renamed concept old path)'
 })
 
 test('forceMirror overwrites and deletes unconditionally (operator escape hatch)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setBody(id, null, 'body')
   await v.update()
@@ -168,8 +167,8 @@ test('forceMirror overwrites and deletes unconditionally (operator escape hatch)
 })
 
 test('conflict-copy round-trip: a pathcollision loser materializes and re-ingests stably', async () => {
-  const a = await initVault(await tmpDir('vault-a'))
-  const b = await joinVault(await tmpDir('vault-b'), a.key)
+  const a = await Bundle.init(await tmpDir('vault-a'))
+  const b = await Bundle.join(await tmpDir('vault-b'), a.key)
   let unpair = pair(a, b)
   assert.ok(await converged([a, b]), 'initial converge failed')
   await a.writers.add(b.localKey)

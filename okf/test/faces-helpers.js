@@ -7,7 +7,7 @@ import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export { initVault, joinVault, openVault } from '../store/index.js'
+export { Bundle } from '../store/index.js'
 export { keyspace as K, canonical, makeTag } from '../core/index.js'
 export { materialize, createIngestWatcher, wanted, readView } from '../faces/index.js'
 export { checkOkfConformance } from './okf-conformance.js'

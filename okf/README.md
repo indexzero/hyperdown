@@ -6,16 +6,16 @@ A multi-writer knowledge bundle on
 markdown, agents and humans co-writing one vault.
 
 ```js
-import { initVault } from '@auto-okf/store'
+import { Bundle } from '@auto-okf/store'
 import { materialize } from '@auto-okf/faces'
 
-const vault = await initVault('./vault')                    // the op log is the source of truth
-const { tag: id } = await vault.createConcept('guides/getting-started', 'guide')
-await vault.setField(id, 'title', 'Getting started')
-await vault.setBody(id, null, 'Read the [architecture](/guides/architecture) first.')
-await vault.update()
-await materialize(vault, './bundle')                        // guides/getting-started.md + index.md + log.md
-await vault.close()
+const bundle = await Bundle.init('./storage')               // the op log is the source of truth
+const { tag: id } = await bundle.createConcept('guides/getting-started', 'guide')
+await bundle.setField(id, 'title', 'Getting started')
+await bundle.setBody(id, null, 'Read the [architecture](/guides/architecture) first.')
+await bundle.update()
+await materialize(bundle, './bundle')                       // guides/getting-started.md + index.md + log.md
+await bundle.close()
 ```
 
 Open `./bundle` in any markdown reader and it is a plain OKF bundle;

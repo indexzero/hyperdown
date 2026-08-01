@@ -4,8 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  initVault,
-  joinVault,
+  Bundle,
   materialize,
   wanted,
   checkOkfConformance,
@@ -37,7 +36,7 @@ async function seed(v) {
 }
 
 test('materialize is byte-deterministic across two runs of the same view (I9)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   await seed(v)
   const dir1 = await tmpDir('bundle')
   const dir2 = await tmpDir('bundle')
@@ -50,9 +49,9 @@ test('materialize is byte-deterministic across two runs of the same view (I9)', 
 })
 
 test('materialize is byte-identical on a replicated peer (I9 convergence)', async () => {
-  const a = await initVault(await tmpDir('vault-a'))
+  const a = await Bundle.init(await tmpDir('vault-a'))
   await seed(a)
-  const b = await joinVault(await tmpDir('vault-b'), a.key)
+  const b = await Bundle.join(await tmpDir('vault-b'), a.key)
   const unpair = pair(a, b)
   const h = await converged([a, b])
   assert.ok(h, 'peers did not converge')
@@ -71,7 +70,7 @@ test('materialize is byte-identical on a replicated peer (I9 convergence)', asyn
 
 test('materialize is byte-identical on a from-scratch rebuilt view (I3/I9)', async () => {
   const dir = await tmpDir('vault')
-  const a = await initVault(dir)
+  const a = await Bundle.init(dir)
   const ids = await seed(a)
   const dir1 = await tmpDir('bundle')
   await materialize(a, dir1)
@@ -79,8 +78,7 @@ test('materialize is byte-identical on a from-scratch rebuilt view (I3/I9)', asy
   await a.close()
 
   // Reopen from disk (a full incremental re-fold from the persisted log).
-  const { openVault } = await import('../store/index.js')
-  const b = await openVault(dir)
+  const b = await Bundle.open(dir)
   await b.update()
   const dir2 = await tmpDir('bundle')
   await materialize(b, dir2)
@@ -91,7 +89,7 @@ test('materialize is byte-identical on a from-scratch rebuilt view (I3/I9)', asy
 })
 
 test('emitted bundle passes the independent OKF v0.1 conformance check', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   await seed(v)
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
@@ -105,7 +103,7 @@ test('emitted bundle passes the independent OKF v0.1 conformance check', async (
 })
 
 test('frontmatter emission order is _id, _rev, type, then sorted keys (§6)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const { orders } = await seed(v)
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
@@ -126,7 +124,7 @@ test('frontmatter emission order is _id, _rev, type, then sorted keys (§6)', as
 })
 
 test('root index.md carries okf_version and lists concepts then subdirs (OKF §6)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   await seed(v)
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
@@ -143,7 +141,7 @@ test('root index.md carries okf_version and lists concepts then subdirs (OKF §6
 })
 
 test('log.md is # Update Log with ISO date headings newest-first (OKF §7)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   await seed(v)
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
@@ -157,7 +155,7 @@ test('log.md is # Update Log with ISO date headings newest-first (OKF §7)', asy
 })
 
 test('wanted() ranks unwritten concepts by referrer count (§4/§9)', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   // two concepts both link to the same unwritten target; one also links a
   // less-referenced target.
   const { tag: a } = await v.createConcept('a', 'Note')

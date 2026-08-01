@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { writeFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
-  Vault,
+  Bundle,
   createMetadata,
   metadataHash,
   canonicalMetadataBytes,
@@ -24,10 +24,10 @@ import {
 
 test('vault metadata is deterministic and identical across peers', async (t) => {
   const dirA = await tmpDir('meta-a')
-  const a = await Vault.init(dirA)
+  const a = await Bundle.init(dirA)
   const dirB = await tmpDir('meta-b')
   // the invite carries the full pinned document
-  const b = await Vault.join(dirB, a.key, { metadata: a.metadata })
+  const b = await Bundle.join(dirB, a.key, { metadata: a.metadata })
   const unpair = pair(a, b)
   t.after(async () => {
     unpair()
@@ -74,21 +74,21 @@ test('appendOnly is immutable: unrepresentable off, refused when tampered', asyn
 
   // a tampered on-disk document cannot open
   const dir = await tmpDir('meta-tamper')
-  const v = await Vault.init(dir)
+  const v = await Bundle.init(dir)
   await v.close()
   const path = join(dir, METADATA_FILE)
   const doc = JSON.parse(await readFile(path, 'utf8'))
   doc.appendOnly = false
   await writeFile(path, JSON.stringify(doc))
-  await assert.rejects(() => Vault.open(dir), /appendOnly/)
+  await assert.rejects(() => Bundle.open(dir), /appendOnly/)
 })
 
 test('a mismatched invite is refused (metadata is convergence-relevant)', async (t) => {
   const dir = await tmpDir('meta-invite')
-  const v = await Vault.init(dir)
+  const v = await Bundle.init(dir)
   await v.close()
   await assert.rejects(
-    () => Vault.open(dir, { metadata: { limits: { maxPathBytes: 512 } } }),
+    () => Bundle.open(dir, { metadata: { limits: { maxPathBytes: 512 } } }),
     (err) => err.code === 'VAULT_METADATA_MISMATCH'
   )
 })
@@ -120,12 +120,12 @@ test('generation chain: predecessor fields pin a deterministic writer namespace 
   // per-generation namespace: same directory, different generation → different vault
   // (writer) key — the §10 keypair-freshness guarantee
   const dir = await tmpDir('meta-generation')
-  const genesisVault = await Vault.init(dir)
+  const genesisVault = await Bundle.init(dir)
   const genesisKey = genesisVault.keyHex
   await genesisVault.close()
 
   const dir2 = await tmpDir('meta-generation') // fresh dir, generation-2 vault
-  const next = await Vault.init(dir2, {
+  const next = await Bundle.init(dir2, {
     metadata: { predecessorKey, predecessorCheckpoint: checkpoint }
   })
   t.after(() => next.close())
@@ -137,7 +137,7 @@ test('generation chain: predecessor fields pin a deterministic writer namespace 
 
   // reopen from disk restores the same generation and key
   await next.close()
-  const reopened = await Vault.open(dir2)
+  const reopened = await Bundle.open(dir2)
   t.after(() => reopened.close())
   assert.equal(reopened.generation, e1)
   assert.equal(reopened.metadata.generation, e1)
@@ -147,7 +147,7 @@ test('same corestore directory, different generations → fresh writer keypairs 
   // the hazard §10 names: an operator re-inits in a REUSED directory; the
   // per-generation namespace must still yield a fresh local writer keypair
   const dir = await tmpDir('meta-reuse')
-  const v1 = await Vault.init(dir)
+  const v1 = await Bundle.init(dir)
   const k1 = v1.keyHex
   await v1.close()
 
@@ -155,7 +155,7 @@ test('same corestore directory, different generations → fresh writer keypairs 
   // metadata (operator archived the old vault), init with a predecessor
   const { rm } = await import('node:fs/promises')
   await rm(join(dir, METADATA_FILE))
-  const v2 = await Vault.init(dir, {
+  const v2 = await Bundle.init(dir, {
     metadata: {
       predecessorKey: k1,
       predecessorCheckpoint: { viewHash: '0'.repeat(64), writerLengths: [[k1, 1]] }

@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { initVault, joinVault } from '../store/index.js'
+import { Bundle } from '../store/index.js'
 import { materialize, compact, readView, readLog } from '../faces/index.js'
 import { keyspace as K } from '../core/index.js'
 
@@ -178,7 +178,7 @@ async function buildNonTrivial(v) {
 }
 
 test('I11: a generation cycle round-trips a non-trivial bundle (state + identity fidelity)', async () => {
-  const old = await initVault(await tmpDir('old-vault'))
+  const old = await Bundle.init(await tmpDir('old-vault'))
   const ids = await buildNonTrivial(old)
   await old.update()
 
@@ -197,7 +197,7 @@ test('I11: a generation cycle round-trips a non-trivial bundle (state + identity
   const res = await compact(old, {
     toDir: await tmpDir('compact-face'),
     vaultDir: await tmpDir('new-vault'),
-    initVault
+    initBundle: Bundle.init
   })
   const nu = res.vault
 
@@ -268,7 +268,7 @@ test('I11: a generation cycle round-trips a non-trivial bundle (state + identity
 })
 
 test('I11 guardrail: compact refuses an undrained conflict without force, proceeds with it', async () => {
-  const v = await initVault(await tmpDir('conf-vault'))
+  const v = await Bundle.init(await tmpDir('conf-vault'))
   const { tag: id } = await v.createConcept('c', 'Note')
   await v.setBody(id, null, 'r1')
   await v.update()
@@ -285,7 +285,7 @@ test('I11 guardrail: compact refuses an undrained conflict without force, procee
   const rejFace = await tmpDir('rej-face')
   const rejVault = await tmpDir('rej-vault')
   await assert.rejects(
-    () => compact(v, { toDir: rejFace, vaultDir: join(rejVault, 'x'), initVault }),
+    () => compact(v, { toDir: rejFace, vaultDir: join(rejVault, 'x'), initBundle: Bundle.init }),
     (err) => err.code === 'COMPACT_REFUSED',
     'compact must refuse an open conflict without force'
   )
@@ -295,7 +295,7 @@ test('I11 guardrail: compact refuses an undrained conflict without force, procee
   const res = await compact(v, {
     toDir: await tmpDir('force-face'),
     vaultDir: await tmpDir('force-vault'),
-    initVault,
+    initBundle: Bundle.init,
     force: true
   })
   const nu = res.vault
@@ -310,19 +310,19 @@ test('I11 guardrail: compact refuses an undrained conflict without force, procee
 })
 
 test('I11: a second generation cycle (generation chain of length 2) still round-trips', async () => {
-  const gen = await initVault(await tmpDir('gen-vault'))
+  const gen = await Bundle.init(await tmpDir('gen-vault'))
   await buildNonTrivial(gen)
   await gen.update()
 
   // cycle 1: root -> generation1
   const dir1 = await tmpDir('e1-bundle')
-  const res1 = await compact(gen, { toDir: await tmpDir('e1-face'), vaultDir: await tmpDir('e1-vault'), initVault })
+  const res1 = await compact(gen, { toDir: await tmpDir('e1-face'), vaultDir: await tmpDir('e1-vault'), initBundle: Bundle.init })
   const e1 = res1.vault
   const b1 = await readBundle((await materialize(e1, dir1), dir1))
 
   // cycle 2: generation1 -> generation2
   const dir2 = await tmpDir('e2-bundle')
-  const res2 = await compact(e1, { toDir: await tmpDir('e2-face'), vaultDir: await tmpDir('e2-vault'), initVault })
+  const res2 = await compact(e1, { toDir: await tmpDir('e2-face'), vaultDir: await tmpDir('e2-vault'), initBundle: Bundle.init })
   const e2 = res2.vault
   const b2 = await readBundle((await materialize(e2, dir2), dir2))
 
@@ -347,8 +347,8 @@ test('I11: a second generation cycle (generation chain of length 2) still round-
 })
 
 test('I11: --force carries a path-collision conflict copy across the generation (old path -> new path)', async () => {
-  const a = await initVault(await tmpDir('cc-a'))
-  const b = await joinVault(await tmpDir('cc-b'), a.key)
+  const a = await Bundle.init(await tmpDir('cc-a'))
+  const b = await Bundle.join(await tmpDir('cc-b'), a.key)
   let unpair = pair(a, b)
   assert.ok(await converged([a, b]), 'initial converge failed')
   await a.writers.add(b.localKey)
@@ -367,7 +367,7 @@ test('I11: --force carries a path-collision conflict copy across the generation 
   const ccRejFace = await tmpDir('cc-rej-face')
   const ccRejVault = await tmpDir('cc-rej-vault')
   await assert.rejects(
-    () => compact(a, { toDir: ccRejFace, vaultDir: join(ccRejVault, 'x'), initVault }),
+    () => compact(a, { toDir: ccRejFace, vaultDir: join(ccRejVault, 'x'), initBundle: Bundle.init }),
     (err) => err.code === 'COMPACT_REFUSED'
   )
 
@@ -375,7 +375,7 @@ test('I11: --force carries a path-collision conflict copy across the generation 
   const res = await compact(a, {
     toDir: await tmpDir('cc-face'),
     vaultDir: await tmpDir('cc-vault'),
-    initVault,
+    initBundle: Bundle.init,
     force: true
   })
   const nu = res.vault

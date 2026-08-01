@@ -5,12 +5,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { Vault, K, tmpDir, pair, until, converged } from './store-helpers.js'
+import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
 
 test('encrypted vault: reopen from disk without the key, invited peer reads', async (t) => {
   const encryptionKey = randomBytes(32)
   const dir = await tmpDir('enc-a')
-  const a = await Vault.init(dir, { encryptionKey })
+  const a = await Bundle.init(dir, { encryptionKey })
   assert.equal(a.metadata.encrypted, true, 'metadata pins encryption at rest')
 
   const { tag: id } = await a.createConcept('secret/plan', 'plan')
@@ -19,7 +19,7 @@ test('encrypted vault: reopen from disk without the key, invited peer reads', as
   await a.close()
 
   // reopen WITHOUT passing the key: restored from the local core userData
-  const a2 = await Vault.open(dir)
+  const a2 = await Bundle.open(dir)
   assert.equal(await a2.snapshotHash(), before, 'reopened encrypted view is intact')
   assert.equal(a2.metadata.encrypted, true)
   const head = await a2.val(K.cBody(id))
@@ -27,7 +27,7 @@ test('encrypted vault: reopen from disk without the key, invited peer reads', as
   assert.equal(rev.text, 'meet at dawn')
 
   // an invited peer holding the key converges and reads
-  const b = await Vault.join(await tmpDir('enc-b'), a2.key, { encryptionKey })
+  const b = await Bundle.join(await tmpDir('enc-b'), a2.key, { encryptionKey })
   const unpair = pair(a2, b)
   t.after(async () => {
     unpair()

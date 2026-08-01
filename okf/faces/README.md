@@ -12,30 +12,30 @@ ops (SPEC §2, §9).
 
 ## Usage
 
-Open a vault, write a couple of concepts, materialize the bundle, edit a
+Create a vault, write a couple of concepts, materialize the bundle, edit a
 file by hand, ingest the edit, and inspect the demand index:
 
 ```js
-import { initVault } from '@auto-okf/store'
+import { Bundle } from '@auto-okf/store'
 import { materialize, createIngestWatcher, wanted } from '@auto-okf/faces'
 import { readFile, writeFile } from 'node:fs/promises'
 
-const vault = await initVault('./vault')
+const bundle = await Bundle.init('./storage')
 
 // mint two concepts (the returned tag is each one's _id, SPEC §6)
-const { tag: sales } = await vault.createConcept('datasets/sales', 'BigQuery Dataset')
-await vault.setField(sales, 'title', 'Sales')
-await vault.setField(sales, 'description', 'All sales tables.')
-await vault.setBody(sales, null, 'Contains [orders](/tables/orders.md).')
+const { tag: sales } = await bundle.createConcept('datasets/sales', 'BigQuery Dataset')
+await bundle.setField(sales, 'title', 'Sales')
+await bundle.setField(sales, 'description', 'All sales tables.')
+await bundle.setBody(sales, null, 'Contains [orders](/tables/orders.md).')
 
-const { tag: orders } = await vault.createConcept('tables/orders', 'BigQuery Table')
-await vault.setField(orders, 'title', 'Orders')
-await vault.addTag(orders, 'sales')
-await vault.setBody(orders, null, 'One row per order.')
-await vault.update()
+const { tag: orders } = await bundle.createConcept('tables/orders', 'BigQuery Table')
+await bundle.setField(orders, 'title', 'Orders')
+await bundle.addTag(orders, 'sales')
+await bundle.setBody(orders, null, 'One row per order.')
+await bundle.update()
 
 // 1. materialize — one .md per live concept, plus derived index.md/log.md
-const report = await materialize(vault, './bundle')
+const report = await materialize(bundle, './bundle')
 // ./bundle/index.md          (root: okf_version + # Contents listing)
 // ./bundle/log.md            (# Update Log, newest-first date headings)
 // ./bundle/datasets/sales.md  ./bundle/datasets/index.md
@@ -47,15 +47,15 @@ const f = './bundle/datasets/sales.md'
 await writeFile(f, (await readFile(f, 'utf8')).replace('All sales tables.', 'Every sales table.'))
 
 // 3. ingest — the edit re-enters as exactly ONE op (a per-field diff)
-const watcher = await createIngestWatcher(vault, './bundle', { watch: false })
+const watcher = await createIngestWatcher(bundle, './bundle', { watch: false })
 const ops = await watcher.ingestFile('datasets/sales.md')
 console.log(ops) // [{ type: 'set-field', payload: { id: sales, key: 'description', ... } }]
 
 // 4. wanted/ — the ranked demand index (sales links an unwritten concept)
-console.log(await wanted(vault)) // [{ path: 'tables/orders', ... }] resolves; unresolved links rank here
+console.log(await wanted(bundle)) // [{ path: 'tables/orders', ... }] resolves; unresolved links rank here
 
 await watcher.close()
-await vault.close()
+await bundle.close()
 ```
 
 Left running (`createIngestWatcher(vault, dir)` without `{ watch: false }`)
@@ -136,13 +136,13 @@ re-derive in the new generation (a head that was an *edit* re-roots at `base:nul
 so its revHash changes even though the body text is identical — SPEC §14).
 
 ```js
-import { initVault } from '@auto-okf/store'
+import { Bundle } from '@auto-okf/store'
 import { compact } from '@auto-okf/faces'
 
 const res = await compact(old, {
   toDir: './generation-face',   // where the hydrated OKF bundle is written
-  vaultDir: './vault-e1',  // storage dir for the fresh vault
-  initVault                // the @auto-okf/store factory (substrate is injected)
+  vaultDir: './vault-e1',       // storage dir for the fresh vault
+  initBundle: Bundle.init       // the @auto-okf/store factory (substrate is injected)
 })
 // res.vault           — the fresh, OPEN vault (the caller closes it)
 // res.generation      — the fresh per-generation corestore namespace id
@@ -176,12 +176,12 @@ npm install @auto-okf/faces
 | --- | --- |
 | `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root }` |
 | `createIngestWatcher(vault, dir, opts)` | start the watcher; `opts`: `confirmDelete`, `debounce`, `settle`, `watch:false` (drive `ingestFile`/`scan` manually) |
-| `compact(vault, opts)` | SPEC §10 generation cycle; `opts`: `initVault` (required store factory), `toDir`, `vaultDir`, `force`, `keyPair`, `encryptionKey`, `sign`, `stageDir`; returns `{ vault, generation, predecessorKey, predecessorPath, predecessorCheckpoint, conflictCopies, logPath, ingestOps }` |
+| `compact(vault, opts)` | SPEC §10 generation cycle; `opts`: `initBundle` (required store factory, `Bundle.init`), `toDir`, `vaultDir`, `force`, `keyPair`, `encryptionKey`, `sign`, `stageDir`; returns `{ vault, generation, predecessorKey, predecessorPath, predecessorCheckpoint, conflictCopies, logPath, ingestOps }` |
 | `wanted(vault)` | `[{ path, count, referrers }]`, most-wanted first (from `wanted/` + `wantedrank/`) |
 | `readView(reader)` / `readLog(reader)` | the pure view→model projection materialize builds on |
 | `renderNote` / `parseNote` / `emitFrontmatter` | the canonical YAML note codec |
 
-`vault` is a [`@auto-okf/store`](../store) Vault (or any object exposing
+`vault` is a [`@auto-okf/store`](../store) Bundle (or any object exposing
 `val`, `scan`, `update` and the content-op helpers). Nothing here imports
 autobee; the substrate is injected.
 

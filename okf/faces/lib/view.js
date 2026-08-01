@@ -1,7 +1,7 @@
 // Read the auto-okf view (okf SPEC §4 keyspace) into a structured model the
 // faces project onto disk. Pure projection of a converged view: the same
 // view yields the same model on every peer (I8/I9). Reads go through the
-// store Vault surface (`val(key)`, `scan(prefix)` — @auto-okf/store), which
+// store Bundle surface (`val(key)`, `scan(prefix)` — @auto-okf/store), which
 // JSON-decodes values; a MemView is adapted by memViewReader() below for
 // off-substrate tests.
 import { keyspace as K } from '@auto-okf/core'

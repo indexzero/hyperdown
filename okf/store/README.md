@@ -12,16 +12,16 @@ autobee is a standalone multiwriter Hyperbee on hyperbee2 + hypercore 11.
 Init a vault, append an op, converge a second writer:
 
 ```js
-import { initVault, joinVault } from '@auto-okf/store'
+import { Bundle } from '@auto-okf/store'
 
-const a = await initVault('./vault-a')
+const a = await Bundle.init('./storage-a')
 
 // mint a concept — the returned tag is its _id (SPEC §6)
 const { tag: id } = await a.createConcept('guides/getting-started', 'guide')
 await a.setBody(id, null, 'Read the [architecture](/guides/architecture) first.')
 
 // a second peer joins by key and replicates directly
-const b = await joinVault('./vault-b', a.key)
+const b = await Bundle.join('./storage-b', a.key)
 const s1 = a.replicate(true)
 const s2 = b.replicate(false)
 s1.pipe(s2).pipe(s1)
@@ -69,9 +69,9 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
 ## API
 
 ```js
-const vault = await initVault(dir, opts)        // create (writes metadata)
-const vault = await openVault(dir, opts)        // reopen from disk
-const vault = await joinVault(dir, key, opts)   // join by vault key
+const bundle = await Bundle.init(dir, opts)      // create (writes metadata)
+const bundle = await Bundle.open(dir, opts)      // reopen from disk
+const bundle = await Bundle.join(dir, key, opts) // join by vault key
 ```
 
 `opts`: `metadata` (invite overrides incl. generation-chain fields),
@@ -79,7 +79,7 @@ const vault = await joinVault(dir, key, opts)   // join by vault key
 encrypted at rest; persisted so reopen needs no key), `keyPair`, `swarm`,
 `backpressure`.
 
-### Vault
+### Bundle
 
 | member | what |
 | --- | --- |

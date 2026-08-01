@@ -12,7 +12,7 @@ import { keyspace as K } from '@auto-okf/core'
  *   [{ path, count, referrers: [fromId, ...] }, ...]
  * ordered most-referenced first (ties broken by path byte order, which the
  * wantedrank/ key order provides deterministically). `reader` is a store
- * Vault (or any { scan } surface); values are JSON-decoded.
+ * Bundle (or any { scan } surface); values are JSON-decoded.
  */
 export async function wanted(reader) {
   const referrersByPath = new Map()

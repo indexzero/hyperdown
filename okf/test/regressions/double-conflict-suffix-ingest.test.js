@@ -8,10 +8,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { initVault, materialize, createIngestWatcher, K, tmpDir } from '../faces-helpers.js'
+import { Bundle, materialize, createIngestWatcher, K, tmpDir } from '../faces-helpers.js'
 
 test('P7 (#28): a double-suffixed human file ingests to the fully-stripped base path', async () => {
-  const v = await initVault(await tmpDir('vault'))
+  const v = await Bundle.init(await tmpDir('vault'))
   const dir = await tmpDir('bundle')
   await materialize(v, dir) // establish the manifest + reserved faces
 

@@ -4,11 +4,11 @@
 // the replicated log converges to the same hash (rebuild equivalence).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Vault, K, tmpDir, pair, until, converged } from './store-helpers.js'
+import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
 
 test('restart from disk: reopened view equals the pre-close view (I3)', async (t) => {
   const dir = await tmpDir('restart')
-  const a = await Vault.init(dir)
+  const a = await Bundle.init(dir)
   const { tag: id } = await a.createConcept('guides/home', 'guide')
   await a.setField(id, 'title', ['Welcome'])
   await a.addTag(id, 'wiki')
@@ -20,7 +20,7 @@ test('restart from disk: reopened view equals the pre-close view (I3)', async (t
   assert.ok(beforeKeys.length > 0)
   await a.close()
 
-  const a2 = await Vault.open(dir)
+  const a2 = await Bundle.open(dir)
   t.after(() => a2.close())
   assert.equal(await a2.snapshotHash(), before, 'hash equality across restart')
   assert.deepEqual(Object.keys(await a2.view.dump('')), beforeKeys, 'same key set')
@@ -36,14 +36,14 @@ test('restart from disk: reopened view equals the pre-close view (I3)', async (t
 
 test('fresh peer rebuild from the log equals the restarted view (I3)', async (t) => {
   const dir = await tmpDir('rebuild-a')
-  const a = await Vault.init(dir)
+  const a = await Bundle.init(dir)
   const { tag: id } = await a.createConcept('guides/rebuild', 'guide')
   await a.setField(id, 'title', ['Rebuild me'])
   await a.setBody(id, null, 'body text')
   await a.close()
 
-  const a2 = await Vault.open(dir)
-  const fresh = await Vault.join(await tmpDir('rebuild-b'), a2.key)
+  const a2 = await Bundle.open(dir)
+  const fresh = await Bundle.join(await tmpDir('rebuild-b'), a2.key)
   const unpair = pair(a2, fresh)
   t.after(async () => {
     unpair()

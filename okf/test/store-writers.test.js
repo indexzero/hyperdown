@@ -5,11 +5,11 @@
 // cross-peer hash equality of the applied/rejected partition (I10).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Vault, K, tmpDir, pair, until, converged } from './store-helpers.js'
+import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
 
 test('writer add/remove round trip: causal revocation, uniform on every peer', async (t) => {
-  const a = await Vault.init(await tmpDir('wr-a'))
-  const b = await Vault.join(await tmpDir('wr-b'), a.key)
+  const a = await Bundle.init(await tmpDir('wr-a'))
+  const b = await Bundle.join(await tmpDir('wr-b'), a.key)
   let unpair = pair(a, b)
   t.after(async () => {
     unpair()
@@ -87,7 +87,7 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
 })
 
 test('remove-writer that would leave zero indexers is rejected (§8)', async (t) => {
-  const a = await Vault.init(await tmpDir('wr-last'))
+  const a = await Bundle.init(await tmpDir('wr-last'))
   t.after(() => a.close())
   const aHex = a.localKey.toString('hex')
 
@@ -102,8 +102,8 @@ test('remove-writer that would leave zero indexers is rejected (§8)', async (t)
 })
 
 test('setWriterPolicy round trip: namespace prefixes enforced at apply', async (t) => {
-  const a = await Vault.init(await tmpDir('wr-pol-a'))
-  const b = await Vault.join(await tmpDir('wr-pol-b'), a.key)
+  const a = await Bundle.init(await tmpDir('wr-pol-a'))
+  const b = await Bundle.join(await tmpDir('wr-pol-b'), a.key)
   const unpair = pair(a, b)
   t.after(async () => {
     unpair()

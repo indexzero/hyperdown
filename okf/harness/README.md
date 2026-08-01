@@ -68,9 +68,9 @@ quality (the partition schedule is the scenario's, not the link's).
 
 ## Architecture
 
-- **`lib/writer.js`** — the writer process. Opens an `@auto-okf/store` Vault,
+- **`lib/writer.js`** — the writer process. Opens an `@auto-okf/store` Bundle,
   dials the fault hub for each replication link, and answers controller
-  commands over fork IPC: `init`/`join`/`open`, `call` (any Vault method —
+  commands over fork IPC: `init`/`join`/`open`, `call` (any Bundle method —
   `createConcept`/`setField`/`addTag`/`remTag`/`setBody`/`setPath`/
   `deleteConcept`/`resolveConflict`/`addWriter`/`removeWriter`), `append`/
   `appendRaw` (raw bytes for poison-op tests), `hash` (snapshot view hash),
