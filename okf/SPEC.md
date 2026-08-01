@@ -641,6 +641,18 @@ saga is the cautionary tale). The rules are frozen:
 - `index.md`/`log.md` are reserved: edits to them are ignored (regenerated
   faces), with a single narrated log entry.
 
+**Per-file state vocabulary (ADR-002)** — the states implicit in the
+materialize/ingest rules above are named contract, reported read-only by
+the CLI `status` command (appends no ops, writes no files, touches no
+manifest): `in-log` (on-disk bytes match the log's canonical projection —
+hash match), `pending-ingest` (hand-authored, not yet in the log; ingest
+would establish a concept), `dirty` (in the log but on-disk bytes diverge
+from the projection — a hand edit ingest folds in as diffs, or a log that
+moved past the last materialize), `absent` (in the log, missing from disk;
+materialize would restore), `foreign` (not in the log, not
+manifest-tracked, not establishable by ingest — e.g. another writer's
+mid-write WIP).
+
 ## 10. Compaction: generation cycling (the CouchDB homage, part two)
 
 Byte reclamation is an **operator act via the hydrated face**, never an op:
@@ -759,8 +771,8 @@ okf/store      vault lifecycle on autobee, metadata pinning (incl. the
 okf/faces      materialize (bundle + index.md + log.md), ingest watcher,
                wanted index, generation-cycle compact command
 okf/cli        init, join, add-writer, remove-writer, materialize, ingest
-               (optionally path-scoped, ADR-001), watch, wanted, flags,
-               resolve, undelete, compact
+               (optionally path-scoped, ADR-001), watch, status (ADR-002),
+               wanted, flags, resolve, undelete, compact
 okf/root       the `auto-okf` root placeholder package (published as
                auto-okf@0.0.1 alongside the scope — intent D7)
 okf/test       unit + invariant suite (I1..I11 each ≥ 1 test)

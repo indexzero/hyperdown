@@ -1,12 +1,12 @@
 // auto-okf CLI (okf SPEC §13): a thin veneer over @auto-okf/store (vault
 // lifecycle + §8 governance ops) and @auto-okf/faces (materialize, ingest
-// watcher, wanted index, generation-cycle compact). The CLI never writes the view
-// or the face itself — every effect flows through the packages, so everything
-// it does is exactly what a library caller does.
+// watcher, per-file status, wanted index, generation-cycle compact). The
+// CLI never writes the view or the face itself — every effect flows through
+// the packages, so everything it does is exactly what a library caller does.
 //
 // The command surface is declared once as a paparam command tree (paparam is
 // Holepunch's own parser — pear's CLI runs on it): a root command composing
-// the 12 subcommands from command()/flag()/arg(), with --help|-h and all help
+// the 13 subcommands from command()/flag()/arg(), with --help|-h and all help
 // text generated from the declarations.
 //
 // Exit codes: 0 success, 1 operational error, 2 usage error, 3 materialize
@@ -22,7 +22,7 @@ import b4a from 'b4a'
 import { command, flag, arg, rest, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
 import { Bundle, METADATA_FILE } from '@auto-okf/store'
-import { materialize, createIngestWatcher, wanted, compact } from '@auto-okf/faces'
+import { materialize, createIngestWatcher, wanted, compact, status } from '@auto-okf/faces'
 
 const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
 const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage, 3 pending-ingest only (materialize)'
@@ -174,6 +174,14 @@ function buildCli() {
       requiredArgs('<dir>', '<bundle-dir>')
     ),
     sub(
+      'status',
+      'per-file vault/bundle state, read-only (in-log, pending-ingest, dirty, absent, foreign)',
+      arg('<dir>', 'vault storage directory'),
+      arg('<bundle-dir>', 'OKF bundle directory'),
+      flag('--json', 'print the structured rows'),
+      requiredArgs('<dir>', '<bundle-dir>')
+    ),
+    sub(
       'wanted',
       'print the ranked demand index (wanted/)',
       arg('<dir>', 'vault storage directory'),
@@ -291,6 +299,7 @@ const HANDLERS = {
   materialize: cmdMaterialize,
   ingest: cmdIngest,
   watch: cmdWatch,
+  status: cmdStatus,
   wanted: cmdWanted,
   flags: cmdFlags,
   compact: cmdCompact,
@@ -608,6 +617,23 @@ async function cmdWatch({ args, flags }) {
     if (swarmed) await vault.leaveSwarm().catch(() => {})
     await vault.close()
   }
+}
+
+async function cmdStatus({ args, flags }) {
+  const { dir, bundleDir } = args
+  return withVault(dir, {}, async (vault) => {
+    // ADR-002: strictly read-only — status appends no ops, writes no files,
+    // touches no manifest. The five-state vocabulary and the --json
+    // [{ path, state }] rows are contract.
+    const rows = await status(vault, bundleDir)
+    if (flags.json) {
+      console.log(JSON.stringify(rows, null, 2))
+    } else {
+      for (const { path, state } of rows) console.log(`${state}\t${path}`)
+      process.stderr.write(`${rows.length} file(s)\n`)
+    }
+    return 0
+  })
 }
 
 async function cmdWanted({ args, flags }) {

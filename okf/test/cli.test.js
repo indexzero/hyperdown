@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, readdir, readFile, writeFile, access } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile, access } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
@@ -287,6 +287,100 @@ test('path-scoped ingest refuses bad paths by name, appending zero ops (ADR-001)
   assert.match(mixed.stderr, /drafts\/ghost\.md/)
 
   assert.equal(await snapshotHash(storage), baseline, 'zero ops appended across all three refusals')
+})
+
+test('status: a file another process ingested reports in-log, not pending-ingest (ADR-002)', async () => {
+  const base = await tmpDir('status')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  await cli(['init', storage])
+  await mkdir(bundle, { recursive: true })
+  await writeFile(
+    join(bundle, 'note.md'),
+    '---\ntype: note\ntitle: Clerk\n---\nSwept while I looked away.\n'
+  )
+
+  // hand-authored, not yet ingested: pending-ingest
+  const before = await cli(['status', storage, bundle])
+  assert.equal(before.code, 0, before.stderr)
+  assert.match(before.stdout, /^pending-ingest\tnote\.md$/m)
+
+  // the swept-writer incident: a SECOND process ingests + materializes it
+  // (every cli() call spawns its own auto-okf process)
+  await cli(['ingest', storage, bundle])
+  await cli(['materialize', storage, bundle])
+
+  const after = await cli(['status', storage, bundle])
+  assert.equal(after.code, 0, after.stderr)
+  assert.match(after.stdout, /^in-log\tnote\.md$/m)
+  assert.doesNotMatch(after.stdout, /pending-ingest/)
+  // the derived faces are part of the projection and equally in-log
+  assert.match(after.stdout, /^in-log\tindex\.md$/m)
+  assert.match(after.stdout, /^in-log\tlog\.md$/m)
+})
+
+test('status reports a foreign mid-write file and never ingests it (ADR-002)', async () => {
+  const base = await tmpDir('status-foreign')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  await cli(['init', storage])
+  await mkdir(bundle, { recursive: true })
+  await writeFile(join(bundle, 'note.md'), '---\ntype: note\n---\nSettled.\n')
+  await cli(['ingest', storage, bundle])
+  await cli(['materialize', storage, bundle])
+
+  // another writer's WIP: no parseable frontmatter/type yet
+  await writeFile(join(bundle, 'wip.md'), '# scratch\nmid-write, no frontmatter yet\n')
+  const manifestBefore = await readFile(join(bundle, '.okf-manifest.json'), 'utf8')
+  const viewBefore = await snapshotHash(storage)
+
+  const st = await cli(['status', storage, bundle])
+  assert.equal(st.code, 0, st.stderr)
+  assert.match(st.stdout, /^foreign\twip\.md$/m)
+
+  // strictly read-only: no ops appended, no manifest write, file untouched
+  assert.equal(await snapshotHash(storage), viewBefore, 'status appended no ops')
+  assert.equal(
+    await readFile(join(bundle, '.okf-manifest.json'), 'utf8'),
+    manifestBefore,
+    'status touched no manifest'
+  )
+  assert.match(await readFile(join(bundle, 'wip.md'), 'utf8'), /mid-write/)
+})
+
+test('status --json is stable across runs and covers dirty and absent (ADR-002)', async () => {
+  const base = await tmpDir('status-json')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  await cli(['init', storage])
+  await mkdir(bundle, { recursive: true })
+  await writeFile(join(bundle, 'note.md'), '---\ntype: note\ntitle: Stable\n---\nBody.\n')
+  await cli(['ingest', storage, bundle])
+  await cli(['materialize', storage, bundle])
+
+  const j1 = await cli(['status', storage, bundle, '--json'])
+  const j2 = await cli(['status', storage, bundle, '--json'])
+  assert.equal(j1.code, 0, j1.stderr)
+  assert.equal(j1.stdout, j2.stdout, 'byte-identical across consecutive runs with no intervening ops')
+  const rows = JSON.parse(j1.stdout)
+  for (const r of rows) {
+    assert.deepEqual(Object.keys(r), ['path', 'state'], 'the schema is exactly { path, state }')
+    assert.ok(['in-log', 'pending-ingest', 'dirty', 'absent', 'foreign'].includes(r.state))
+  }
+  assert.ok(rows.some((r) => r.path === 'note.md' && r.state === 'in-log'))
+  const paths = rows.map((r) => r.path)
+  assert.deepEqual(paths, [...paths].sort(), 'rows are sorted by path')
+
+  // dirty: in the log, hand-edited after materialize
+  const note = await readFile(join(bundle, 'note.md'), 'utf8')
+  await writeFile(join(bundle, 'note.md'), note + '\nA hand edit.\n')
+  const dirty = await cli(['status', storage, bundle])
+  assert.match(dirty.stdout, /^dirty\tnote\.md$/m)
+
+  // absent: in the log, missing from disk (materialize would restore)
+  await rm(join(bundle, 'note.md'))
+  const absent = await cli(['status', storage, bundle])
+  assert.match(absent.stdout, /^absent\tnote\.md$/m)
 })
 
 test('wanted lists an unresolved link, ranked', async () => {
