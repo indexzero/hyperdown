@@ -117,6 +117,31 @@ test('ingest a hand-authored file mints a concept; materialize round-trips it wi
   assert.match(emitted, /A hand-authored body\./)
 })
 
+test('ingest reports hash-match skips as already up to date (ADR-003)', async () => {
+  const base = await tmpDir('uptodate')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  await cli(['init', storage])
+  await mkdir(bundle, { recursive: true })
+
+  // an empty bundle prints NO skip clause (decided once: omitted, never "0")
+  const empty = await cli(['ingest', storage, bundle])
+  assert.equal(empty.code, 0, empty.stderr)
+  assert.match(empty.stdout, /^ingest complete: 0 op\(s\) from 0 file\(s\)$/m)
+
+  await writeFile(join(bundle, 'note.md'), '---\ntype: note\n---\nConverged body.\n')
+  await cli(['ingest', storage, bundle])
+  await cli(['materialize', storage, bundle]) // stamps _id/_rev + manifest hash
+
+  // the swept-writer scenario (F1): every candidate hash-matches the manifest
+  const again = await cli(['ingest', storage, bundle])
+  assert.equal(again.code, 0, again.stderr)
+  assert.match(
+    again.stdout,
+    /^ingest complete: 0 op\(s\) from 0 file\(s\); 1 file\(s\) already up to date$/m
+  )
+})
+
 test('wanted lists an unresolved link, ranked', async () => {
   const base = await tmpDir('wanted')
   const storage = join(base, 'vault')
