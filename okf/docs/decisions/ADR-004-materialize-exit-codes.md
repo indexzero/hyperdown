@@ -1,7 +1,7 @@
 # ADR-004: Materialize exit-code taxonomy — 0 clean / 3 pending-only / 1 failure
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-07-31

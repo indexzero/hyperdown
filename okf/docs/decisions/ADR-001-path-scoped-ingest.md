@@ -1,7 +1,7 @@
 # ADR-001: Path-scoped ingest — `ingest <vault> <bundle> [paths…]`
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-07-31

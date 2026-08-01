@@ -1,7 +1,7 @@
 # ADR-005: Ingest preflights the op-size limit; the limit joins the CLI docs
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-07-31

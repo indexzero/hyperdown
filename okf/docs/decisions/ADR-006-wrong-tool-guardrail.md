@@ -1,7 +1,7 @@
 # ADR-006: Twin CLIs refuse each other's vaults by marker file
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-07-31

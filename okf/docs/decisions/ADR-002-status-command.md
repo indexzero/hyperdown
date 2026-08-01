@@ -1,7 +1,7 @@
 # ADR-002: `status` — per-file vault/bundle state porcelain
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-07-31
