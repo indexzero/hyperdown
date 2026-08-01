@@ -630,6 +630,13 @@ saga is the cautionary tale). The rules are frozen:
   actual size, before any op for that file is appended; sibling files in
   the same run are unaffected. Apply's `oversize-op` reject stays
   untouched — validate at the boundary, defend in depth.
+- **Path-scoped one-shot ingest (ADR-001).** The one-shot scan set is the
+  whole bundle, restricted to the argument set when trailing
+  bundle-relative paths are given (concurrent-writer politeness: one
+  agent's ingest never sweeps up another's mid-write pending file). A
+  named path that does not exist, or that resolves outside the bundle
+  root, is an error — exit 1, path named, zero ops appended. The
+  zero-path form is byte-identical in behavior to the full scan.
 - Debounce, write-settle, in-flight-lock coordination with materialize.
 - `index.md`/`log.md` are reserved: edits to them are ignored (regenerated
   faces), with a single narrated log entry.
@@ -751,8 +758,9 @@ okf/store      vault lifecycle on autobee, metadata pinning (incl. the
                swarm replication, backpressure option
 okf/faces      materialize (bundle + index.md + log.md), ingest watcher,
                wanted index, generation-cycle compact command
-okf/cli        init, join, add-writer, remove-writer, materialize, ingest,
-               watch, wanted, flags, resolve, undelete, compact
+okf/cli        init, join, add-writer, remove-writer, materialize, ingest
+               (optionally path-scoped, ADR-001), watch, wanted, flags,
+               resolve, undelete, compact
 okf/root       the `auto-okf` root placeholder package (published as
                auto-okf@0.0.1 alongside the scope — intent D7)
 okf/test       unit + invariant suite (I1..I11 each ≥ 1 test)

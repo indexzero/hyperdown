@@ -33,6 +33,16 @@ function cli(args) {
   })
 }
 
+/** Full-view hash (store I2/I3 surface), for zero-ops/read-only assertions. */
+async function snapshotHash(storage) {
+  const v = await Bundle.open(storage)
+  try {
+    return await v.snapshotHash()
+  } finally {
+    await v.close()
+  }
+}
+
 const KEY_LINE = /^vault key: {3}([0-9a-f]{64})$/m
 const WRITER_LINE = /^writer key: {2}([0-9a-f]{64})$/m
 
@@ -221,6 +231,62 @@ test('ingest preflights maxOpBytes: oversize file named, siblings unaffected (AD
   } finally {
     await v.close()
   }
+})
+
+test('path-scoped ingest folds only the named file (ADR-001)', async () => {
+  const base = await tmpDir('scoped')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  await cli(['init', storage])
+  await mkdir(join(bundle, 'drafts'), { recursive: true })
+  await writeFile(join(bundle, 'drafts', 'mine.md'), '---\ntype: note\n---\nMine.\n')
+  await writeFile(join(bundle, 'drafts', 'theirs.md'), '---\ntype: note\n---\nTheirs, mid-write.\n')
+
+  const ing = await cli(['ingest', storage, bundle, 'drafts/mine.md'])
+  assert.equal(ing.code, 0, ing.stderr)
+  assert.match(ing.stdout, /ingested drafts\/mine\.md: create-concept/)
+  assert.doesNotMatch(ing.stdout, /theirs\.md/, "the other writer's file was not swept up")
+  assert.match(ing.stdout, /^ingest complete: \d+ op\(s\) from 1 file\(s\)$/m)
+
+  const v = await Bundle.open(storage)
+  try {
+    await v.update()
+    assert.notEqual(await v.val(K.path('drafts/mine')), undefined)
+    assert.equal(await v.val(K.path('drafts/theirs')), undefined, 'the unnamed file stays out of the log')
+  } finally {
+    await v.close()
+  }
+
+  // the unnamed file remains pending-ingest: materialize leaves it in place
+  const mat = await cli(['materialize', storage, bundle])
+  assert.equal(mat.code, 3, mat.stderr)
+  assert.match(mat.stderr, /pending ingest .*: drafts\/theirs\.md/)
+})
+
+test('path-scoped ingest refuses bad paths by name, appending zero ops (ADR-001)', async () => {
+  const base = await tmpDir('scoped-bad')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  await cli(['init', storage])
+  await mkdir(join(bundle, 'drafts'), { recursive: true })
+  await writeFile(join(base, 'outside.md'), '---\ntype: note\n---\nNot in the bundle.\n')
+  await writeFile(join(bundle, 'drafts', 'real.md'), '---\ntype: note\n---\nReal.\n')
+  const baseline = await snapshotHash(storage)
+
+  const esc = await cli(['ingest', storage, bundle, '../outside.md'])
+  assert.equal(esc.code, 1, 'a path escaping the bundle root is an error')
+  assert.match(esc.stderr, /outside the bundle root: \.\.\/outside\.md/)
+
+  const ghost = await cli(['ingest', storage, bundle, 'drafts/ghost.md'])
+  assert.equal(ghost.code, 1, 'a nonexistent path is an error')
+  assert.match(ghost.stderr, /no such file in the bundle: drafts\/ghost\.md/)
+
+  // one bad path aborts the whole run before any op — the good sibling too
+  const mixed = await cli(['ingest', storage, bundle, 'drafts/real.md', 'drafts/ghost.md'])
+  assert.equal(mixed.code, 1)
+  assert.match(mixed.stderr, /drafts\/ghost\.md/)
+
+  assert.equal(await snapshotHash(storage), baseline, 'zero ops appended across all three refusals')
 })
 
 test('wanted lists an unresolved link, ranked', async () => {
