@@ -79,6 +79,19 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 There is no content-write command: content flows in through `ingest`/`watch`
 (edit the markdown) or through the `@auto-okf/store` API (agents).
 
+## Verifying content is in the log
+
+A vault has no privileged bundle directory; the emission manifest
+(`.okf-manifest.json`) lives in each target directory, so materializing to
+a scratch directory never disturbs another bundle:
+
+```sh
+$ mkdir ./scratch && auto-okf materialize ./vault ./scratch
+```
+
+An empty scratch dir that fills on materialize is proof the content is in
+the log — everything that appears came from it.
+
 ## Exit codes
 
 `0` success · `1` operational error (including a governance op that apply

@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@auto-okf/cli':
+        specifier: workspace:*
+        version: link:okf/cli
       '@auto-okf/core':
         specifier: workspace:*
         version: link:okf/core
