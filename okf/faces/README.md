@@ -98,6 +98,15 @@ that the manifest never tracked (human-authored, not yet ingested) — is
 `materialize(vault, dir, { forceMirror: true })` restores unconditional
 mirroring for operator use.
 
+### Verifying content is in the log
+
+A vault has no privileged bundle directory; the emission manifest
+(`.okf-manifest.json`) lives in each target directory, so materializing to
+a scratch directory never disturbs another bundle. That makes verification
+trivial: materialize to an empty scratch directory — an empty dir that
+fills on materialize is proof the content is in the log, because
+everything that appears came from it.
+
 ### Ingest: minimal ops, not whole files
 
 The watcher diffs frontmatter **per key** against view state and the body

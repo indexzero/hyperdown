@@ -28,6 +28,7 @@
     "@auto-okf/core": "workspace:*",
     "@auto-okf/faces": "workspace:*",
     "@auto-okf/store": "workspace:*",
+    "@auto-okf/cli": "workspace:*",
     "@autovault-ld/cli": "workspace:*",
     "@autovault-ld/core": "workspace:*",
     "@autovault-ld/faces": "workspace:*",
