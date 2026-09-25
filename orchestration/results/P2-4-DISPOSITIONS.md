@@ -1,8 +1,0 @@
-# P2-4-DISPOSITIONS.md — Regression fixes R1–R4 (P2-3-CLOSURE.md §2) applied in spec v5
-
-**Artifact produced:** `prompts/01-implementation-spec-prompt.v5.md` (v5.0, 2026-07-03). Changes are confined to the four fixes and their immediate cross-references; I10 (§12) and §8.0 are byte-identical to v4.
-
-- **R1 — FIXED (relocation):** the fallback seen-count moved out of `ctx/` into a dedicated top-level key family `seen/<writerKey>` (§4 keyspace entry with explanatory comment; §8.2 option (b) and §8.4 fallback text updated). No exception carved into I10 or §8.0's test — both preserved verbatim; §8.2 now states `seen/` is excluded from materialize/export walks (bookkeeping, like `n/hold/`) and included in the I2 view hash (deterministic view state).
-- **R2 — FIXED (narrowed):** §4's single-ordinal note now covers only `n/hold/`, `flag/rejected/`, `flag/optimistic/`, and namespace/rate rejections, and explicitly excludes payload-derived `<tag>`s (`flag/clobber/`, `flag/staletag/`, `flag/epoch/`, `flag/kindmismatch/`, `flag/writeafterdelete/`), which embed the op-carried §3.2 tag cited under the §5.3 contract and MUST NOT be rewritten.
-- **R3 — FIXED (reconciled):** §5.6's allowlist is append-only *except via the in-log `DefineTerm` promotion of the next bullet*, which is deterministic and the only sanctioned removal path; out-of-band config edits remain the forbidden convergence hazard.
-- **R4 — FIXED (qualified):** §10.1's noscope demotion now applies to pathless subjects only (layer from priority (2)); a subject with an authored `Ontologies/`/`Vocabularies/` path keeps `layer = schema` from priority (1) even when scope is underivable, with `flag/noscope/<s>` still written and IRI minting falling back to the data namespace per binding rule (c).
