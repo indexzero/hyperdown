@@ -115,6 +115,48 @@ test('optimistic onboarding: held locally, folded at the ack position (§8)', as
   }
 })
 
+test('a joiner folds every op through its own apply, never a stamped view (I2/I3)', async (t) => {
+  // autobee@2 fast-forwards a peer onto a system/view head another writer
+  // stamped in its oplog once that head is 16+ flushes ahead, and by
+  // default it trusts every writer's stamp (autobee lib/trusted.js). Here
+  // the genesis peer runs a DIFFERENT apply — it writes a key okf's apply
+  // never writes — so a joiner that adopted its stamp would hold that key.
+  const a = await Bundle.init(await tmpDir('ff-a'))
+  const pinned = a._coreApply
+  a._coreApply = async (nodes, view, host) => {
+    await pinned(nodes, view, host)
+    const w = view.write()
+    w.tryPut('zz/foreign-config', '"stamped"')
+    await w.flush()
+  }
+  const ids = []
+  for (let i = 0; i < 40; i++) {
+    const { tag } = await a.createConcept(`ff/n${i}`, 'note')
+    ids.push(tag)
+    await a.update() // one flush (one stamped view head) per op
+  }
+  assert.equal(await a.val('zz/foreign-config'), 'stamped')
+
+  const b = await Bundle.join(await tmpDir('ff-b'), a.key)
+  const unpair = pair(a, b)
+  t.after(async () => {
+    unpair()
+    await a.close()
+    await b.close()
+  })
+  const aHex = a.localKey.toString('hex')
+  assert.ok(
+    await until(async () => {
+      await b.update()
+      return (await b.val(K.seen(aHex))) === 40
+    }),
+    'b folds all 40 of a ops'
+  )
+  assert.equal(b.db.stats.fastForwards, 0, 'b never fast-forwards')
+  assert.equal(await b.val('zz/foreign-config'), undefined, 'b holds only what its own apply wrote')
+  assert.ok((await b.val(K.cMeta(ids[39]))) !== undefined)
+})
+
 test('opt-in append backpressure throttles without deadlocking', async (t) => {
   const a = await Bundle.init(await tmpDir('bp-a'))
   const b = await Bundle.join(await tmpDir('bp-b'), a.key, {

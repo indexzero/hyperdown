@@ -230,7 +230,15 @@ export class Bundle extends EventEmitter {
       encryptionKey: this._opts.encryptionKey || null,
       encrypted,
       keyPair: this._opts.keyPair,
-      optimistic: true
+      // §8 optimistic onboarding needs every optimistic node to reach
+      // apply; autobee@2 still defaults this to true but marks it a TODO
+      // to flip, so it stays explicit.
+      optimistic: true,
+      // I2/I3: every peer folds every op through its own apply under the
+      // pinned config. autobee@2 would otherwise fast-forward onto a view
+      // head another writer stamped, trusting every writer by default
+      // (lib/trusted.js), and skip apply for the whole prefix.
+      fastForward: false
     })
     this.db.on('error', (err) => this.emit('error', err))
 
