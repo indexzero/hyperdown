@@ -528,8 +528,12 @@ export class Bundle extends EventEmitter {
     if (op.clock === undefined) op.clock = await this.clock(seq)
     if (op.at === undefined) op.at = Date.now() // §3: informational only
     const buf = encodeOp(type, op) // may throw on a bad payload: seq not yet burned
-    this._nextSeq = seq + 1
+    // Appends are serialized (append()), so the seq moves only once the
+    // node is in. autobee@2 refuses a plain append from a writer it
+    // records as removed with "Not writable" before touching the local
+    // core (index.js append): that seq is still free.
     await this.db.append(buf, { optimistic })
+    this._nextSeq = seq + 1
     return { seq, tag: makeTag(this.db.local.key, seq) }
   }
 

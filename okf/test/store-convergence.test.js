@@ -115,6 +115,40 @@ test('optimistic onboarding: held locally, folded at the ack position (§8)', as
   }
 })
 
+test('a refused append does not burn a seq (§8 forged-clock)', async (t) => {
+  const a = await Bundle.init(await tmpDir('burn-a'))
+  const c = await Bundle.join(await tmpDir('burn-c'), a.key)
+  const unpair = pair(a, c)
+  t.after(async () => {
+    unpair()
+    await a.close()
+    await c.close()
+  })
+  const { tag: id } = await a.createConcept('notes/burn', 'note')
+  assert.ok(
+    await until(async () => {
+      await c.update()
+      return (await c.val(K.cMeta(id))) !== undefined
+    })
+  )
+
+  // autobee@2 records an unadmitted writer as removed once its optimistic
+  // node is applied (lib/system.js ackWriter), and then refuses its plain
+  // appends up front with "Not writable" (index.js append), before
+  // anything reaches the local core.
+  const first = await c.setField(id, 'status', ['one'], { optimistic: true })
+  assert.equal(first.seq, 0)
+  await c.update()
+  await assert.rejects(() => c.setField(id, 'status', ['plain']), /Not writable/)
+
+  const second = await c.setField(id, 'status', ['two'], { optimistic: true })
+  assert.equal(second.seq, 1, 'the refused append did not consume seq 1')
+  await c.update()
+  const cHex = c.localKey.toString('hex')
+  assert.equal(await c.val(K.flagRejected(cHex, 1)), undefined, 'not rejected forged-clock')
+  assert.equal(Object.keys(await c.view.dump(`hold/${cHex}/`)).length, 2, 'both ops held')
+})
+
 test('a joiner folds every op through its own apply, never a stamped view (I2/I3)', async (t) => {
   // autobee@2 fast-forwards a peer onto a system/view head another writer
   // stamped in its oplog once that head is 16+ flushes ahead, and by
