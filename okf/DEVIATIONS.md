@@ -263,3 +263,41 @@ therefore records `{ from, to }` with `from === to` (deterministic
 identity-preserving carry-across, §9 conflict-copy awareness); it is truthful
 (the `from` list is the actual on-disk conflict files of the materialized
 predecessor bundle).
+
+---
+
+## The autobee@1 to autobee@2 flag day
+
+**A store autobee@1 wrote is refused before anything opens it for writing.**
+autobee@2 cannot open an autobee@1 store: it boots onto the v1 system head,
+throws "Out of bounds" on the first v1 writer record, and closes, after
+writing user data. So `Bundle` decides which autobee wrote a generation's
+store before it constructs an Autobee (`store/lib/substrate.js`), and throws
+`VAULT_AUTOBEE_V1` for an autobee@1 store.
+
+The rule was checked against stores written by the last autobee@1 release
+of okf (autobee 1.0.10, corestore 7.11.0) and by this one:
+
+| | autobee@1 | autobee@2 |
+| --- | --- | --- |
+| bootstrap core `autobee/local` | names the local core | same |
+| local core `autobee/head` | the boot record, once a node applied | same |
+| system core named by the head | manifest version 1 | manifest version 3 |
+| local oplog blocks | oplog version 3 | oplog version 4 |
+| local core `okf/substrate` | absent | `autobee@2`, written on every open |
+
+A store with no `autobee/head` has applied nothing (an autobee@1 joiner
+that never synced), so it is opened as a fresh store. The plan's rule was
+the marker alone: a head with no marker is autobee@1. The store keeps that
+rule as the fast path, and decides an unmarked store with a head by the
+manifest version of the system core the head names (`test/store-
+substrate.test.js`). That way a v2 store that lost its marker is not
+refused, and the marker is written again.
+
+A directory is checked through its own read-only corestore, and the
+read-write corestore opens only after the check passes. A refused open
+leaves every file in the directory byte-identical, and the autobee@1
+release still opens the store to the same view hash. Opening the directory
+read-write would have rotated RocksDB's housekeeping files; the data files
+would not change either way, and corestore 7.16.1 reads the 7.11.0 storage
+format (hypercore-storage `VERSION` 2 in both) without migrating it.

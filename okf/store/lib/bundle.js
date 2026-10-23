@@ -66,6 +66,7 @@ import {
 } from '@auto-okf/core'
 import { ViewAdapter } from './view.js'
 import { viewHash } from './hash.js'
+import { SUBSTRATE, detectSubstrate, markSubstrate } from './substrate.js'
 import {
   METADATA_FILE,
   createMetadata,
@@ -94,6 +95,13 @@ const DEFAULT_MAX_INFLIGHT = 1
 const DEFAULT_ACK_TIMEOUT = 1500
 
 export class Bundle extends EventEmitter {
+  // The substrate this release runs on. Only the release-seam tests swap
+  // these, to write a store the way the autobee@1 release did; a subclass
+  // that names another substrate skips the flag-day check and the marker.
+  static Autobee = Autobee
+  static Corestore = Corestore
+  static substrate = SUBSTRATE
+
   /**
    * @param {string|Corestore} storage directory (preferred: metadata is
    *   pinned to `<dir>/okf-vault.json`) or a dedicated Corestore the vault
@@ -117,7 +125,9 @@ export class Bundle extends EventEmitter {
   constructor(storage, opts = {}) {
     super()
     this.dir = typeof storage === 'string' ? storage : null
-    this.store = this.dir ? new Corestore(this.dir) : storage
+    // A directory's corestore opens only after the flag-day check passes
+    // (_openInner), so a refused open leaves the directory untouched.
+    this.store = this.dir ? null : storage
     this.db = null
     this.metadata = null
     this.generation = null
@@ -150,21 +160,21 @@ export class Bundle extends EventEmitter {
 
   /** Create a brand-new vault (writes pinned metadata at init). */
   static async init(storage, opts = {}) {
-    const vault = new Bundle(storage, opts)
+    const vault = new (ctor(this))(storage, opts)
     await vault.ready()
     return vault
   }
 
   /** Open a vault previously initialized/joined at `storage`. */
   static async open(storage, opts = {}) {
-    const vault = new Bundle(storage, opts)
+    const vault = new (ctor(this))(storage, opts)
     await vault.ready()
     return vault
   }
 
   /** Join an existing vault by key (plus invite metadata/encryptionKey). */
   static async join(storage, key, opts = {}) {
-    const vault = new Bundle(storage, { ...opts, key })
+    const vault = new (ctor(this))(storage, { ...opts, key })
     await vault.ready()
     return vault
   }
@@ -180,7 +190,7 @@ export class Bundle extends EventEmitter {
     } catch (err) {
       this._applyBarrierResolve()
       if (this.db) await this.db.close().catch(() => {})
-      await this.store.close().catch(() => {})
+      if (this.store) await this.store.close().catch(() => {})
       throw err
     }
   }
@@ -211,19 +221,38 @@ export class Bundle extends EventEmitter {
       ? stored.predecessorCheckpoint
       : (overrides && overrides.predecessorCheckpoint) ?? null
     this.generation = generationId(predKey, predCp)
-    const session = this.store.namespace(GENERATION_NS + this.generation)
 
     const bootKey = stored
       ? b4a.from(stored.genesisKey, 'hex')
       : optKeyHex
         ? b4a.from(optKeyHex, 'hex')
         : null
+
+    // The autobee@1 to autobee@2 flag day (store/lib/substrate.js): never
+    // boot autobee@2 on a store autobee@1 wrote. It would crash on the first
+    // v1 system record and close, after writing user data.
+    let substrate = null
+    if (bootKey && this.constructor.substrate === SUBSTRATE && (stored || !this.dir)) {
+      substrate = await this._detectSubstrate(bootKey)
+      if (substrate.substrate === 'autobee@1') {
+        const err = vaultError(
+          'VAULT_AUTOBEE_V1',
+          `${this.dir || 'this store'} was written by autobee@1; ` +
+            'materialize it with an autobee@1 release of auto-okf, then compact'
+        )
+        err.dir = this.dir
+        throw err
+      }
+    }
+
+    if (!this.store) this.store = new this.constructor.Corestore(this.dir)
+    const session = this.store.namespace(GENERATION_NS + this.generation)
     const encrypted =
       (stored ? stored.encrypted : false) ||
       (overrides ? overrides.encrypted === true : false) ||
       !!this._opts.encryptionKey
 
-    this.db = new Autobee(session, bootKey, {
+    this.db = new this.constructor.Autobee(session, bootKey, {
       apply: (nodes, view, host) => this._apply(nodes, view, host),
       // Both the read snapshot (db.view) and apply's working view go
       // through the adapter, so reads and apply share one surface.
@@ -248,6 +277,11 @@ export class Bundle extends EventEmitter {
     this.db.on('error', (err) => this.emit('error', err))
 
     await this.db.ready()
+    // Before any node can be applied, so no autobee@2 head ever exists
+    // without the marker. A store that predates it gets it now.
+    if (this.constructor.substrate === SUBSTRATE && !(substrate && substrate.marked)) {
+      await markSubstrate(this.db.local)
+    }
 
     const vaultKeyHex = b4a.toString(this.db.key, 'hex')
     let meta = stored
@@ -294,6 +328,21 @@ export class Bundle extends EventEmitter {
   _setApply(meta) {
     this._coreApply = createApply(applyConfig(meta))
     this._applyBarrierResolve()
+  }
+
+  /**
+   * substrate.js detectSubstrate for this generation. A directory is read
+   * through its own read-only corestore, which changes no file.
+   */
+  async _detectSubstrate(bootKey) {
+    const ns = GENERATION_NS + this.generation
+    if (!this.dir) return detectSubstrate(this.store.namespace(ns), bootKey)
+    const store = new this.constructor.Corestore(this.dir, { readOnly: true })
+    try {
+      return await detectSubstrate(store.namespace(ns), bootKey)
+    } finally {
+      await store.close()
+    }
   }
 
   // ---------- apply wiring (core apply over the autobee contract) ----------
@@ -403,7 +452,7 @@ export class Bundle extends EventEmitter {
     // db.close() closes the generation SESSION (autobee _close); the root
     // corestore — which the Bundle owns either way — closes after it.
     if (this.db) await this.db.close()
-    await this.store.close()
+    if (this.store) await this.store.close()
   }
 
   // ---------- reads ----------
@@ -796,6 +845,14 @@ class HostAdapter {
     // un-awaited grant can miss autobee's system flush.
     return this.host.addWriter(key, { isIndexer: true, weight: 2 })
   }
+}
+
+/**
+ * The class a static factory was called on, or Bundle when it was called
+ * unbound (compact's `initBundle: Bundle.init`).
+ */
+function ctor(self) {
+  return typeof self === 'function' && (self === Bundle || self.prototype instanceof Bundle) ? self : Bundle
 }
 
 /** `true` | `{ maxInflight, ackTimeout }` | falsy → normalized | null. */
