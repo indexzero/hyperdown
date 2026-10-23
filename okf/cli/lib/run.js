@@ -22,7 +22,7 @@ import b4a from 'b4a'
 import { command, flag, arg, rest, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
 import { Bundle, METADATA_FILE } from '@auto-okf/store'
-import { materialize, createIngestWatcher, wanted, compact, status } from '@auto-okf/faces'
+import { materialize, createIngestWatcher, wanted, compact, compactFromFace, status } from '@auto-okf/faces'
 
 const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
 const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage, 3 pending-ingest only (materialize)'
@@ -35,6 +35,13 @@ class UsageError extends Error {}
 const SIBLING_MARKER = 'vault-ld.json'
 
 class WrongToolError extends Error {}
+
+// The autobee@1 to autobee@2 flag day: the store refuses a store autobee@1
+// wrote (VAULT_AUTOBEE_V1) without touching it, and the CLI names the way
+// across, in the ADR-006 shape.
+function autobee1Refusal(dir) {
+  return `${dir} was written by autobee@1; materialize it with an autobee@1 release of auto-okf, then compact --from-face`
+}
 
 async function refuseSiblingVault(dir) {
   try {
@@ -92,6 +99,10 @@ export async function run(argv) {
       // ADR-006: the refusal shape is pinned — `error: <dir> is a … vault
       // (<marker> present); use <tool>, not <this tool>`.
       process.stderr.write(`error: ${err.message}\n`)
+      return 1
+    }
+    if (err && err.code === 'VAULT_AUTOBEE_V1') {
+      process.stderr.write(`error: ${autobee1Refusal(err.dir || parsed.args.dir)}\n`)
       return 1
     }
     process.stderr.write(`auto-okf ${parsed.name}: ${err && err.message ? err.message : err}\n`)
@@ -199,10 +210,15 @@ function buildCli() {
     sub(
       'compact',
       'generation-cycle compaction into a fresh vault',
-      arg('<dir>', 'vault storage directory'),
+      arg('<dir>', 'vault storage directory (with --from-face: a materialized face)'),
       arg('<out-dir>', 'directory for the fresh generation vault'),
       flag('--force', 'compact despite open conflict/pathcollision flags'),
       flag('--face <dir>', 'hydrated face directory (default: <out-dir>.face)'),
+      flag('--from-face', "start from <dir>, a face materialized for compaction: compact's second half"),
+      flag(
+        '--predecessor <json>',
+        'with --from-face: { predecessorKey, predecessorCheckpoint } (default: <dir>/.okf-predecessor.json)'
+      ),
       requiredArgs('<dir>', '<out-dir>')
     ),
     sub(
@@ -671,6 +687,8 @@ async function cmdFlags({ args, flags }) {
 
 async function cmdCompact({ args, flags }) {
   const { dir, outDir } = args
+  if (flags.fromFace) return compactFromFaceDir(dir, outDir, flags)
+  if (flags.predecessor) throw new UsageError('--predecessor applies only with --from-face')
   const faceDir = flags.face || `${outDir}.face`
   return withVault(dir, {}, async (vault) => {
     const res = await compact(vault, {
@@ -694,6 +712,34 @@ async function cmdCompact({ args, flags }) {
       await res.vault.close()
     }
   })
+}
+
+/**
+ * compact's second half: <faceDir> is a face materialized for compaction,
+ * possibly by another release (the autobee@1 to autobee@2 flag day). The
+ * predecessor vault is never opened; its provenance comes from the face's
+ * .okf-predecessor.json or from --predecessor.
+ */
+async function compactFromFaceDir(faceDir, outDir, flags) {
+  if (flags.face) throw new UsageError('--face does not apply with --from-face (<dir> is the face)')
+  const opts = { initBundle: Bundle.init, vaultDir: outDir }
+  if (flags.predecessor) {
+    const prov = JSON.parse(await readFile(flags.predecessor, 'utf8'))
+    if (prov.predecessorKey == null || prov.predecessorCheckpoint == null) {
+      throw new Error(`${flags.predecessor} has no predecessorKey and predecessorCheckpoint`)
+    }
+    opts.predecessorKey = prov.predecessorKey
+    opts.predecessorCheckpoint = prov.predecessorCheckpoint
+  }
+  const res = await compactFromFace(faceDir, opts)
+  try {
+    console.log(`compacted face ${faceDir} -> ${outDir} (generation ${res.generation})`)
+    console.log(`predecessor key:  ${res.predecessorKey}`)
+    console.log(`new vault key:    ${res.vault.keyHex}`)
+    return 0
+  } finally {
+    await res.vault.close()
+  }
 }
 
 async function cmdResolve({ args, flags }) {

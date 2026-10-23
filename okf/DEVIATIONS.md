@@ -301,3 +301,25 @@ release still opens the store to the same view hash. Opening the directory
 read-write would have rotated RocksDB's housekeeping files; the data files
 would not change either way, and corestore 7.16.1 reads the 7.11.0 storage
 format (hypercore-storage `VERSION` 2 in both) without migrating it.
+
+**The face that crosses the flag day comes from the old release's
+`compact`, not its `materialize`.** The upgrade plan's step 1 is "run
+`auto-okf materialize` with the current release". But the old release's
+materialize records nothing about the vault it came from: the face holds
+concept notes, `index.md`, `log.md` and the emission manifest
+(`{ files }`), with no vault key and no view hash. The new release cannot
+open the autobee@1 store to compute the checkpoint either. §10 requires
+`{ predecessorKey, predecessorCheckpoint }` in the new metadata, and
+metadata validation requires the checkpoint's 64-hex `viewHash`.
+
+So compaction is split at the materialize seam (`faces/lib/compact.js`):
+`materializeForCompact` records the provenance in the face as
+`.okf-predecessor.json`, and `compactFromFace` reads it from there or from
+explicit options. The old release has no such file. Its `compact`, run
+with `--face`, writes the same face and records exactly that provenance in
+the scratch vault's `okf-vault.json`. The new release's
+`compact --from-face <face> <out> --predecessor <scratch>/okf-vault.json`
+reads it there (`okf/cli/README.md`, "Crossing the autobee@2 flag day").
+Run by hand on a store the old release wrote, this reproduced the old
+release's own generation id and a bundle byte-identical to the old face
+modulo `_rev` and `log.md`.
