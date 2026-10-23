@@ -23,6 +23,7 @@ import {
   readLog
 } from '../faces/index.js'
 import { keyspace as K } from '../core/index.js'
+import { BundleOnAutobee1 } from './autobee1-helpers.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -455,4 +456,51 @@ test('I11: the two halves of compact run apart; the face alone carries the cycle
   assert.equal(res2.generation, res.generation, 'same provenance, same generation id')
   await nu.close()
   await res2.vault.close()
+})
+
+test('I11 across the flag day: materialize under autobee@1, compact under autobee@2, same bytes', async () => {
+  // the predecessor lives on autobee@1 (autobee 1.0.10, corestore 7.11.0)
+  const old = await BundleOnAutobee1.init(await tmpDir('seam-v1'))
+  const ids = await buildNonTrivial(old)
+  await old.update()
+  let open = 0
+  for await (const _ of old.scan(K.flagPrefix('conflict'))) open++
+  assert.equal(open, 0, 'setup left an open flag/conflict')
+
+  // first half, under autobee@1: the face and its provenance
+  const faceDir = await tmpDir('seam-face')
+  const face = await materializeForCompact(old, { toDir: faceDir })
+  const v1Bundle = await readBundle(faceDir)
+  assert.ok(v1Bundle.size > 0)
+  const oldLive = await liveConcepts(old)
+  const oldDir = old.dir
+  await old.close()
+  await assert.rejects(() => Bundle.open(oldDir), (err) => err.code === 'VAULT_AUTOBEE_V1')
+
+  // second half, under autobee@2, from the face alone
+  const res = await compactFromFace(faceDir, { initBundle: Bundle.init, vaultDir: await tmpDir('seam-v2') })
+  const nu = res.vault
+  assert.equal(nu.metadata.predecessorKey, face.predecessorKey)
+  assert.deepEqual(nu.metadata.predecessorCheckpoint, face.predecessorCheckpoint)
+
+  // the bytes: autobee@2's bundle equals autobee@1's (modulo _rev + log.md)
+  const newDir = await tmpDir('seam-v2-bundle')
+  assert.equal((await materialize(nu, newDir)).ok, true)
+  assert.equal(
+    bundleDiff(normalizeBundle(await readBundle(newDir)), normalizeBundle(v1Bundle)),
+    null,
+    'autobee@2 bundle differs from the autobee@1 bundle (modulo _rev + log.md)'
+  )
+
+  // identity and state per live concept
+  const newLive = await liveConcepts(nu)
+  assert.deepEqual([...newLive.keys()].sort(), [...oldLive.keys()].sort())
+  assert.ok(!newLive.has(ids.d), 'the tombstoned concept stays suppressed')
+  for (const [id, oc] of oldLive) {
+    const nc = newLive.get(id)
+    assert.equal(nc.type, oc.type, `type of ${id}`)
+    assert.equal(nc.path, oc.path, `path of ${id}`)
+    assert.equal(nc.headText, oc.headText, `head body of ${id}`)
+  }
+  await nu.close()
 })
