@@ -149,9 +149,12 @@ export class FaultHub {
       socket.off('data', onData)
       const header = JSON.parse(buf.subarray(0, nl).toString())
       const rest = buf.subarray(nl + 1)
+      // Paused until paired (_register resumes both): a socket resumed with
+      // no 'data' listener discards what it reads, and a replication
+      // initiator sends its first handshake message at once, so a link
+      // whose initiator arrived first could pair dead.
       socket.pause()
       this._register(header, socket, rest)
-      socket.resume()
     }
     socket.on('data', onData)
     socket.on('error', () => {})
@@ -184,6 +187,9 @@ export class FaultHub {
     // bytes that arrived glued to the header are real replication bytes
     if (r0 && r0.length) a2b._enqueue(r0)
     if (r1 && r1.length) b2a._enqueue(r1)
+    // then whatever each socket buffered while it waited, in order
+    s0.resume()
+    s1.resume()
   }
 
   /** Hard partition: sever both directions of a link. */
