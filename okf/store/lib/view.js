@@ -5,8 +5,11 @@
 // hands apply, converting string keys/values to buffers at the boundary.
 //
 // hyperbee2 surface, verified against the installed source
-// (node_modules/hyperbee2@2.10.3, the version autobee 1.0.10 depends on;
-// upstream https://github.com/holepunchto/hyperbee2):
+// (node_modules/hyperbee2@2.20.1, the version autobee 2.12.1 resolves;
+// first verified on 2.10.3 under autobee 1.0.10, unchanged since for every
+// call below; upstream https://github.com/holepunchto/hyperbee2). autobee@2
+// also passes fast-forward candidate views and checkouts through `open`
+// (index.js openView), so this adapter stays a stateless wrapper:
 // - `await bee.get(key)` — key MUST be a Buffer (index.js get() binary-
 //   searches with b4a.compare); resolves to a finalized key pointer
 //   `{ seq, key, value, ... }` or null, value a Buffer.

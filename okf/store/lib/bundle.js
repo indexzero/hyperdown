@@ -7,17 +7,20 @@
 // Pattern ancestor: vault-ld/store/lib/vault.js (patterns only, no code
 // path shared — SPEC §0 copy-don't-depend).
 //
-// autobee contract, verified against the installed source of autobee@1.0.10
-// (node_modules/autobee/{index.js,lib/*}; upstream README cross-checked at
-// https://github.com/holepunchto/autobee 2026-07-13 — a STANDALONE
-// multiwriter Hyperbee on hyperbee2 + hypercore 11; NO autobase):
+// autobee contract, verified against the source of autobee@2.12.1 (index.js,
+// lib/*; first verified against 1.0.10 on 2026-07-13, re-verified for 2.12.1
+// on 2026-10-23 — a STANDALONE multiwriter Hyperbee on hyperbee2 2.20 +
+// hypercore 11; NO autobase), on corestore 7.16:
 // - `new Autobee(store, key, { apply, open, close, update, encryptionKey,
-//   encrypted, keyPair, optimistic })`; `optimistic` defaults true
-//   (index.js: `handlers.optimistic !== false`).
-// - apply receives `(nodes, view, host)`; node = `{ key, value, length,
-//   optimistic, timestamp, links, ... }` (lib/writers.js createNode), where
-//   node.key is the WRITER core key — exactly the node shape core's apply
-//   documents, so nodes pass through UNWRAPPED.
+//   encrypted, keyPair, optimistic, fastForward, ackThreshold, ... })`;
+//   `optimistic` defaults true (index.js: `handlers.optimistic !== false`).
+//   The Bundle also sets `fastForward: false` and `ackThreshold: Infinity`
+//   (see the constructor call).
+// - apply receives `(nodes, view, host)`, and only nodes with a non-empty
+//   value (index.js _applyBatch); node = `{ key, value, length, optimistic,
+//   timestamp, links, weight, witness, approvals, ... }` (lib/writers.js
+//   createNode), where node.key is the WRITER core key — exactly the node
+//   shape core's apply documents, so nodes pass through UNWRAPPED.
 // - `view` is what the `open` handler returned: we return a ViewAdapter, so
 //   core's apply sees the hyperbee2-flavored string-key surface it expects.
 // - host (lib/apply-calls.js): `addWriter(key, { isIndexer = true, weight =
@@ -30,7 +33,7 @@
 //   update()/updated()/flush(), replicate(isInitiator|stream).
 // - db.close() closes the corestore it was handed (index.js _close): we
 //   hand it the per-generation namespace SESSION; the root corestore is closed
-//   by Bundle.close() (corestore@7.11.0 index.js: closing a session never
+//   by Bundle.close() (corestore index.js _close: closing a session never
 //   closes the root; closing the root closes every session).
 // - genesis: autobee auto-adds the bootstrap writer on its first node at
 //   `bootstrapWeight` (default 2) and it stands at that weight at once
