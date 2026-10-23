@@ -20,6 +20,25 @@ test('I10: governance requires an indexer issuer; host.addWriter never called fo
   assert.deepEqual(host.calls.find(([m]) => m === 'addWriter')[2], { isIndexer: false, weight: 1 })
 })
 
+test('I10: apply does not return before host.addWriter settles', async () => {
+  // autobee@2's host.addWriter reads the system before it records the
+  // grant (lib/system.js addWriter), and the system flush runs as soon as
+  // apply returns (index.js _applyBatch), so a grant apply did not await
+  // can miss the flush and be lost.
+  const env = new Env({ genesis: 'A' })
+  env.op('A', 'add-writer', { key: writerKey('B'), indexer: false })
+  env.op('A', 'add-writer', { key: writerKey('C'), indexer: true })
+  const settled = []
+  const host = {
+    async addWriter(key) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      settled.push(key.toString('hex'))
+    }
+  }
+  await env.run(env.nodes, { host })
+  assert.deepEqual(settled, [env.hex('B'), env.hex('C')], 'both grants settled, in order')
+})
+
 test('I10: causal revocation — in-flight ops with strictly-preceding clocks land, later ops reject', async () => {
   const env = new Env({ genesis: 'A' })
   env.op('A', 'add-writer', { key: writerKey('C'), indexer: false })

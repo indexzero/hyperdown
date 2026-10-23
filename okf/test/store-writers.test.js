@@ -136,3 +136,79 @@ test('setWriterPolicy round trip: namespace prefixes enforced at apply', async (
   assert.ok(await b.val(K.cMeta(ok.tag)), 'in-namespace create accepted')
   assert.ok(await converged([a, b]), 'policy decisions are uniform across peers')
 })
+
+test('a writer added while genesis is offline sorts at 0 until genesis approves it', async (t) => {
+  // autobee@2: a grant's ceiling is capped at the resolved weight of the
+  // node that carries it (lib/system.js addWriter), and a writer's nodes
+  // sort at 0 until a peer whose standing reaches the tier approves it and
+  // the writer cites that approval (index.js _collectApprovals, append
+  // witness; lib/witness.js). Only genesis starts at 2 (bootstrapWeight).
+  const a = await Bundle.init(await tmpDir('climb-a'))
+  const b = await Bundle.join(await tmpDir('climb-b'), a.key)
+  const c = await Bundle.join(await tmpDir('climb-c'), a.key)
+  let unpairAB = pair(a, b)
+  const unpairBC = pair(b, c)
+  t.after(async () => {
+    unpairAB()
+    unpairBC()
+    await a.close()
+    await b.close()
+    await c.close()
+  })
+  const sys = async (v, w) => {
+    await v.update()
+    const rec = await v.db.system.get(w.localKey)
+    return rec ? { weight: rec.weight, maxWeight: rec.maxWeight } : null
+  }
+
+  // genesis admits b as an okf indexer, then goes offline before it
+  // appends again, so it never approves b
+  await a.writers.add(b.localKey, { indexer: true })
+  assert.ok(await until(async () => (await b.update(), b.writable)), 'b writable')
+  assert.deepEqual(await sys(b, b), { weight: 0, maxWeight: 2 }, 'b: ceiling 2, sorts at 0')
+  unpairAB()
+
+  // b (an okf indexer at autobee weight 0) admits c while genesis is offline
+  await b.writers.add(c.localKey, { indexer: false })
+  assert.ok(await until(async () => (await c.update(), c.writable)), 'c writable at once')
+  const c0 = await c.createConcept('climb/c0', 'note')
+  await b.createConcept('climb/b0', 'note')
+  assert.ok(
+    await until(async () => {
+      await b.update()
+      await c.update()
+      return (await b.val(K.cMeta(c0.tag))) !== undefined
+    })
+  )
+  // the carrier (b's node) sorted at 0, so c's ceiling is capped at 0, and
+  // no online peer has the standing to approve either of them
+  for (const v of [b, c]) {
+    assert.deepEqual(await sys(v, c), { weight: 0, maxWeight: 0 }, 'c: capped at the carrier')
+    assert.deepEqual(await sys(v, b), { weight: 0, maxWeight: 2 }, 'b: still 0')
+  }
+  const c1 = await c.createConcept('climb/c1', 'note')
+  await until(async () => (await b.update(), (await b.val(K.cMeta(c1.tag))) !== undefined))
+  assert.equal((await sys(b, c)).weight, 0, 'no climb while genesis is offline')
+
+  // genesis returns, folds b's and c's ops, and appends: autobee adds
+  // approvals for both pending promotions to that append
+  unpairAB = pair(a, b)
+  assert.ok(await until(async () => (await a.update(), (await a.val(K.cMeta(c1.tag))) !== undefined)))
+  const a1 = await a.createConcept('climb/a1', 'note')
+  assert.ok(
+    await until(async () => {
+      await b.update()
+      await c.update()
+      return (await c.val(K.cMeta(a1.tag))) !== undefined
+    }),
+    'b and c fold the approving append'
+  )
+  // each cites the approval (a witness) on its next append, and climbs
+  await b.createConcept('climb/b2', 'note')
+  await c.createConcept('climb/c2', 'note')
+  assert.ok(await converged([a, b, c]), 'all three converge')
+  for (const v of [a, b, c]) {
+    assert.deepEqual(await sys(v, b), { weight: 2, maxWeight: 2 }, 'b climbed')
+    assert.deepEqual(await sys(v, c), { weight: 2, maxWeight: 2 }, 'c climbed')
+  }
+})

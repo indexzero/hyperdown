@@ -58,12 +58,52 @@ exactly the mixed-weight condition §8 exists to prevent (`lib/topo.js`:
 `isOrderedBefore()` breaks the walk on `node.weight < link.weight` while
 `cmp()` sorts higher weight first — divergent linearizations under
 concurrency). §8's substance is the UNIFORM weight; the store's
-HostAdapter (`okf/store/lib/vault.js`) pins every `addWriter` at the
+HostAdapter (`okf/store/lib/bundle.js`) pins every `addWriter` at the
 genesis value `weight: 2` (the vault-ld harness-proven resolution),
 overriding the `weight: 1` core passes. Side effect: autobee's cosmetic
 `isIndexer` getter (`lib/writers.js`: `weight === 2`) reads true for all
 writers; §8 governance authority is decided from `gov/` by core, never
 from autobee state.
+
+On autobee@2.12.1 the store still pins `weight: 2`, but the value means
+something else, and the weights are no longer uniform at every moment:
+
+- **A ceiling, capped at the carrier.** `weight` sets the writer's
+  `maxWeight`, capped at the resolved weight of the node that carries the
+  grant (`lib/system.js` `addWriter`). A writer admitted by a member still
+  sorting at 0 gets ceiling 0.
+- **The climb.** A new writer's nodes sort at 0. A peer whose standing
+  reaches the requested tier adds an approval to its next non-optimistic
+  append (`index.js` `_collectApprovals`), and the writer's next append
+  cites that approval as a witness (`index.js` `append`;
+  `lib/witness.js`). From then on the writer sorts at the approved
+  weight. The approval also lifts a capped ceiling. Only genesis starts
+  at 2 (`bootstrapWeight`).
+- **Who can approve.** Only a peer with standing 2 can approve a tier-2
+  climb. Genesis has it from the start. Every other member has it only
+  after its own climb. If no member at 2 is online, nobody climbs: in
+  `test/store-writers.test.js` ("a writer added while genesis is
+  offline"), a writer admitted by a not-yet-climbed indexer while genesis
+  was offline stayed at weight 0, ceiling 0, through further appends, and
+  both writers reached weight 2 only after genesis came back and
+  appended.
+- **Why mixed weights are safe now.** The 1.0.10 comparator split is
+  fixed: `isOrderedBefore` is `cmp() < 0` (`lib/topo.js`), and each
+  node's resolved weight is pinned in its flush's system record, so every
+  peer orders a climb's mixed weights the same way.
+- **What a climb changes.** While a member sorts at 0, each of its
+  writes sorts after every concurrent write from a member at 2, whatever
+  the timestamps (`lib/topo.js` `cmp`: weight first). So it loses a
+  first-wins race (a path claim, §7) and wins a last-writer-wins register
+  (§5) against that member. okf's outcomes stay a pure function of the
+  linearized order (I6), but which concurrent write wins can differ from
+  what the same writes produced on 1.0.10.
+- **What 2 still buys.** Members at 2 sort above strangers (unknown or
+  optimistic writers), who resolve to 0 and cannot sort before a heavier
+  node they do not link (`lib/topo.js` `cmp`).
+
+`isIndexer` on autobee@2 means ceiling >= 2 (`lib/writers.js`), so it
+reads false for a writer whose grant was capped. It remains cosmetic.
 
 **okf §8 optimistic nodes need no substrate ack on autobee@2; okf makes
 none.** SPEC §8 (v1.4) still describes the autobee@1.0.10 resolution: the

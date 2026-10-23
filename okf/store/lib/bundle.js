@@ -32,12 +32,12 @@
 //   hand it the per-generation namespace SESSION; the root corestore is closed
 //   by Bundle.close() (corestore@7.11.0 index.js: closing a session never
 //   closes the root; closing the root closes every session).
-// - genesis: autobee auto-adds the first writer with full permissions
-//   (index.js _processApplyBatch: `if (this.system.isGenesis())
-//   this._host.addWriter(t.tip[0][0].key)` — DEFAULT opts, so isIndexer
-//   true and weight 2), and for a creator the vault key IS the creator's
-//   local writer key (lib/boot.js), so metadata.genesisKey === db.key on
-//   every peer and core's §8 genesis indexer seeding agrees with autobee's.
+// - genesis: autobee auto-adds the bootstrap writer on its first node at
+//   `bootstrapWeight` (default 2) and it stands at that weight at once
+//   (index.js _processBatch; lib/witness.js currentWeight), and for a
+//   creator the vault key IS the creator's local writer key (lib/boot.js),
+//   so metadata.genesisKey === db.key on every peer and core's §8 genesis
+//   indexer seeding agrees with autobee's.
 //
 // §8 optimistic onboarding on autobee@2 (recorded in DEVIATIONS.md): every
 // optimistic node reaches apply, and autobee itself records it in its
@@ -764,21 +764,36 @@ class HostAdapter {
   }
 
   addWriter(key) {
-    // UNIFORM TOPO WEIGHT (deviation from §8's literal `weight: 1`,
-    // recorded in DEVIATIONS.md): autobee@1.0.10's linearization
-    // comparators disagree for concurrent nodes of unequal weight
-    // (lib/topo.js: isOrderedBefore() breaks the walk on
-    // `node.weight < link.weight` while cmp() sorts higher weight first),
-    // and autobee's GENESIS auto-add uses the DEFAULT weight 2 (index.js
-    // _processApplyBatch → apply-calls.js `weight = isIndexer ? 2 : 1`,
-    // isIndexer defaulting true) — uncontrollable from apply. §8's
-    // substance is the UNIFORM weight; pinning it at 2 (the genesis value)
-    // is the only uniform choice autobee 1.0.x permits, and is the
-    // vault-ld harness-proven resolution. The indexer bit is dropped at
-    // this level by autobee itself (apply-calls.js passes only weight to
-    // system.addWriter); §8 governance authority is decided from gov/ by
-    // core, never from autobee state. (Core passes { isIndexer, weight: 1 };
-    // both are overridden here, which is the entire point of this adapter.)
+    // UNIFORM CEILING 2 (deviation from §8's literal `weight: 1`, recorded
+    // in DEVIATIONS.md). Core passes { isIndexer, weight: 1 }; both are
+    // overridden here, which is the entire point of this adapter.
+    //
+    // On autobee@2.12.1 `weight` is a ceiling, not the sort weight:
+    // - the carrier cap: the grant's ceiling is capped at the resolved
+    //   weight of the node that carries it (lib/system.js addWriter), so a
+    //   writer admitted by a member still at 0 gets ceiling 0;
+    // - the climb: the writer's nodes sort at 0 until a peer whose
+    //   standing reaches the requested tier puts an approval on its next
+    //   non-optimistic append, and the writer's next append cites it as a
+    //   witness (index.js _collectApprovals and append; lib/witness.js).
+    //   An approval also lifts a capped ceiling, up to the requested tier
+    //   and the approver's standing.
+    // Genesis alone starts at 2 (index.js _processBatch: bootstrapWeight).
+    //
+    // Why 2 still: it is genesis's weight, so every member can climb to
+    // where genesis stands and, once there, approve the next member.
+    // Members at 2 stay above strangers (unknown or optimistic writers),
+    // who sort at 0 and cannot sort before a heavier node they do not
+    // link (lib/topo.js cmp). The 1.0.10 reason, comparators that split
+    // peers on mixed weights, is fixed in v2 (lib/topo.js isOrderedBefore
+    // is `cmp() < 0`), so the weights a climb mixes order the same on
+    // every peer. "Uniform" now means a uniform ceiling.
+    //
+    // autobee drops the indexer bit (apply-calls.js passes only weight),
+    // and its isIndexer getter now means ceiling >= 2 (lib/writers.js); §8
+    // governance authority is decided from gov/ by core, never from
+    // autobee state. Returned, not fire-and-forget: core awaits it, and an
+    // un-awaited grant can miss autobee's system flush.
     return this.host.addWriter(key, { isIndexer: true, weight: 2 })
   }
 }
