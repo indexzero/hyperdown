@@ -238,7 +238,11 @@ export class Bundle extends EventEmitter {
       // pinned config. autobee@2 would otherwise fast-forward onto a view
       // head another writer stamped, trusting every writer by default
       // (lib/trusted.js), and skip apply for the whole prefix.
-      fastForward: false
+      fastForward: false,
+      // No empty "ack" nodes while trusted and 32 flushes behind
+      // (index.js _appendAck). This does not stop the one ack autobee
+      // appends after a reindex, so _nextSeq is seeded from seen/ below.
+      ackThreshold: Infinity
     })
     this.db.on('error', (err) => this.emit('error', err))
 
@@ -274,7 +278,14 @@ export class Bundle extends EventEmitter {
 
     this.metadata = meta
     if (!this._coreApply) this._setApply(meta)
-    this._nextSeq = this.db.local.length
+    // §8 forged-clock: the next op's seq is the count apply keeps in
+    // seen/<self>, the same ordinal apply checks the self clock entry
+    // against. local.length is not that count on autobee@2: empty ack
+    // nodes land in the local core but never reach apply (index.js
+    // _applyBatch passes only non-empty values). update() first, so every
+    // local node already in the core has been folded.
+    await this.db.update()
+    this._nextSeq = (await this.val(K.seen(b4a.toString(this.db.local.key, 'hex')))) ?? 0
     this._foldedSeq = this._nextSeq
     return this
   }

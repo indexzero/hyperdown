@@ -34,6 +34,35 @@ test('restart from disk: reopened view equals the pre-close view (I3)', async (t
   assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['Back again'])
 })
 
+test('an empty block in the local core does not shift the seq after restart (§8 forged-clock)', async (t) => {
+  // autobee@2 can append empty "ack" nodes to the local writer core
+  // (index.js _appendAck: when acking, and once after a reindex). apply
+  // never sees them (index.js _applyBatch: only non-empty values reach
+  // apply), so they never count in seen/<self>, but they do count in
+  // local.length. Append one exactly as _appendAck does.
+  const dir = await tmpDir('restart-ack')
+  const a = await Bundle.init(dir)
+  const { tag: id } = await a.createConcept('guides/ack', 'guide')
+  await a.setField(id, 'title', ['Before the ack'])
+  const db = a.db
+  const links = db.system.getLinks(db.local.key)
+  const ts = Math.max(Date.now(), db.system.timestamp)
+  db.writers.appendLocal(null, ts, { start: 0, end: 0 }, links, false, null, null, null, 0)
+  await a.update()
+  const self = a.localKey.toString('hex')
+  assert.equal(db.local.length, 3, 'two ops plus one empty block in the local core')
+  assert.equal(await a.val(K.seen(self)), 2, 'apply counted only the two ops')
+  await a.close()
+
+  const a2 = await Bundle.open(dir)
+  t.after(() => a2.close())
+  const r = await a2.setField(id, 'title', ['After the ack'])
+  assert.equal(r.seq, 2, 'seq continues from what apply counted, not from local.length')
+  await a2.update()
+  assert.equal(await a2.val(K.flagRejected(self, r.seq)), undefined, 'not rejected forged-clock')
+  assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['After the ack'])
+})
+
 test('fresh peer rebuild from the log equals the restarted view (I3)', async (t) => {
   const dir = await tmpDir('rebuild-a')
   const a = await Bundle.init(dir)
