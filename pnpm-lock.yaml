@@ -135,8 +135,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       autobee:
-        specifier: ^1.0.10
-        version: 1.0.10(bare-events@2.9.1)(bare-url@2.4.5)
+        specifier: ^2.12.1
+        version: 2.12.1(bare-events@2.9.1)(bare-url@2.4.5)
       b4a:
         specifier: ^1.8.1
         version: 1.8.1
@@ -245,6 +245,9 @@ packages:
 
   autobee@1.0.10:
     resolution: {integrity: sha512-9jqBYGgBmi6SmmED4qQlTq5bFtlWkHIZez5GUt3nh/gnBLIK7hcl3QrjVb9uO0U3wKEox5lx4UXJyDa5vSoZFQ==}
+
+  autobee@2.12.1:
+    resolution: {integrity: sha512-iUo6ixwHPuoZ9YpHHhEZyv1O5uhvLCP9XTpO2/msrkno3l1n4iOHkEv1JkohK+qAsakaCwrhNDnV6j+lXmZcPw==}
 
   b4a@1.8.1:
     resolution: {integrity: sha512-aiqre1Nr0B/6DgE2N5vwTc+2/oQZ4Wh1t4NznYY4E00y8LCt6NqdRv81so00oo27D8MVKTpUa/MwUUtBLXCoDw==}
@@ -363,6 +366,9 @@ packages:
   compact-encoding@3.3.0:
     resolution: {integrity: sha512-e64XyzlBvTRJ3iScuU/U2w25Dglkm7fhrRbrGaHIwuTlNnzjRKMaQBCVl7mJRvZg7wI5a9wX1IVTXCuaAANNkw==}
 
+  compact-encoding@3.5.2:
+    resolution: {integrity: sha512-rgGcWdfxyuLwJHMUXI0OrYGpJe3VN4RZyovbxWVlxPYIsUZutOTfP3shmDyDi/iaybwcxMsTJDDuxQa4xRG0RQ==}
+
   core-coupler@2.0.0:
     resolution: {integrity: sha512-FJuEvsdCMwx0Wu+gFQ49rGCi8LCXh8kizHsCQwkdgPZFEFiF0z2HDvyIs+fPt5wMIfU2UVFDuN+dtpfbIxJE6g==}
 
@@ -410,6 +416,9 @@ packages:
   hyperbee2@2.10.3:
     resolution: {integrity: sha512-AmAaRXrch0fkrVbYKpEcuzy6b4b1EwZTMbF+oMw9MZ4YdyT8cXBtPA2uGaJ0mcxh469dsURUHc5nsv16W7alsw==}
 
+  hyperbee2@2.20.1:
+    resolution: {integrity: sha512-j0Q37VgKKiSbFCOtvM4JtXRA/Js4HIzqKCovz2iXm8j0hYR4C86k3YlYCIqaftDgEt9KW41Z59OrOZhmNurYgw==}
+
   hypercore-crypto@3.7.0:
     resolution: {integrity: sha512-SWxobptQf2V/+ZLCCDRTXqFzGfTPIkNIuDyLKXpEMfcpJ1/ec94N9aWgylHcWOHmRt14ng/KR7z0BugebWHK9Q==}
 
@@ -443,6 +452,9 @@ packages:
 
   hyperschema@1.21.0:
     resolution: {integrity: sha512-lEnIbLTUQf7w6FU6X+R3yUJhBwCzF4ewRnAaYOrPdcVWe1rbOf94PzMiXb5pBKxroCXzlrPLxVujxAsTrrHc8g==}
+
+  hyperschema@1.26.2:
+    resolution: {integrity: sha512-5Y7C5zCfH28yiK7RhuMl7VkWt24Mr0E5sp1r2ntd3Ab3+yOBdkDWau0/d/F5beC799Vd5e4xqIAu5NJLM7i//w==}
 
   hyperswarm@4.17.0:
     resolution: {integrity: sha512-oe86sK961Ueg7rvDN/veFwG8xH+Iv6vObPhGDkPJcDVxk/NduW41ZhAcVDnHzRbm7S0eLU7WaDUvehOYoKSpRQ==}
@@ -505,6 +517,9 @@ packages:
 
   random-array-iterator@1.0.0:
     resolution: {integrity: sha512-u7xCM93XqKEvPTP6xZp2ehttcAemKnh73oKNf1FvzuVCfpt6dILDt1Kxl1LeBjm2iNIeR49VGFhy4Iz3yOun+Q==}
+
+  read-write-mutexify@2.1.0:
+    resolution: {integrity: sha512-fDw/p5/acI1ytVY1UbxEDma/ej1yJH/n9NcjS9YNzcE6sPBPWdlru3ydRa/UBowUg4zqOvNMD5SOGYJrlQ6MzQ==}
 
   readable-stream@4.7.0:
     resolution: {integrity: sha512-oIGGmcpTLwPga8Bn6/Z75SVaH1z5dUut2ibSyAMVhmUggWpmDn2dapB0n7f8nwaSiRtepAsfJyfXIO5DCVAODg==}
@@ -704,6 +719,30 @@ snapshots:
       - react-native-b4a
       - sodium-javascript
 
+  autobee@2.12.1(bare-events@2.9.1)(bare-url@2.4.5):
+    dependencies:
+      autobee-wakeup: 1.1.3(bare-events@2.9.1)(bare-url@2.4.5)
+      b4a: 1.8.1
+      compact-encoding: 3.5.2
+      hyperbee2: 2.20.1(bare-url@2.4.5)
+      hypercore: 11.39.2(bare-url@2.4.5)
+      hypercore-id-encoding: 1.3.0
+      hyperschema: 1.26.2
+      read-write-mutexify: 2.1.0
+      ready-guard: 1.0.0
+      ready-resource: 1.2.0
+      resolve-reject-promise: 1.1.0
+      safety-catch: 1.0.3
+      signal-promise: 1.0.3
+      sodium-native: 5.1.0(bare-events@2.9.1)(bare-url@2.4.5)
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - bare-events
+      - bare-url
+      - react-native-b4a
+      - sodium-javascript
+
   b4a@1.8.1: {}
 
   bare-addon-resolve@1.10.0(bare-url@2.4.5):
@@ -846,6 +885,12 @@ snapshots:
     transitivePeerDependencies:
       - react-native-b4a
 
+  compact-encoding@3.5.2:
+    dependencies:
+      b4a: 1.8.1
+    transitivePeerDependencies:
+      - react-native-b4a
+
   core-coupler@2.0.0:
     dependencies:
       safety-catch: 1.0.3
@@ -971,6 +1016,25 @@ snapshots:
       hypercore-errors: 1.5.0
       hyperschema: 1.21.0
       protocol-buffers-encodings: 1.2.0
+      scope-lock: 1.2.4
+      streamx: 2.28.0
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - bare-url
+      - react-native-b4a
+      - sodium-javascript
+
+  hyperbee2@2.20.1(bare-url@2.4.5):
+    dependencies:
+      b4a: 1.8.1
+      bare-events: 2.9.1
+      compact-encoding: 3.5.2
+      hypercore: 11.39.2(bare-url@2.4.5)
+      hypercore-errors: 1.5.0
+      hyperschema: 1.26.2
+      protocol-buffers-encodings: 1.2.0
+      resolve-reject-promise: 1.1.0
       scope-lock: 1.2.4
       streamx: 2.28.0
     transitivePeerDependencies:
@@ -1173,6 +1237,17 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
+  hyperschema@1.26.2:
+    dependencies:
+      bare-fs: 4.7.3
+      compact-encoding: 3.5.2
+      generate-object-property: 2.0.0
+      generate-string: 1.0.1
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - react-native-b4a
+
   hyperswarm@4.17.0(bare-url@2.4.5):
     dependencies:
       b4a: 1.8.1
@@ -1302,6 +1377,8 @@ snapshots:
       - react-native-b4a
 
   random-array-iterator@1.0.0: {}
+
+  read-write-mutexify@2.1.0: {}
 
   readable-stream@4.7.0:
     dependencies:
