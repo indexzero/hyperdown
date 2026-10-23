@@ -212,3 +212,91 @@ test('a writer added while genesis is offline sorts at 0 until genesis approves 
     assert.deepEqual(await sys(v, c), { weight: 2, maxWeight: 2 }, 'c climbed')
   }
 })
+
+/**
+ * Append one op from `v` whose oplog node carries a hand-built approvals
+ * entry. autobee normally fills `approvals` itself, only for pending
+ * promotions (index.js _collectApprovals); here the list is forged.
+ */
+async function appendWithForgedApproval(v, key, weight, path) {
+  const collect = v.db._collectApprovals
+  v.db._collectApprovals = async () => [{ key, weight }]
+  try {
+    return await v.createConcept(path, 'note')
+  } finally {
+    v.db._collectApprovals = collect
+  }
+}
+
+test('a hand-built approval adds an autobee writer apply never granted; core holds its ops', async (t) => {
+  const a = await Bundle.init(await tmpDir('appr-a'))
+  const s = await Bundle.join(await tmpDir('appr-s'), a.key)
+  const unpair = pair(a, s)
+  t.after(async () => {
+    unpair()
+    await a.close()
+    await s.close()
+  })
+  const sHex = s.localKey.toString('hex')
+  const { tag: seed } = await a.createConcept('appr/seed', 'note')
+  assert.ok(await until(async () => (await s.update(), (await s.val(K.cMeta(seed))) !== undefined)))
+  assert.equal(s.writable, false)
+
+  // genesis (standing 2) appends a node whose approvals name s
+  await appendWithForgedApproval(a, s.localKey, 2, 'appr/carrier')
+  assert.ok(await until(async () => (await s.update(), s.writable)), 'the approval alone makes s writable')
+  for (const v of [a, s]) {
+    await v.update()
+    const rec = await v.db.system.get(s.localKey)
+    assert.equal(rec.isRemoved, false)
+    assert.equal(rec.maxWeight, 2, 'ceiling 2 from a weight-2 carrier')
+    assert.equal(await v.val(K.govWriter(sHex)), undefined, 'okf never admitted s')
+  }
+
+  // s's PLAIN ops reach okf apply (seen/ counts them) and are held, never
+  // folded into c/; s's governance op is rejected
+  const c0 = await s.createConcept('appr/from-s', 'note')
+  const g1 = await s.addWriter(a.localKey, { indexer: true })
+  const hash = await converged([a, s])
+  assert.ok(hash, 'peers converge')
+  for (const v of [a, s]) {
+    assert.equal(await v.val(K.seen(sHex)), 2, 'both plain ops reached apply')
+    assert.ok(await v.val(K.hold(sHex, c0.seq)), 'content op held under hold/')
+    assert.equal(await v.val(K.cMeta(c0.tag)), undefined, 'no c/ effect (I10)')
+    assert.deepEqual(await v.val(K.flagRejected(sHex, g1.seq)), { reason: 'policy-governance' })
+  }
+  // s's first plain append cited the approval as a witness, so its nodes
+  // sort at weight 2, level with genesis
+  assert.equal((await a.db.system.get(s.localKey)).weight, 2)
+})
+
+test('a hand-built approval from a member at weight 0 also adds the key, at ceiling 0', async (t) => {
+  const a = await Bundle.init(await tmpDir('appr0-a'))
+  const b = await Bundle.join(await tmpDir('appr0-b'), a.key)
+  const s = await Bundle.join(await tmpDir('appr0-s'), a.key)
+  const unpairAB = pair(a, b)
+  const unpairBS = pair(b, s)
+  t.after(async () => {
+    unpairAB()
+    unpairBS()
+    await a.close()
+    await b.close()
+    await s.close()
+  })
+  const sHex = s.localKey.toString('hex')
+  await a.writers.add(b.localKey, { indexer: false }) // a plain okf writer
+  assert.ok(await until(async () => (await b.update(), b.writable)))
+  assert.equal((await b.db.system.get(b.localKey)).weight, 0, 'b has not climbed')
+
+  await appendWithForgedApproval(b, s.localKey, 2, 'appr0/carrier')
+  assert.ok(await until(async () => (await s.update(), s.writable)), 'still makes s writable')
+  const rec = await b.db.system.get(s.localKey)
+  assert.equal(rec.maxWeight, 0, 'capped at the weight-0 carrier')
+  const c0 = await s.createConcept('appr0/from-s', 'note')
+  assert.ok(await converged([a, b, s]), 'peers converge')
+  for (const v of [a, b, s]) {
+    assert.equal(await v.val(K.seen(sHex)), 1, 'the plain op reached apply')
+    assert.ok(await v.val(K.hold(sHex, c0.seq)), 'held')
+    assert.equal(await v.val(K.cMeta(c0.tag)), undefined, 'no c/ effect (I10)')
+  }
+})

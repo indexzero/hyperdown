@@ -87,6 +87,22 @@ coincidence:
   human-authored double `.conflict-` suffix becomes permanent
   pending-ingest.
 
+### Substrate membership is not okf membership
+
+On autobee@2.12.1, any writer whose plain appends autobee accepts can make
+another key an autobee writer. It puts a hand-built `approvals` entry on
+one of its own nodes. apply never sees approvals, and autobee applies each
+one with no check that a promotion was pending (`index.js` `_applyBatch` →
+`lib/system.js` `addWriter`). The key becomes writable, and its plain ops
+reach apply.
+
+The view is unaffected, because apply decides membership from `gov/`, not
+from autobee state. The key's content ops are held exactly like an unacked
+writer's optimistic ops, and its governance ops are rejected
+`policy-governance`. What the key does gain is order: its nodes sort at
+the approval's weight, which is 2 if the approver stands at 2, level with
+members. Both cases are tested in `test/store-writers.test.js`.
+
 ### The generation chain is provenance, not proof
 
 Compaction is an operator act via the hydrated face, never an op (§10).
