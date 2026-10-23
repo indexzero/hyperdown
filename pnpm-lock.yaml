@@ -141,8 +141,8 @@ importers:
         specifier: ^1.8.1
         version: 1.8.1
       corestore:
-        specifier: ^7.11.0
-        version: 7.11.0(bare-url@2.4.5)
+        specifier: ^7.16.1
+        version: 7.16.1(bare-url@2.4.5)
       hyperswarm:
         specifier: ^4.17.0
         version: 4.17.0(bare-url@2.4.5)
@@ -369,6 +369,9 @@ packages:
   corestore@7.11.0:
     resolution: {integrity: sha512-zGlF6dBZ9bvyRliz6g+NW0tGRwGYmmc84o1TARbXOJ+fPRXeKTkVzVV95eWIJEU3+6WBUbcvIBQKmKiNmiTAdg==}
 
+  corestore@7.16.1:
+    resolution: {integrity: sha512-Zk2lirmXxNKxdKp7aqObnPxQKUzc+DmAfzff45EZDxSeW2k8UbXlEEPrg35Xme5OC6E/ZkZgSZaAe3Ki9NI44w==}
+
   device-file@2.3.1:
     resolution: {integrity: sha512-bmON44lwxJPle9N2OcH4tqM44pMGZKT8G6OkzXkz0urvqQ9LKkoQdTS6w0ztYfmLdUE27R4UUmx0+y2gEz4Jug==}
 
@@ -419,8 +422,14 @@ packages:
   hypercore-storage@3.1.2:
     resolution: {integrity: sha512-Iw6C0Nx9QIIyFLfALiDNBUpkWTB19gqrxiK3igfTpp0STqqbL4AO0ywrY9+Mv9ynt0PNs/hTnlTW6WRe76iOUw==}
 
+  hypercore-storage@3.4.0:
+    resolution: {integrity: sha512-qwqW0QSH2YQW0/7T8WdHSmQBPqz3IbGcbqysJnnYgPvIp17Qr0CFD7bRGC/b9vo4FPBiW4QV9vytmkfCYJRr9A==}
+
   hypercore@11.33.5:
     resolution: {integrity: sha512-K88HURg5MvLjPxW8y6AzHDaf5rcaC81Ujaz4z8ugsl5zwucpmWRDf4YKXrIKGLSWyVSysSKywYDUYoAfMKJkWg==}
+
+  hypercore@11.39.2:
+    resolution: {integrity: sha512-UJzX8zO3gev8unha8OzpEMdihvd2Jw+FRiSVHUrEyOY5DOa7fVRUX9HAwcybS7UWFokH8bgbuCUL6WSmSluSPQ==}
 
   hyperdht-address@1.1.1:
     resolution: {integrity: sha512-Mu/+7SW2cwvHxMXswa5mOrhrS5BJyntViAuB25k8d8wNtA8eAPs4LaIq6TwN1SS/KQY02h1r+gM8cQeN/k360w==}
@@ -525,6 +534,10 @@ packages:
 
   rocksdb-native@3.17.1:
     resolution: {integrity: sha512-33hbNSx57vbdM/kyP6dozy1eRLeiN69kTNcbPZ6AMkOjFtSY3G6O94TxKNgUIq53IQzFP6kClriKHeu4mu1q6w==}
+    engines: {bare: '>=1.16.0'}
+
+  rocksdb-native@3.19.1:
+    resolution: {integrity: sha512-/hKYXLxwbPPZZyVSPNtpBjLqok8u44NS3UweTJn4vnxPm5kvPwNYWE/BJP5RJxUY3v6WvKUl7SZSKXHAEryvcA==}
     engines: {bare: '>=1.16.0'}
 
   safe-buffer@5.2.1:
@@ -856,6 +869,25 @@ snapshots:
       - react-native-b4a
       - sodium-javascript
 
+  corestore@7.16.1(bare-url@2.4.5):
+    dependencies:
+      b4a: 1.8.1
+      bare-events: 2.9.1
+      hypercore: 11.39.2(bare-url@2.4.5)
+      hypercore-crypto: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
+      hypercore-errors: 1.5.0
+      hypercore-id-encoding: 1.3.0
+      ready-resource: 1.2.0
+      sodium-universal: 5.0.1(bare-events@2.9.1)(bare-url@2.4.5)
+      streamx: 2.28.0
+      which-runtime: 1.4.0
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - bare-url
+      - react-native-b4a
+      - sodium-javascript
+
   device-file@2.3.1(bare-url@2.4.5):
     dependencies:
       b4a: 1.8.1
@@ -996,6 +1028,29 @@ snapshots:
       - react-native-b4a
       - sodium-javascript
 
+  hypercore-storage@3.4.0(bare-events@2.9.1)(bare-url@2.4.5):
+    dependencies:
+      b4a: 1.8.1
+      bare-path: 3.0.1
+      compact-encoding: 3.3.0
+      device-file: 2.3.1(bare-url@2.4.5)
+      flat-tree: 1.13.0
+      hypercore-crypto: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
+      hyperschema: 1.21.0
+      index-encoder: 3.5.0
+      resolve-reject-promise: 1.1.0
+      rocksdb-native: 3.19.1(bare-url@2.4.5)
+      scope-lock: 1.2.4
+      streamx: 2.28.0
+      xache: 1.2.1
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - bare-events
+      - bare-url
+      - react-native-b4a
+      - sodium-javascript
+
   hypercore@11.33.5(bare-url@2.4.5):
     dependencies:
       '@hyperswarm/secret-stream': 6.9.1(bare-events@2.9.1)(bare-url@2.4.5)
@@ -1009,6 +1064,36 @@ snapshots:
       hypercore-errors: 1.5.0
       hypercore-id-encoding: 1.3.0
       hypercore-storage: 3.1.2(bare-events@2.9.1)(bare-url@2.4.5)
+      is-options: 1.0.2
+      nanoassert: 2.0.0
+      protomux: 3.11.0
+      quickbit-universal: 2.2.0(bare-url@2.4.5)
+      random-array-iterator: 1.0.0
+      safety-catch: 1.0.3
+      sodium-universal: 5.0.1(bare-events@2.9.1)(bare-url@2.4.5)
+      streamx: 2.28.0
+      unslab: 1.3.0
+      z32: 1.1.0
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - bare-url
+      - react-native-b4a
+      - sodium-javascript
+
+  hypercore@11.39.2(bare-url@2.4.5):
+    dependencies:
+      '@hyperswarm/secret-stream': 6.9.1(bare-events@2.9.1)(bare-url@2.4.5)
+      b4a: 1.8.1
+      bare-events: 2.9.1
+      big-sparse-array: 1.0.3
+      compact-encoding: 3.3.0
+      fast-fifo: 1.3.2
+      flat-tree: 1.13.0
+      hypercore-crypto: 3.7.0(bare-events@2.9.1)(bare-url@2.4.5)
+      hypercore-errors: 1.5.0
+      hypercore-id-encoding: 1.3.0
+      hypercore-storage: 3.4.0(bare-events@2.9.1)(bare-url@2.4.5)
       is-options: 1.0.2
       nanoassert: 2.0.0
       protomux: 3.11.0
@@ -1255,6 +1340,20 @@ snapshots:
   resource-on-exit@1.0.0: {}
 
   rocksdb-native@3.17.1(bare-url@2.4.5):
+    dependencies:
+      compact-encoding: 3.3.0
+      ready-resource: 1.2.0
+      refcounter: 1.0.0
+      require-addon: 1.2.0(bare-url@2.4.5)
+      resolve-reject-promise: 1.1.0
+      signal-promise: 1.0.3
+      streamx: 2.28.0
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-url
+      - react-native-b4a
+
+  rocksdb-native@3.19.1(bare-url@2.4.5):
     dependencies:
       compact-encoding: 3.3.0
       ready-resource: 1.2.0

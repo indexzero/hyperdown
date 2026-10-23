@@ -19,7 +19,7 @@
     "@auto-okf/core": "workspace:*",
     "autobee": "^1.0.10",
     "b4a": "^1.8.1",
-    "corestore": "^7.11.0",
+    "corestore": "^7.16.1",
     "hyperswarm": "^4.17.0"
   }
 }
