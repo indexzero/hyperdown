@@ -1,7 +1,10 @@
 // Store scope (okf SPEC §13, T4): encryptionKey end to end (§8) — writer
 // cores, system and view encrypted at rest; reopen-from-disk needs no key
-// (autobee@1.0.10 lib/boot.js persists it in the local core's userData);
-// an invited peer holding the key replicates and reads.
+// (autobee lib/boot.js persists it in the local core's userData as
+// `autobee/encryption`); an invited peer holding the key replicates and
+// reads. autobee@2 moved encryption into autobee itself (lib/encryption.js,
+// per-view keys); its view encryption needs manifest-v3 cores, which okf
+// gets only with corestore >= 7.12 honouring the per-core manifestVersion.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -16,6 +19,24 @@ test('encrypted vault: reopen from disk without the key, invited peer reads', as
   const { tag: id } = await a.createConcept('secret/plan', 'plan')
   await a.setBody(id, null, 'meet at dawn')
   const before = await a.snapshotHash()
+
+  // at rest: no stored block of the writer, system or view core holds the
+  // plaintext (get({ raw: true }) returns the stored bytes, undecrypted),
+  // while the decrypted writer core does
+  const plain = Buffer.from('meet at dawn')
+  const cores = { writer: a.db.local, system: a.db.system.bee.core, view: a.db.bee.core }
+  let decryptedHits = 0
+  for (let i = 0; i < a.db.local.length; i++) {
+    if ((await a.db.local.get(i)).includes(plain)) decryptedHits++
+  }
+  assert.equal(decryptedHits, 1, 'control: the decrypted writer core holds the body')
+  for (const [name, core] of Object.entries(cores)) {
+    for (let i = 0; i < core.length; i++) {
+      const raw = await core.get(i, { raw: true })
+      assert.ok(!raw.includes(plain), `${name} block ${i} is encrypted at rest`)
+    }
+  }
+  assert.equal(a.db.bee.core.manifest.version, 3, 'view core at manifest v3 (autobee@2 view encryption)')
   await a.close()
 
   // reopen WITHOUT passing the key: restored from the local core userData
