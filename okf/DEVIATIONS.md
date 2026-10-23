@@ -18,8 +18,18 @@ Core nevertheless derives position from the stream itself via the
 view-kept `seen/<writerKey>` count (incremented for every node regardless
 of disposition), because core is transport-agnostic and the §8 unforgeable-
 position rule (`seqAtRemoval`, forged-clock) must bind to the same ordinal
-apply uses for `flag/rejected`/`hold/` keys. Under autobee's per-writer
-FIFO delivery the seen-count equals the node seq.
+apply uses for `flag/rejected`/`hold/` keys. Under autobee@1.0.10's
+per-writer FIFO delivery the seen-count equalled the node seq.
+
+On autobee@2.12.1 the two can differ, and `seen/` is the one that counts.
+autobee@2 appends empty "ack" nodes to a writer's core (`index.js`
+`_appendAck`), and apply never sees an empty node (`index.js`
+`_applyBatch` passes only non-empty values), so `node.length` can run
+ahead of the seen-count. The store therefore seeds its next local seq
+from `seen/<self>` after an `update()`, never from `local.length`, and
+sets `ackThreshold: Infinity` so autobee appends no threshold acks. The
+one ack autobee appends after a reindex is still possible; the seed
+covers it.
 
 **okf §8 hold buffer stores full payloads: acked optimistic nodes are NOT
 re-delivered to apply.** §8 requires verifying re-delivery before choosing
