@@ -41,6 +41,11 @@ once at its linearized position (rolling back only when
 into apply. Therefore `hold/<writerKey>/<seq>` stores the full decoded
 payload (JSON-safe hydration) and the ack's `AddWriter` folds holds in seq
 order at its own linearized position, as specified for this branch.
+Re-checked on autobee@2.12.1: still no re-delivery. Each applied
+optimistic node advances the writer's recorded length
+(`lib/system.js` `ackWriter`, called from `index.js` `_applyBatch`), and
+a writer is read from its recorded length onward (`lib/writers.js`
+`Writer._next`), so a later grant never replays earlier nodes.
 
 **okf §8 uniform topo weight is 2, not the literal `weight: 1`.** §8
 mandates `host.addWriter(key, { isIndexer: op.indexer, weight: 1 })` to
@@ -60,19 +65,32 @@ overriding the `weight: 1` core passes. Side effect: autobee's cosmetic
 writers; §8 governance authority is decided from `gov/` by core, never
 from autobee state.
 
-**okf §8 optimistic nodes are acked at the DAG level inside the store's
-apply wrapper.** §8 places the ack at the linearization of the indexer's
-`AddWriter` (core calls `host.ackWriter` there), but autobee@1.0.10 rolls
-an unacked writer's optimistic batch back entirely unless the writer is in
-its system after apply (`index.js` `_optimisticBatch`: post-apply
-`system.get(key)` check, else view rollback + `removePending()`), which
-would discard the batch before any `AddWriter` could fold it. The store's
-`_apply` therefore calls `host.ackWriter(node.key)` for every
-optimistic-flagged node before folding (deterministic: the flag is
-oplog-encoded, so every peer makes the same call); core's `hold/` buffer
-remains the only VIEW-effect gate, so the §8 semantics (effects land at
-the in-log ack's linearized position) are unchanged. Same resolution as
-vault-ld §8.2 (harness-proven).
+**okf §8 optimistic nodes need no substrate ack on autobee@2; okf makes
+none.** SPEC §8 (v1.4) still describes the autobee@1.0.10 resolution: the
+store's `_apply` called `host.ackWriter(node.key)` for every
+optimistic-flagged node, and core called it again at the `AddWriter`,
+because 1.0.10 rolled an unacked writer's optimistic batch back unless the
+writer was in its system after apply (`index.js` `_optimisticBatch`).
+
+autobee@2.12.1 changed the rule, and okf no longer calls `ackWriter` at
+all:
+
+- every optimistic node reaches apply, whether its writer is unknown,
+  granted or removed (`lib/system.js` `canApply`);
+- once applied, autobee records the node itself and, unless apply granted
+  the writer, records the writer as removed (`index.js` `_applyBatch` →
+  `lib/system.js` `ackWriter`);
+- that writer's later optimistic nodes still reach apply; its plain
+  appends are refused with "Not writable" until an `AddWriter` grants it
+  (`index.js` `append`);
+- `host.ackWriter` is a no-op kept for old contracts
+  (`lib/apply-calls.js`).
+
+core's `hold/` buffer remains the only VIEW-effect gate, so the §8
+semantics (effects land at the in-log `AddWriter`'s linearized position)
+are unchanged. The onboarding test (`test/store-convergence.test.js`,
+"optimistic onboarding") passes unchanged. vault-ld stays on 1.0.10 and
+keeps its DAG-level ack.
 
 **okf core fix required by T4 (out of store scope, minimal):
 `opFromJson`/`opToJson` hold hydration corrupted held `SetField` ops.**

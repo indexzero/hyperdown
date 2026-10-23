@@ -140,7 +140,7 @@ test('I10: the applied/rejected partition is replay-stable', async () => {
   assert.deepEqual(rejectedReasons(v1), rejectedReasons(v2))
 })
 
-test('I10: optimistic holds fold on ack, in seq order, with host.ackWriter called', async () => {
+test('I10: optimistic holds fold on ack, in seq order; the AddWriter is the only ack', async () => {
   const env = new Env({ genesis: 'A' })
   // D is unadmitted: its content ops hold, never touching c/
   env.op('D', 'create-concept', { path: 'opt/doc', type: 'note' })
@@ -157,7 +157,10 @@ test('I10: optimistic holds fold on ack, in seq order, with host.ackWriter calle
   assert.equal(keysUnder(view, 'hold/').length, 0, 'holds consumed')
   assert.equal(view.dump(`c/${dId}/meta`)[`c/${dId}/meta`].type, 'note')
   assert.notEqual(view.dump(`c/${dId}/body`)[`c/${dId}/body`], undefined)
-  assert.ok(host.calls.some(([m, k]) => m === 'ackWriter' && k === env.hex('D')))
+  // the substrate grant is host.addWriter; no separate substrate ack
+  // (autobee@2 records optimistic nodes itself; its ackWriter is a no-op)
+  assert.ok(host.calls.some(([m, k]) => m === 'addWriter' && k === env.hex('D')))
+  assert.ok(!host.calls.some(([m]) => m === 'ackWriter'))
 })
 
 test('I10: a held op that fails at fold time writes flag/optimistic (permanent)', async () => {

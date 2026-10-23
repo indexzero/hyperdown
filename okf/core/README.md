@@ -46,7 +46,7 @@ const ops = [
 await apply(
   ops.map((value, seq) => ({ key: writer, value, length: seq + 1 })),
   view,
-  null // host: autobee's { addWriter, ackWriter } — null is fine off-substrate
+  null // host: autobee's { addWriter } — null is fine off-substrate
 )
 
 const meta = await view.get(K.cMeta(W + '0'))

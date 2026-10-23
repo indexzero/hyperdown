@@ -21,9 +21,10 @@
 // - `view` is what the `open` handler returned: we return a ViewAdapter, so
 //   core's apply sees the hyperbee2-flavored string-key surface it expects.
 // - host (lib/apply-calls.js): `addWriter(key, { isIndexer = true, weight =
-//   isIndexer ? 2 : 1 })` / `removeWriter(key)` / `ackWriter(key)` /
-//   `removeable(key)` / `interrupt(reason)` / `createAnchor()` / `genesis`
-//   — adapted below (HostAdapter) to pin the uniform topo weight.
+//   isIndexer ? 2 : 1 })` / `removeWriter(key)` / `ackWriter()` (a no-op
+//   in v2) / `removeable(key)` / `interrupt(reason)` /
+//   `createAnchor(key, length)` / `genesis` — adapted below (HostAdapter),
+//   which exposes only addWriter.
 // - instance: db.key, db.id, db.discoveryKey, db.local, db.view (read-only
 //   snapshot), db.writable, db.isIndexer, append(buf|[bufs],{optimistic}),
 //   update()/updated()/flush(), replicate(isInitiator|stream).
@@ -38,15 +39,15 @@
 //   local writer key (lib/boot.js), so metadata.genesisKey === db.key on
 //   every peer and core's §8 genesis indexer seeding agrees with autobee's.
 //
-// §8 optimistic onboarding, decided against autobee's optimistic reality
-// (recorded in DEVIATIONS.md): nodes flagged optimistic are acked at the
-// autobee DAG level (host.ackWriter) inside apply so the speculative batch
-// anchors durably in autobee's system on every peer (index.js
-// _optimisticBatch rolls the batch back unless the writer is in system
-// after apply — deterministic: same apply, same nodes, same ack), while
-// core's hold buffer (hold/ + flag/optimistic) remains the only VIEW-effect
-// gate: a held op takes effect only when an indexer-authored AddWriter
-// linearizes and core folds the hold range (§8).
+// §8 optimistic onboarding on autobee@2 (recorded in DEVIATIONS.md): every
+// optimistic node reaches apply, and autobee itself records it in its
+// system once applied, recording the writer as removed unless apply
+// granted it (index.js _applyBatch → lib/system.js ackWriter). There is
+// nothing for the store to ack: host.ackWriter is a no-op in v2
+// (lib/apply-calls.js) and nobody calls it. core's hold buffer (hold/ +
+// flag/optimistic) is the only VIEW-effect gate: a held op takes effect
+// only when an indexer-authored AddWriter linearizes and core folds the
+// hold range (§8).
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import Corestore from 'corestore'
@@ -301,13 +302,8 @@ export class Bundle extends EventEmitter {
     if (!this._coreApply) await this._applyBarrier
     if (!this._coreApply) throw vaultError('VAULT_NOT_OPEN', 'vault failed to open before apply')
 
-    for (const node of nodes) {
-      if (node.optimistic) {
-        // §8 port (see header + DEVIATIONS.md): DAG-level ack so the
-        // speculative batch persists; view effects stay held by core.
-        await host.ackWriter(node.key)
-      }
-      if (this._trackAcks) this._observeAck(node)
+    if (this._trackAcks) {
+      for (const node of nodes) this._observeAck(node)
     }
     // autobee nodes already have the { key, value, length } shape core's
     // apply documents — no wrapping.
@@ -756,9 +752,9 @@ export class Bundle extends EventEmitter {
 }
 
 /**
- * Adapts autobee's host (lib/apply-calls.js) to the calls @auto-okf/core's
- * apply makes — addWriter(key, { isIndexer, weight }) and ackWriter(key) —
- * only ever for governance ops that passed the §8 authority check.
+ * Adapts autobee's host (lib/apply-calls.js) to the one call @auto-okf/core's
+ * apply makes — addWriter(key, { isIndexer, weight }) — only ever for
+ * governance ops that passed the §8 authority check.
  * autobee's positional removeWriter is deliberately NOT exposed: §8
  * revocation is decided purely by core's in-log clock rule.
  */
@@ -784,10 +780,6 @@ class HostAdapter {
     // core, never from autobee state. (Core passes { isIndexer, weight: 1 };
     // both are overridden here, which is the entire point of this adapter.)
     return this.host.addWriter(key, { isIndexer: true, weight: 2 })
-  }
-
-  ackWriter(key) {
-    return this.host.ackWriter(key)
   }
 }
 

@@ -9,9 +9,11 @@
 // (lib/writers.js createNode); the view is hyperbee2-flavored (get /
 // write() batches with tryPut+tryDelete+flush / createReadStream — see
 // memview.js for the verified surface); host exposes addWriter(key,
-// { isIndexer, weight }), ackWriter(key), removeWriter(key)
-// (lib/apply-calls.js — note the default weight is `isIndexer ? 2 : 1`,
-// which is why §8 mandates the explicit `weight: 1`).
+// { isIndexer, weight }) and removeWriter(key) (lib/apply-calls.js — note
+// the default weight is `isIndexer ? 2 : 1`, which is why §8 mandates an
+// explicit weight). Core calls only addWriter. Re-checked for this
+// contract against autobee@2.12.1: the node shape and host.addWriter
+// signature are unchanged, and host.ackWriter is now a no-op.
 //
 // This module is PURE over (linearized prefix, config): no wall clock, no
 // randomness, no map-iteration-order dependence (every write goes through
@@ -509,9 +511,8 @@ class Applier {
     const indexerOps = (await this.val(K.rateIndexerOps())) ?? 0
     this.put(K.rate(target), { tokens: this.capacityFor(rec), seenIndexerOps: indexerOps, held: 0 })
     // §8: this AddWriter is the ack of the writer's held optimistic ops.
-    if (!existing && this.host && this.host.ackWriter) {
-      await this.host.ackWriter(keyBuf(op.key))
-    }
+    // The ack is this fold; the substrate needs no call (autobee@2 records
+    // every optimistic node itself, and its host.ackWriter is a no-op).
     await this.foldHeld(target, rec)
     return null
   }
