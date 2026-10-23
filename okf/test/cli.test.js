@@ -619,4 +619,11 @@ test('compact --from-face runs the second half from a face alone', async () => {
   const res2 = await cli(['compact', '--from-face', face, join(base, 'new2'), '--predecessor', prov])
   assert.equal(res2.code, 0, res2.stderr)
   assert.match(res2.stdout, new RegExp(`^predecessor key: {2}${oldKey}$`, 'm'))
+  assert.equal(JSON.parse(await readFile(join(base, 'new2', 'okf-vault.json'), 'utf8')).encrypted, false)
+
+  // --encryption-key: the fresh vault is private
+  const key = 'ab'.repeat(32)
+  const res3 = await cli(['compact', '--from-face', face, join(base, 'new3'), '--predecessor', prov, '--encryption-key', key])
+  assert.equal(res3.code, 0, res3.stderr)
+  assert.equal(JSON.parse(await readFile(join(base, 'new3', 'okf-vault.json'), 'utf8')).encrypted, true)
 })

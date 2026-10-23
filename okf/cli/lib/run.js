@@ -215,6 +215,7 @@ function buildCli() {
       flag('--force', 'compact despite open conflict/pathcollision flags'),
       flag('--face <dir>', 'hydrated face directory (default: <out-dir>.face)'),
       flag('--from-face', "start from <dir>, a face materialized for compaction: compact's second half"),
+      flag('--encryption-key <hex64>', 'encrypt the fresh vault with this key (64 hex chars)'),
       flag(
         '--predecessor <json>',
         'with --from-face: { predecessorKey, predecessorCheckpoint } (default: <dir>/.okf-predecessor.json)'
@@ -695,7 +696,8 @@ async function cmdCompact({ args, flags }) {
       initBundle: Bundle.init,
       toDir: faceDir,
       vaultDir: outDir,
-      force: flags.force === true
+      force: flags.force === true,
+      ...encryptionOpt(flags)
     })
     try {
       console.log(`compacted ${dir} -> ${outDir} (generation ${res.generation})`)
@@ -722,7 +724,7 @@ async function cmdCompact({ args, flags }) {
  */
 async function compactFromFaceDir(faceDir, outDir, flags) {
   if (flags.face) throw new UsageError('--face does not apply with --from-face (<dir> is the face)')
-  const opts = { initBundle: Bundle.init, vaultDir: outDir }
+  const opts = { initBundle: Bundle.init, vaultDir: outDir, ...encryptionOpt(flags) }
   if (flags.predecessor) {
     const prov = JSON.parse(await readFile(flags.predecessor, 'utf8'))
     if (prov.predecessorKey == null || prov.predecessorCheckpoint == null) {
@@ -740,6 +742,11 @@ async function compactFromFaceDir(faceDir, outDir, flags) {
   } finally {
     await res.vault.close()
   }
+}
+
+/** compact's fresh vault is encrypted only when asked: a key is never inherited. */
+function encryptionOpt(flags) {
+  return flags.encryptionKey ? { encryptionKey: hexKey(flags.encryptionKey, '--encryption-key') } : {}
 }
 
 async function cmdResolve({ args, flags }) {

@@ -73,8 +73,8 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
-| `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted |
-| `compact --from-face <face-dir> <out-dir> [--predecessor <json>]` | compact's second half alone: init a fresh vault at `<out-dir>` and ingest a face that was materialized for compaction, without opening the predecessor vault. The generation chain comes from the face's `.okf-predecessor.json` (written by `compact`'s first half) or from `--predecessor`, a JSON file with `predecessorKey` and `predecessorCheckpoint`. With neither it exits 1 (`COMPACT_NO_PREDECESSOR`). This is how a vault crosses the autobee@2 flag day (below) |
+| `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted. The fresh vault is encrypted only with `--encryption-key <hex64>`: compaction never carries a key over |
+| `compact --from-face <face-dir> <out-dir> [--predecessor <json>]` | compact's second half alone: init a fresh vault at `<out-dir>` and ingest a face that was materialized for compaction, without opening the predecessor vault. The generation chain comes from the face's `.okf-predecessor.json` (written by `compact`'s first half) or from `--predecessor`, a JSON file with `predecessorKey` and `predecessorCheckpoint`. With neither it exits 1 (`COMPACT_NO_PREDECESSOR`). `--encryption-key <hex64>` encrypts the fresh vault. This is how a vault crosses the autobee@2 flag day (below) |
 | `resolve <dir> <id> --keep <revHash> [--supersede <h>…] [--text <s>]` | resolve open body conflicts on `<id>`: pin the head to `--keep`, clearing the cited `flag/conflict` entries (§5). `--supersede` is repeatable |
 | `undelete <dir> <id>` | restore a tombstoned concept (writes the `flag/undelete` audit, §8) |
 
@@ -165,7 +165,10 @@ compaction, which moves live state through markdown:
    cannot anchor the generation chain.)
 2. Upgrade every peer.
 3. With this release:
-   `auto-okf compact --from-face <face> <out-dir> --predecessor <scratch>/okf-vault.json`.
+   `auto-okf compact --from-face <face> <out-dir> --predecessor <scratch>/okf-vault.json`,
+   adding `--encryption-key <hex64>` for a private vault. The face itself
+   is plaintext markdown, so treat `<face>` as you would the vault's
+   contents.
 4. Each peer joins the new generation from the invite.
 
 Every `_id`, field, tag, path and head body survives; history does not
