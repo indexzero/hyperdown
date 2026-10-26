@@ -22,4 +22,3 @@ export {
   loadMetadata,
   keyHex
 } from './lib/metadata.js'
-export { SUBSTRATE, SUBSTRATE_MARKER, detectSubstrate } from './lib/substrate.js'
