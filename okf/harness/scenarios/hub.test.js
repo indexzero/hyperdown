@@ -1,47 +1,113 @@
-// Validates the fault hub itself (no writer processes): bytes a socket
-// sends after its header but before its partner connects reach the partner.
-// A replication stream's initiator sends its first Noise handshake message
-// at once, so a hub that dropped those bytes left the link paired and dead:
-// no handshake, no replication, both ways.
+// Validates the fault hub itself (no writer processes). The first socket of
+// a link waits in `pending` until its partner connects. The hub must keep
+// every byte that socket sends while it waits, and deliver the bytes in
+// order: the bytes glued to its header, then the bytes it sent while it
+// waited, then the live stream. A replication stream's initiator sends its
+// first Noise handshake message at once, so a hub that dropped those bytes
+// left the link paired and dead: no handshake, no replication, both ways.
+//
+// No step depends on a fixed sleep. Each send waits until the hub has read
+// the bytes, each step waits until the hub has registered or paired the
+// socket, and each delivery check polls until a deadline. A stall of the
+// event loop at any point only makes a test slower.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
 import { FaultHub } from '../lib/hub.js'
 import { Rng } from '../lib/rng.js'
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const CLEAN = { name: 'clean', latencyMs: 0, jitterMs: 0, stallP: 0, stallMs: 0 }
+const DEADLINE_MS = 5000
 
-async function dial(port, link, side) {
-  const socket = net.connect(port, '127.0.0.1')
-  socket.setNoDelay(true)
-  await new Promise((resolve) => socket.once('connect', resolve))
-  socket.write(JSON.stringify({ link, side }) + '\n')
-  return socket
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const header = (link, side) => JSON.stringify({ link, side }) + '\n'
+
+// Poll until cond() is true. Return false at the deadline.
+async function until(cond) {
+  const deadline = Date.now() + DEADLINE_MS
+  while (!cond()) {
+    if (Date.now() > deadline) return false
+    await sleep(5)
+  }
+  return true
 }
 
-test('fault hub keeps the bytes a socket sends before its partner pairs', async () => {
+async function waitFor(cond, what) {
+  assert.ok(await until(cond), `timed out waiting for ${what}`)
+}
+
+// A hub, and the hub's end of each connection it accepts, so that a test
+// can wait until the hub has read what a client sent.
+async function openHub() {
   const hub = new FaultHub(new Rng(1), CLEAN)
   const port = await hub.listen()
-  const sockets = []
+  const accepted = []
+  hub.server.on('connection', (socket) => accepted.push(socket))
+  return { hub, port, accepted, sockets: [] }
+}
+
+async function closeHub(fx) {
+  for (const socket of fx.sockets) socket.destroy()
+  await fx.hub.close()
+}
+
+async function connect(fx) {
+  const socket = net.connect(fx.port, '127.0.0.1')
+  socket.setNoDelay(true)
+  socket.on('error', () => {})
+  fx.sockets.push(socket)
+  await new Promise((resolve) => socket.once('connect', resolve))
+  let hubEnd
+  await waitFor(
+    () => (hubEnd = fx.accepted.find((s) => s.remotePort === socket.localPort)),
+    'the hub to accept the connection'
+  )
+  const peer = { socket, hubEnd, sent: 0, got: '' }
+  socket.on('data', (d) => {
+    peer.got += d
+  })
+  return peer
+}
+
+// Write the bytes, then wait until the hub has read all of them. So no
+// later step can reach the hub before these bytes do.
+async function send(peer, bytes) {
+  peer.socket.write(bytes)
+  peer.sent += Buffer.byteLength(bytes)
+  await waitFor(() => peer.hubEnd.bytesRead >= peer.sent, `the hub to read ${JSON.stringify(bytes)}`)
+}
+
+// The first side of link L registers with 'A' glued to its header, then
+// sends 'B' and 'C' while it waits. The second side arrives with 'x' glued
+// to its header. After the link pairs, the first side sends 'D' and the
+// second side sends 'y'.
+async function pairLate(firstSide) {
+  const fx = await openHub()
   try {
-    const a = await dial(port, 'L', 0)
-    sockets.push(a)
-    await sleep(50) // the header is parsed and a is pending
-    a.write('first')
-    await sleep(50)
-    const b = await dial(port, 'L', 1)
-    sockets.push(b)
-    let got = ''
-    b.on('data', (d) => {
-      got += d
-    })
-    await sleep(50)
-    a.write('|second')
-    await sleep(100)
-    assert.equal(got, 'first|second')
+    const first = await connect(fx)
+    await send(first, header('L', firstSide) + 'A')
+    await waitFor(() => fx.hub.pending.get('L')?.side === firstSide, 'the first side to register')
+    await send(first, 'B')
+    await send(first, 'C')
+
+    const second = await connect(fx)
+    await send(second, header('L', 1 - firstSide) + 'x')
+    await waitFor(() => fx.hub.links.has('L'), 'the link to pair')
+    await send(first, 'D')
+    await send(second, 'y')
+
+    await until(() => second.got === 'ABCD' && first.got === 'xy')
+    assert.equal(second.got, 'ABCD', 'what the second side got from the first')
+    assert.equal(first.got, 'xy', 'what the first side got from the second')
   } finally {
-    for (const s of sockets) s.destroy()
-    await hub.close()
+    await closeHub(fx)
   }
+}
+
+test('side 0 first: the hub keeps the bytes it sends before its partner pairs', async () => {
+  await pairLate(0)
+})
+
+test('side 1 first: the hub keeps the bytes it sends before its partner pairs', async () => {
+  await pairLate(1)
 })
