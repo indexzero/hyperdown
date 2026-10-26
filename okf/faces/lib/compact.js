@@ -57,7 +57,7 @@ import { keyspace as K } from '@auto-okf/core'
 import { materialize } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
 import { parseNote, renderNote } from './yaml.js'
-import { loadManifest, isReservedDotFile, isReservedFile } from './fsatomic.js'
+import { containedRealPath, loadManifest, isReservedDotFile, isReservedFile } from './fsatomic.js'
 import { compareTrees } from './verify.js'
 
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}\.md$/
@@ -171,7 +171,10 @@ export async function compact(vault, opts = {}) {
       warnings.push({ kind: 'reserved', path: rel, message: 'a reserved .okf- dot-file name; not staged' })
       continue
     }
-    const raw = await readFile(join(toDir, rel), 'utf8')
+    // The manifest is peer-local state in the face. A path that it lists and
+    // that leads out of the face, by '..' or by a symlink, throws
+    // UNSAFE_PATH, so the stage never reads or writes outside its two roots.
+    const raw = await readFile(await containedRealPath(report.root, rel), 'utf8')
     const { fm, body, warnings: parseWarnings } = parseNote(raw)
     for (const message of parseWarnings) warnings.push({ kind: 'parse', path: rel, message })
     if (!fm) {

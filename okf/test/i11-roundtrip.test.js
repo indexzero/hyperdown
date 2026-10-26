@@ -11,7 +11,7 @@ import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import assert from 'node:assert/strict'
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
@@ -607,6 +607,40 @@ test('T14: the compaction import ingests a dot-segment path, and the ordinary in
 
   await plain.close()
   await nu.close()
+})
+
+test('T14: the stage refuses a manifest path that leads out of the face, and writes nothing outside the stage', async () => {
+  // The emission manifest is peer-local state in the face, so the stage
+  // checks each path that it lists: lexical containment, then the real path,
+  // so a symlink cannot lead out either. A walk of the directory never left it.
+  const old = await Bundle.init(await tmpDir('fid-esc-vault'))
+  await old.createConcept('notes/a', 'note')
+  const outside = '---\n_id: 0123abcd\n_rev: ' + '1'.repeat(64) + '\ntype: note\n---\n\noutside the face\n'
+  const manifest = (rel) => JSON.stringify({ files: { [rel]: '0'.repeat(64) } }) + '\n'
+
+  // A listed path with a '..' segment.
+  const up = await tmpDir('fid-esc-up')
+  await writeTree(up, new Map([['outside.md', outside], ['face/.okf-manifest.json', manifest('../outside.md')]]))
+  await assert.rejects(
+    () => compact(old, { toDir: join(up, 'face'), vaultDir: join(up, 'out'), initBundle: Bundle.init }),
+    (err) => err.code === 'UNSAFE_PATH'
+  )
+  assert.equal(await readFile(join(up, 'outside.md'), 'utf8'), outside, 'the stage wrote outside the stage')
+  assert.deepEqual(await entries(up), ['face', 'out.compact-src', 'outside.md'])
+
+  // A listed path that is a symlink to a file outside the face. The link
+  // makes the face dirty, so only --force reaches the stage.
+  const link = await tmpDir('fid-esc-link')
+  await writeTree(link, new Map([['outside.md', outside], ['face/.okf-manifest.json', manifest('notes/a.md')]]))
+  await mkdir(join(link, 'face', 'notes'))
+  await symlink(join(link, 'outside.md'), join(link, 'face', 'notes', 'a.md'))
+  await assert.rejects(
+    () => compact(old, { toDir: join(link, 'face'), vaultDir: join(link, 'out'), initBundle: Bundle.init, force: true }),
+    (err) => err.code === 'UNSAFE_PATH'
+  )
+  assert.deepEqual(await listFiles(join(link, 'out.compact-src')), [], 'the stage copied a file from outside the face')
+  assert.deepEqual(await entries(link), ['face', 'out.compact-src', 'outside.md'])
+  await old.close()
 })
 
 test('T13: an oversize note fails compaction with COMPACT_FIDELITY, and the oversize warning surfaces (G26)', async () => {

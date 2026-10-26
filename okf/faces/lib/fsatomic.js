@@ -79,6 +79,17 @@ export function containedPath(realRoot, rel) {
   return abs
 }
 
+/**
+ * Containment of an existing file: lexical, then its real path, so a symlink
+ * cannot lead out of the root. Returns the absolute path. Throws UNSAFE_PATH.
+ */
+export async function containedRealPath(realRoot, rel) {
+  const abs = containedPath(realRoot, rel)
+  const real = await realpath(abs)
+  if (real !== realRoot && !real.startsWith(realRoot + sep)) throw containedError(rel)
+  return abs
+}
+
 /** sha256 of a file, or null when it does not exist. */
 export async function hashFile(abs) {
   try {
