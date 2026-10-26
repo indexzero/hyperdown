@@ -207,8 +207,23 @@ export class FaultHub {
     timer = setTimeout(() => reject(`no header line within ${this.headerTimeoutMs}ms`), this.headerTimeoutMs)
   }
 
+  // The newest registration of a link id wins. If the link is paired, the
+  // hub destroys the old pair first, so no byte of it passes a later cut().
+  // Two sockets that claim one side never pair: the hub destroys the older
+  // one, and the newer one waits. A client dials again because it takes
+  // its old socket to be dead. The hub can see that close late, or never
+  // for a half-dead socket. If the older socket won, it could block the
+  // link until then.
   _register(link, side, socket, rest) {
-    const other = this.pending.get(link)
+    if (this.links.has(link)) this.cut(link, 're-register')
+    let other = this.pending.get(link)
+    if (other && other.side === side) {
+      this.pending.delete(link)
+      other.detach()
+      this.log(`link ${link} side ${side} registered again: the older socket is destroyed`)
+      other.socket.destroy()
+      other = null
+    }
     if (!other) {
       this._wait(link, side, socket, rest)
       return

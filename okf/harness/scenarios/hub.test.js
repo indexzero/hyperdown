@@ -252,3 +252,52 @@ test('hub.close() returns while a connection has not sent its header line', asyn
     await closing
   }
 })
+
+// G45. A link id that registers again while it is paired destroys its old
+// pair first. So after cut(), no byte from the first pair reaches the
+// other side. This is the probe scratch-E/hub-rereg.mjs as a test.
+test('re-registration: a link id that registers again destroys its old pair first', async () => {
+  const fx = await openHub()
+  try {
+    const [a1, b1] = await pair(fx, 'L')
+    await pair(fx, 'L')
+    assert.equal(fx.hub.cut('L', 'partition'), true)
+    a1.socket.write('leak-through-partition')
+    await until(() => b1.got !== '' || (a1.hubEnd.destroyed && b1.hubEnd.destroyed))
+    assert.equal(b1.got, '', 'a byte from the first pair passed the cut')
+    assert.equal(a1.hubEnd.destroyed, true, 'side 0 of the first pair is still open')
+    assert.equal(b1.hubEnd.destroyed, true, 'side 1 of the first pair is still open')
+    const destroyed = fx.logs.indexOf('L#1 0->1 destroyed (re-register)')
+    assert.ok(destroyed !== -1, 'the hub did not log the end of the first pair')
+    assert.ok(destroyed < fx.logs.indexOf('link L#2 paired (profile clean)'), 'the first pair ended after the second paired')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// G45. Two sockets that claim the same side of one link never pair. The
+// newer socket wins: the hub destroys the older one, and the newer one
+// waits for the other side.
+test('same side: two sockets that claim one side never pair, and the newer one wins', async () => {
+  const fx = await openHub()
+  try {
+    const older = await connect(fx)
+    await send(older, header('L', 0))
+    await waitFor(() => fx.hub.pending.get('L')?.socket === older.hubEnd, 'the older side 0 to register')
+    const newer = await connect(fx)
+    await send(newer, header('L', 0))
+    await until(() => fx.hub.links.has('L') || fx.hub.pending.get('L')?.socket === newer.hubEnd)
+    assert.equal(fx.hub.links.has('L'), false, 'two sockets for side 0 paired')
+    assert.equal(fx.hub.pending.get('L')?.socket, newer.hubEnd, 'the newer side 0 does not wait')
+    await waitFor(() => older.hubEnd.destroyed, 'the hub to destroy the older side 0')
+
+    const one = await connect(fx)
+    await send(one, header('L', 1))
+    await waitFor(() => fx.hub.links.has('L'), 'the newer side 0 and side 1 to pair')
+    await send(newer, 'ping')
+    await send(one, 'pong')
+    await waitFor(() => one.got === 'ping' && newer.got === 'pong', 'the link to deliver both ways')
+  } finally {
+    await closeHub(fx)
+  }
+})
