@@ -77,11 +77,13 @@ quality (the partition schedule is the scenario's, not the link's).
   `dump`, `link`/`unlink` (pause/resume replication), `materialize`/`ingest`/
   `wanted`/`compact` (faces + generation cycle). Crash = SIGKILL; restart =
   respawn on the same dir.
-- **`lib/hub.js`** — the fault proxy (verbatim from vault-ld). Every
+- **`lib/hub.js`** — the fault proxy, forked from vault-ld. Every
   replication byte between two processes passes through a per-direction pipe
   supporting seeded latency, jitter, byte-stalls, kill-mid-frame, and hard
   partition; all fault decisions come from a per-direction child of the run
-  RNG and are logged.
+  RNG and are logged. Unlike the vault-ld copy, a socket that waits for its
+  partner buffers the bytes it sends and delivers them in order once the
+  link pairs, and leaves the pending set if it ends or closes first.
 - **`lib/controller.js`** — spawns writers, owns the hub, provides barriers,
   `partition`/`connectAll`/`disconnect`, the **convergence oracle**
   (`quiesce`: equal hashes on two consecutive rounds with a forced update
