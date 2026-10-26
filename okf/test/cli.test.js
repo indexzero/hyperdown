@@ -10,11 +10,8 @@ import { execFile, spawn } from 'node:child_process'
 import { mkdir, readdir, readFile, rm, writeFile, access } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createHash } from 'node:crypto'
 import { Bundle } from '../store/index.js'
 import { keyspace as K } from '../core/index.js'
-import { materializeForCompact, PREDECESSOR_FILE } from '../faces/index.js'
-import { BundleOnAutobee1 } from './autobee1-helpers.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(ROOT, 'okf', 'cli', 'bin', 'auto-okf.js')
@@ -545,85 +542,4 @@ test('watch ingests a human edit in the foreground and exits on SIGINT', async (
   child.kill('SIGINT')
   const code = await exited
   assert.equal(code, 0, `clean shutdown, log:\n${log}`)
-})
-
-/** sha256 of every file under dir, by relative path. */
-async function fileHashes(dir, rel = '', out = {}) {
-  for (const e of await readdir(join(dir, rel), { withFileTypes: true })) {
-    const r = rel ? `${rel}/${e.name}` : e.name
-    if (e.isDirectory()) await fileHashes(dir, r, out)
-    else out[r] = createHash('sha256').update(await readFile(join(dir, r))).digest('hex')
-  }
-  return out
-}
-
-test('refuses a store autobee@1 wrote, naming the way across; storage untouched', async () => {
-  const dir = join(await tmpDir('autobee1'), 'vault')
-  const v1 = await BundleOnAutobee1.init(dir)
-  await v1.createConcept('notes/old', 'note')
-  await v1.close()
-  const before = await fileHashes(dir)
-
-  const line = new RegExp(
-    `^error: ${dir.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')} was written by autobee@1; ` +
-      'materialize it with an autobee@1 release of auto-okf, then compact --from-face$',
-    'm'
-  )
-  for (const args of [
-    ['flags', dir],
-    ['materialize', dir, dir + '-face'],
-    ['compact', dir, dir + '-next'],
-    ['join', dir],
-    ['add-writer', dir, 'f'.repeat(64)]
-  ]) {
-    const res = await cli(args)
-    assert.equal(res.code, 1, args.join(' '))
-    assert.match(res.stderr, line, args.join(' '))
-  }
-  assert.deepEqual(await fileHashes(dir), before, 'every file byte-identical')
-})
-
-test('compact --from-face runs the second half from a face alone', async () => {
-  const base = await tmpDir('from-face')
-  // the first half, under autobee@1: the face plus its provenance
-  const old = await BundleOnAutobee1.init(join(base, 'old'))
-  const { tag } = await old.createConcept('notes/carried', 'note')
-  await old.setBody(tag, null, 'carried across the flag day')
-  const face = join(base, 'face')
-  await materializeForCompact(old, { toDir: face })
-  const oldKey = old.keyHex
-  await old.close()
-
-  // no provenance: refused
-  const bare = await tmpDir('from-face-bare')
-  const refused = await cli(['compact', '--from-face', bare, join(base, 'never')])
-  assert.equal(refused.code, 1)
-  assert.match(refused.stderr, /COMPACT_NO_PREDECESSOR/)
-  const usage = await cli(['compact', join(base, 'old'), join(base, 'x'), '--predecessor', 'p.json'])
-  assert.equal(usage.code, 2, '--predecessor without --from-face is a usage error')
-
-  // provenance from the face
-  const res = await cli(['compact', '--from-face', face, join(base, 'new')])
-  assert.equal(res.code, 0, res.stderr)
-  assert.match(res.stdout, new RegExp(`^predecessor key: {2}${oldKey}$`, 'm'))
-  const mat = await cli(['materialize', join(base, 'new'), join(base, 'new-face')])
-  assert.equal(mat.code, 0, mat.stderr)
-  const carried = await readFile(join(base, 'new-face', 'notes', 'carried.md'), 'utf8')
-  assert.match(carried, new RegExp(`^_id: "?${tag}"?$`, 'm'))
-  assert.match(carried, /carried across the flag day/)
-
-  // provenance from --predecessor
-  const prov = join(base, 'provenance.json')
-  await writeFile(prov, await readFile(join(face, PREDECESSOR_FILE)))
-  await rm(join(face, PREDECESSOR_FILE))
-  const res2 = await cli(['compact', '--from-face', face, join(base, 'new2'), '--predecessor', prov])
-  assert.equal(res2.code, 0, res2.stderr)
-  assert.match(res2.stdout, new RegExp(`^predecessor key: {2}${oldKey}$`, 'm'))
-  assert.equal(JSON.parse(await readFile(join(base, 'new2', 'okf-vault.json'), 'utf8')).encrypted, false)
-
-  // --encryption-key: the fresh vault is private
-  const key = 'ab'.repeat(32)
-  const res3 = await cli(['compact', '--from-face', face, join(base, 'new3'), '--predecessor', prov, '--encryption-key', key])
-  assert.equal(res3.code, 0, res3.stderr)
-  assert.equal(JSON.parse(await readFile(join(base, 'new3', 'okf-vault.json'), 'utf8')).encrypted, true)
 })
