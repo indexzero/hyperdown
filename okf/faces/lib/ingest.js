@@ -39,6 +39,7 @@ import {
   saveManifest,
   sha256,
   isIgnoredPath,
+  isReservedDotFile,
   isReservedFile,
   statOrNull,
   walkNotes,
@@ -223,10 +224,17 @@ export class IngestWatcher extends EventEmitter {
    * Ingest one concept file (bundle-relative path). Returns the op
    * descriptors emitted (possibly empty). Serialized against materialize by
    * the per-path lock.
+   *
+   * `opts.compaction` is compaction's explicit import of its stage (§10).
+   * The stage holds only the notes that materialize emitted, so a dot
+   * segment there is part of a concept path (core accepts `.drafts/idea`).
+   * The import refuses only a reserved `.okf-*` name. Without the option,
+   * every dot path is ignored, as the watcher and scan() always do.
    */
-  async ingestFile(rel) {
+  async ingestFile(rel, { compaction = false } = {}) {
     rel = nfc(rel.split(sep).join('/'))
-    if (isIgnoredPath(rel) || !rel.endsWith('.md')) return []
+    const ignored = compaction ? isReservedDotFile(rel) : isIgnoredPath(rel)
+    if (ignored || !rel.endsWith('.md')) return []
     if (isReservedFile(rel)) {
       // §9: index.md/log.md are reserved regenerated faces — edits ignored.
       this.emit('skip', { path: rel, reason: 'reserved' })

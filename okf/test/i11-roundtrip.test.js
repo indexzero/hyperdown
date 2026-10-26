@@ -15,7 +15,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
-import { materialize, compact, readView, readLog } from '../faces/index.js'
+import { materialize, compact, createIngestWatcher, readView, readLog } from '../faces/index.js'
 import { compareTrees } from '../faces/lib/verify.js'
 import { keyspace as K } from '../core/index.js'
 
@@ -540,6 +540,42 @@ test('T13: a concept at a dot-segment path fails compaction with COMPACT_FIDELIT
   assert.ok(found.includes('missing .drafts/idea.md'), found.join(', '))
   assert.ok(found.includes('missing notes/.hidden.md'), found.join(', '))
   await old.close()
+})
+
+test('T14: the compaction import ingests a dot-segment path, and the ordinary ingest still ignores it (G24)', async () => {
+  const files = new Map([
+    ['.drafts/idea.md', '---\ntype: note\n---\n\ndot dir body\n'],
+    ['notes/.hidden.md', '---\ntype: note\n---\n'],
+    ['notes/visible.md', '---\ntype: note\n---\n'],
+    ['notes/.okf-state.md', '---\ntype: note\n---\n'] // a reserved .okf- dot-file name
+  ])
+  const livePaths = async (v) => [...(await liveConcepts(v)).values()].map((c) => c.path).sort()
+
+  // The ordinary watcher: ingestFile and scan() ignore every dot path (§9).
+  const plainDir = await tmpDir('imp-plain')
+  await writeTree(plainDir, files)
+  const plain = await Bundle.init(await tmpDir('imp-plain-vault'))
+  const watcher = await createIngestWatcher(plain, plainDir, { watch: false })
+  assert.deepEqual(await watcher.ingestFile('.drafts/idea.md'), [])
+  assert.deepEqual(await watcher.ingestFile('notes/.hidden.md'), [])
+  await watcher.scan()
+  await watcher.close()
+  assert.deepEqual(await livePaths(plain), ['notes/visible'])
+
+  // The compaction import: a dot-segment path is a concept path. A reserved
+  // .okf- name stays out.
+  const stageDir = await tmpDir('imp-stage')
+  await writeTree(stageDir, files)
+  const nu = await Bundle.init(await tmpDir('imp-stage-vault'))
+  const imp = await createIngestWatcher(nu, stageDir, { watch: false })
+  for (const rel of files.keys()) await imp.ingestFile(rel, { compaction: true })
+  await imp.close()
+  assert.deepEqual(await livePaths(nu), ['.drafts/idea', 'notes/.hidden', 'notes/visible'])
+  const idea = [...(await liveConcepts(nu)).values()].find((c) => c.path === '.drafts/idea')
+  assert.equal(idea.headText, 'dot dir body')
+
+  await plain.close()
+  await nu.close()
 })
 
 test('T13: an oversize note fails compaction with COMPACT_FIDELITY, and the oversize warning surfaces (G26)', async () => {

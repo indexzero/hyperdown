@@ -194,6 +194,15 @@ export function isIgnoredPath(rel) {
   return segs.some((s) => s.startsWith('.')) || rel.endsWith('.tmp')
 }
 
+/**
+ * True when the terminal component is a dot-file name that the faces reserve
+ * for their own state: `.okf-*`, such as MANIFEST_FILE. Compaction stages and
+ * imports dot-segment concept paths, and excludes these names (§10).
+ */
+export function isReservedDotFile(rel) {
+  return String(rel).split(/[\\/]/).pop().startsWith('.okf-')
+}
+
 /** True when the terminal component is a reserved OKF face (index.md/log.md). */
 export function isReservedFile(rel) {
   const name = String(rel).split('/').pop().toLowerCase()
