@@ -9,11 +9,12 @@
 // (or /tmp) is removed by the test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, readdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
 import { materialize, compact, readView, readLog } from '../faces/index.js'
+import { compareTrees } from '../faces/lib/verify.js'
 import { keyspace as K } from '../core/index.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -432,4 +433,49 @@ test('I11: the face that compact writes holds only what materialize writes (§10
 
   await old.close()
   await res.vault.close()
+})
+
+// ---------- T13: compaction checks its own output ----------
+
+/** Write `files` (Map<rel, string>) under `root`, creating directories. */
+async function writeTree(root, files) {
+  for (const [rel, text] of files) {
+    await mkdir(dirname(join(root, rel)), { recursive: true })
+    await writeFile(join(root, rel), text)
+  }
+}
+
+test('T13: compareTrees reports every difference by path, without _rev lines and log.md (§14)', async () => {
+  const note = (rev, body) => `---\n_id: 0123abcd\n_rev: ${rev}\ntype: note\n---\n\n${body}\n`
+  const face = await tmpDir('cmp-face')
+  const nu = await tmpDir('cmp-new')
+  await writeTree(
+    face,
+    new Map([
+      ['a.md', note('1'.repeat(64), 'same body')], // equal modulo _rev
+      ['log.md', '# Update Log\n\nold history\n'], // excluded (§14)
+      ['.drafts/idea.md', note('2'.repeat(64), 'dot path')], // only in the face
+      ['index.md', '# Contents\n\n* [a](a.md)\n'], // differs
+      ['body.md', '---\ntype: note\n---\n\n_rev: one\n'], // a body line is never stripped
+      ['.okf-manifest.json', '{"files":{}}\n'] // not a bundle note
+    ])
+  )
+  await writeTree(
+    nu,
+    new Map([
+      ['a.md', note('3'.repeat(64), 'same body')],
+      ['log.md', '# Update Log\n'],
+      ['index.md', '# Contents\n'],
+      ['body.md', '---\ntype: note\n---\n\n_rev: two\n'],
+      ['extra.md', note('4'.repeat(64), 'only in the new tree')], // only in the new tree
+      ['.okf-manifest.json', '{"files":{"a.md":"x"}}\n']
+    ])
+  )
+  assert.deepEqual(await compareTrees(face, nu), [
+    { path: '.drafts/idea.md', kind: 'missing' },
+    { path: 'body.md', kind: 'differs' },
+    { path: 'extra.md', kind: 'extra' },
+    { path: 'index.md', kind: 'differs' }
+  ])
+  assert.deepEqual(await compareTrees(face, face), [], 'a tree must equal itself')
 })
