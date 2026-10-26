@@ -111,3 +111,28 @@ test('side 0 first: the hub keeps the bytes it sends before its partner pairs', 
 test('side 1 first: the hub keeps the bytes it sends before its partner pairs', async () => {
   await pairLate(1)
 })
+
+// A pending socket that sends bytes and then a FIN must leave `pending`
+// and close. Otherwise the hub keeps it, and the next socket for the link
+// pairs with a dead socket.
+test('a FIN before pairing: the pending socket leaves pending and closes', async () => {
+  const fx = await openHub()
+  try {
+    const first = await connect(fx)
+    await send(first, header('L', 0))
+    await waitFor(() => fx.hub.pending.get('L')?.side === 0, 'side 0 to register')
+    await send(first, 'handshake')
+    first.socket.end()
+
+    await until(() => !fx.hub.pending.has('L') && first.hubEnd.destroyed)
+    assert.equal(fx.hub.pending.has('L'), false, 'the ended socket is still pending')
+    assert.equal(first.hubEnd.destroyed, true, 'the hub did not close its end')
+
+    const second = await connect(fx)
+    await send(second, header('L', 1))
+    await waitFor(() => fx.hub.pending.get('L')?.side === 1, 'side 1 to register')
+    assert.equal(fx.hub.links.has('L'), false, 'side 1 paired with the ended socket')
+  } finally {
+    await closeHub(fx)
+  }
+})

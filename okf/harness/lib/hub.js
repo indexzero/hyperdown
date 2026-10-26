@@ -119,7 +119,7 @@ export class FaultHub {
     this.rng = rng
     this.defaultProfile = defaultProfile
     this.log = log
-    this.pending = new Map() // linkId -> { side, socket }
+    this.pending = new Map() // linkId -> { side, socket, chunks, detach }
     this.links = new Map() // linkId -> { a2b, b2a, sockets, epoch }
     this.profiles = new Map() // linkId -> profile override
     this.epochs = new Map() // linkId -> connection epoch counter
@@ -149,11 +149,6 @@ export class FaultHub {
       socket.off('data', onData)
       const header = JSON.parse(buf.subarray(0, nl).toString())
       const rest = buf.subarray(nl + 1)
-      // Paused until paired (_register resumes both): a socket resumed with
-      // no 'data' listener discards what it reads, and a replication
-      // initiator sends its first handshake message at once, so a link
-      // whose initiator arrived first could pair dead.
-      socket.pause()
       this._register(header, socket, rest)
     }
     socket.on('data', onData)
@@ -163,17 +158,15 @@ export class FaultHub {
   _register({ link, side }, socket, rest) {
     const other = this.pending.get(link)
     if (!other) {
-      this.pending.set(link, { side, socket, rest })
-      socket.once('close', () => {
-        if (this.pending.get(link)?.socket === socket) this.pending.delete(link)
-      })
+      this._wait(link, side, socket, rest)
       return
     }
     this.pending.delete(link)
-    const [s0, r0, s1, r1] =
+    other.detach()
+    const [s0, q0, s1, q1] =
       side === 1
-        ? [other.socket, other.rest, socket, rest]
-        : [socket, rest, other.socket, other.rest]
+        ? [other.socket, other.chunks, socket, [rest]]
+        : [socket, [rest], other.socket, other.chunks]
     const epoch = (this.epochs.get(link) || 0) + 1
     this.epochs.set(link, epoch)
     const profile = this.profiles.get(link) || this.defaultProfile
@@ -184,12 +177,37 @@ export class FaultHub {
     const entry = { a2b, b2a, sockets: [s0, s1], epoch }
     this.links.set(link, entry)
     this.log(`link ${link}#${epoch} paired (profile ${profile.name})`)
-    // bytes that arrived glued to the header are real replication bytes
-    if (r0 && r0.length) a2b._enqueue(r0)
-    if (r1 && r1.length) b2a._enqueue(r1)
-    // then whatever each socket buffered while it waited, in order
-    s0.resume()
-    s1.resume()
+    // The bytes glued to each header are real replication bytes. They go
+    // first, then the bytes the pending socket buffered while it waited, in
+    // order. Later bytes reach the 'data' listener of each FaultDirection.
+    for (const chunk of q0) if (chunk.length) a2b._enqueue(chunk)
+    for (const chunk of q1) if (chunk.length) b2a._enqueue(chunk)
+  }
+
+  // An unpaired socket waits in `pending`, and a 'data' listener buffers
+  // what it reads until its partner arrives. The listener keeps the bytes:
+  // a flowing socket with no listener drops them, and a replication
+  // initiator sends its first handshake message at once, so the link would
+  // pair dead. The listener also keeps the socket flowing: a paused socket
+  // defers 'end', so after a FIN it would never close and would stay
+  // pending, and the next socket for the link would pair with it.
+  _wait(link, side, socket, rest) {
+    const entry = { side, socket, chunks: [rest], detach: null }
+    const onData = (chunk) => entry.chunks.push(chunk)
+    const onGone = () => {
+      entry.detach()
+      entry.chunks = []
+      if (this.pending.get(link) === entry) this.pending.delete(link)
+    }
+    entry.detach = () => {
+      socket.off('data', onData)
+      socket.off('end', onGone)
+      socket.off('close', onGone)
+    }
+    socket.on('data', onData)
+    socket.once('end', onGone)
+    socket.once('close', onGone)
+    this.pending.set(link, entry)
   }
 
   /** Hard partition: sever both directions of a link. */
