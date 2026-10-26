@@ -188,3 +188,67 @@ test('bad headers: each destroys only its own socket, and the hub and its other 
     await closeHub(fx)
   }
 })
+
+// G47. A connection that sends no header line within the header deadline
+// is destroyed, and the hub logs it. That covers a silent client and a
+// client that stops in the middle of its header.
+test('header deadline: a client that sends no header line in time is destroyed and logged', async () => {
+  const fx = await openHub({ headerTimeoutMs: 100 })
+  try {
+    const silent = await connect(fx)
+    const partial = await connect(fx)
+    await send(partial, '{"link":"L",')
+    await waitFor(() => silent.hubEnd.destroyed && partial.hubEnd.destroyed, 'the hub to destroy both clients')
+    const late = rejections(fx).filter((line) => line.endsWith(': no header line within 100ms'))
+    assert.equal(late.length, 2, 'the hub did not log both clients')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// G47. A header line longer than the header limit is destroyed at once,
+// with or without its newline, so an endless header cannot grow the
+// hub's buffer. A header line of exactly the limit registers.
+test('header limit: a header over the limit is destroyed and logged, and a header at the limit registers', async () => {
+  const fx = await openHub({ headerMaxBytes: 64, headerTimeoutMs: 60000 })
+  try {
+    const endless = await connect(fx)
+    await send(endless, 'x'.repeat(65))
+    const long = await connect(fx)
+    await send(long, header('L'.repeat(64), 0))
+    await waitFor(() => endless.hubEnd.destroyed && long.hubEnd.destroyed, 'the hub to destroy both clients')
+    const over = rejections(fx).filter((line) => line.endsWith(': the header is over 64 bytes'))
+    assert.equal(over.length, 2, 'the hub did not log both clients')
+
+    const link = 'M'.repeat(64 - header('', 0).length + 1)
+    assert.equal(Buffer.byteLength(header(link, 0)), 64 + 1)
+    const exact = await connect(fx)
+    await send(exact, header(link, 0))
+    await waitFor(() => fx.hub.pending.get(link)?.socket === exact.hubEnd, 'a header of 64 bytes to register')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// G47. The hub tracks every connection from accept to close, so close()
+// finds a connection that has not sent its header line, destroys it, and
+// returns. The header deadline is longer than the wait, so the deadline
+// cannot be what closes these clients.
+test('hub.close() returns while a connection has not sent its header line', async () => {
+  const fx = await openHub({ headerTimeoutMs: 60000 })
+  const silent = await connect(fx)
+  const partial = await connect(fx)
+  await send(partial, '{"link"')
+  let closed = false
+  const closing = fx.hub.close().then(() => {
+    closed = true
+  })
+  try {
+    await waitFor(() => closed, 'hub.close() to return')
+    assert.equal(silent.hubEnd.destroyed, true, 'the silent client is still open')
+    assert.equal(partial.hubEnd.destroyed, true, 'the partial client is still open')
+  } finally {
+    for (const socket of fx.sockets) socket.destroy()
+    await closing
+  }
+})

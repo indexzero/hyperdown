@@ -131,11 +131,18 @@ export class FaultHub {
    * @param rng run Rng (children are derived per link direction)
    * @param defaultProfile applied to every link unless overridden
    * @param log (line) => void
+   * @param opts.headerTimeoutMs a connection that sends no header line
+   *   within this time is destroyed. Default 10000 ms.
+   * @param opts.headerMaxBytes a header line longer than this, with or
+   *   without its newline, is destroyed. Default 1024 bytes.
    */
-  constructor(rng, defaultProfile, log = () => {}) {
+  constructor(rng, defaultProfile, log = () => {}, { headerTimeoutMs = 10000, headerMaxBytes = 1024 } = {}) {
     this.rng = rng
     this.defaultProfile = defaultProfile
     this.log = log
+    this.headerTimeoutMs = headerTimeoutMs
+    this.headerMaxBytes = headerMaxBytes
+    this.conns = new Set() // every accepted socket, from accept to close
     this.pending = new Map() // linkId -> { side, socket, chunks, detach }
     this.links = new Map() // linkId -> { a2b, b2a, sockets, epoch }
     this.profiles = new Map() // linkId -> profile override
@@ -156,27 +163,48 @@ export class FaultHub {
     this.profiles.set(linkId, profile)
   }
 
+  // The header phase lasts from accept until the header line arrives. It
+  // has a deadline and a size limit. A connection that misses either, or
+  // sends a bad header, ends alone: the hub logs it and destroys only that
+  // socket. `conns` holds every socket until it closes, so close() finds
+  // a socket in any phase.
   _onConnection(socket) {
     socket.setNoDelay(true)
+    socket.on('error', () => {})
+    this.conns.add(socket)
+    socket.once('close', () => this.conns.delete(socket))
     const who = `${socket.remoteAddress}:${socket.remotePort}`
     let buf = Buffer.alloc(0)
+    let timer = null
+    const stop = () => {
+      clearTimeout(timer)
+      socket.off('data', onData)
+      socket.off('close', stop)
+    }
+    const reject = (reason) => {
+      stop()
+      this.log(`connection ${who} rejected: ${reason}`)
+      socket.destroy()
+    }
     const onData = (chunk) => {
       buf = Buffer.concat([buf, chunk])
       const nl = buf.indexOf(0x0a)
+      if ((nl === -1 ? buf.length : nl) > this.headerMaxBytes) {
+        reject(`the header is over ${this.headerMaxBytes} bytes`)
+        return
+      }
       if (nl === -1) return
-      socket.off('data', onData)
+      stop()
       const header = parseHeader(buf.subarray(0, nl))
       if (header.error) {
-        // A bad header ends only its own connection. The hub and its
-        // other links run on.
-        this.log(`connection ${who} rejected: ${header.error}`)
-        socket.destroy()
+        reject(header.error)
         return
       }
       this._register(header.link, header.side, socket, buf.subarray(nl + 1))
     }
     socket.on('data', onData)
-    socket.on('error', () => {})
+    socket.once('close', stop)
+    timer = setTimeout(() => reject(`no header line within ${this.headerTimeoutMs}ms`), this.headerTimeoutMs)
   }
 
   _register(link, side, socket, rest) {
@@ -254,7 +282,9 @@ export class FaultHub {
 
   async close() {
     for (const linkId of [...this.links.keys()]) this.cut(linkId, 'hub-close')
-    for (const { socket } of this.pending.values()) socket.destroy()
+    // This also destroys each pending socket, and each socket that has not
+    // sent its header line yet. Otherwise server.close() waits for them.
+    for (const socket of [...this.conns]) socket.destroy()
     this.pending.clear()
     await new Promise((r) => this.server.close(r))
   }
