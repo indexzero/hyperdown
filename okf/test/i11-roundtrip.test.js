@@ -9,19 +9,11 @@
 // (or /tmp) is removed by the test.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
+import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
-import {
-  materialize,
-  compact,
-  materializeForCompact,
-  compactFromFace,
-  PREDECESSOR_FILE,
-  readView,
-  readLog
-} from '../faces/index.js'
+import { materialize, compact, readView, readLog } from '../faces/index.js'
 import { keyspace as K } from '../core/index.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -81,6 +73,15 @@ async function readBundle(root, rel = '', out = new Map()) {
     else if (e.isFile() && cr.endsWith('.md')) out.set(cr, await readFile(join(root, cr), 'utf8'))
   }
   return out
+}
+
+/** Every file under a directory, dot-files included, as sorted relative paths. */
+async function listFiles(root) {
+  const entries = await readdir(root, { recursive: true, withFileTypes: true })
+  return entries
+    .filter((e) => e.isFile())
+    .map((e) => relative(root, join(e.parentPath, e.name)))
+    .sort()
 }
 
 // §14: byte-fidelity is judged "modulo the _rev frontmatter lines and the
@@ -408,51 +409,27 @@ test('I11: --force carries a path-collision conflict copy across the generation 
   await nu.close()
 })
 
-test('I11: the two halves of compact run apart; the face alone carries the cycle (§10)', async () => {
-  const old = await Bundle.init(await tmpDir('split-old'))
+test('I11: the face that compact writes holds only what materialize writes (§10)', async () => {
+  const old = await Bundle.init(await tmpDir('face-vault'))
   await buildNonTrivial(old)
   await old.update()
-  const oldKey = old.keyHex
 
-  // first half: needs the predecessor open; records the provenance in the face
-  const faceDir = await tmpDir('split-face')
-  const face = await materializeForCompact(old, { toDir: faceDir })
-  const recorded = JSON.parse(await readFile(join(faceDir, PREDECESSOR_FILE), 'utf8'))
-  assert.equal(recorded.predecessorKey, oldKey)
-  assert.deepEqual(recorded.predecessorCheckpoint, face.predecessorCheckpoint)
-  await old.close() // the second half never sees the predecessor vault
+  const plainDir = await tmpDir('face-plain')
+  assert.equal((await materialize(old, plainDir)).ok, true)
 
-  // a face with no provenance is refused: §10 needs the generation chain
-  const bare = await tmpDir('split-bare-face')
-  await assert.rejects(
-    () => compactFromFace(bare, { initBundle: Bundle.init, vaultDir: join(bare, 'x') }),
-    (err) => err.code === 'COMPACT_NO_PREDECESSOR'
-  )
-
-  // second half: from the directory alone
-  const res = await compactFromFace(faceDir, { initBundle: Bundle.init, vaultDir: await tmpDir('split-new') })
-  const nu = res.vault
-  assert.equal(nu.metadata.predecessorKey, oldKey)
-  assert.deepEqual(nu.metadata.predecessorCheckpoint, face.predecessorCheckpoint)
-  assert.equal(res.predecessorPath, null)
-
-  const newDir = await tmpDir('split-new-bundle')
-  assert.equal((await materialize(nu, newDir)).ok, true)
-  assert.equal(
-    bundleDiff(normalizeBundle(await readBundle(newDir)), normalizeBundle(await readBundle(faceDir))),
-    null,
-    'new bundle differs from the face (modulo _rev + log.md)'
-  )
-
-  // explicit provenance wins over the file; without the file it is required
-  await rm(join(faceDir, PREDECESSOR_FILE))
-  const res2 = await compactFromFace(faceDir, {
-    initBundle: Bundle.init,
-    vaultDir: await tmpDir('split-new-2'),
-    predecessorKey: recorded.predecessorKey,
-    predecessorCheckpoint: recorded.predecessorCheckpoint
+  const faceDir = await tmpDir('face-compact')
+  const res = await compact(old, {
+    toDir: faceDir,
+    vaultDir: await tmpDir('face-new-vault'),
+    initBundle: Bundle.init
   })
-  assert.equal(res2.generation, res.generation, 'same provenance, same generation id')
-  await nu.close()
-  await res2.vault.close()
+
+  assert.deepEqual(
+    await listFiles(faceDir),
+    await listFiles(plainDir),
+    'compact left a file in the face that materialize does not write'
+  )
+
+  await old.close()
+  await res.vault.close()
 })

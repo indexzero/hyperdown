@@ -41,21 +41,6 @@
 //     first revision (`base:null`) — the only flag-free fresh start (§5) — so
 //     the body survives and the new `_rev` re-derives (§14).
 //
-// The two halves split at the seam after the materialize step, so they can
-// run in different processes, and on different substrate releases:
-//
-//   - materializeForCompact(vault, opts): the guardrail, the materialize, and
-//     the predecessor checkpoint. It needs the predecessor vault open, and it
-//     records the provenance in the face as `.okf-predecessor.json`.
-//   - compactFromFace(faceDir, opts): staging, the fresh vault, the ingest
-//     and the generation entry. It needs only the face directory and the
-//     provenance (from opts, or the face's `.okf-predecessor.json`), never the
-//     predecessor vault. This is the half that carries a vault across a
-//     substrate flag day (autobee@1 to autobee@2): the old release writes the
-//     face, the new release compacts it.
-//
-// compact(vault, opts) runs both halves in one process, as before.
-//
 // This module imports NO substrate (consistent with the rest of @auto-okf/
 // faces: "the substrate is injected"). The @auto-okf/store `Bundle.init` is
 // passed in as `opts.initBundle`; the CLI (okf/cli) wires the two together.
@@ -65,17 +50,10 @@ import { keyspace as K } from '@auto-okf/core'
 import { materialize } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
 import { parseNote, renderNote } from './yaml.js'
-import { walkNotes, isReservedFile, atomicWrite } from './fsatomic.js'
+import { walkNotes, isReservedFile } from './fsatomic.js'
 
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}\.md$/
 const GENERATION_LOG_REL = 'log/generation.json'
-
-/**
- * The provenance materializeForCompact leaves in the face: `{ predecessorKey,
- * predecessorCheckpoint }`. A dot-file, so every face reader (walkNotes,
- * status, ingest) skips it.
- */
-export const PREDECESSOR_FILE = '.okf-predecessor.json'
 
 /**
  * Run one generation cycle. `vault` is the (open) predecessor @auto-okf/store
@@ -107,32 +85,17 @@ export const PREDECESSOR_FILE = '.okf-predecessor.json'
  * operator to archive or destroy out-of-band (§10 step 5).
  */
 export async function compact(vault, opts = {}) {
-  const { toDir, vaultDir, force = false, sign } = opts
-  checkInitBundle(opts.initBundle)
+  const { toDir, vaultDir, force = false, keyPair, encryptionKey, sign } = opts
+  const initBundle = opts.initBundle
+  if (typeof initBundle !== 'function') {
+    throw compactError('COMPACT_NO_INITBUNDLE', 'opts.initBundle (@auto-okf/store Bundle.init) is required')
+  }
   if (!toDir) throw compactError('COMPACT_NO_TODIR', 'opts.toDir is required')
   if (!vaultDir) throw compactError('COMPACT_NO_VAULTDIR', 'opts.vaultDir is required')
-
-  const face = await materializeForCompact(vault, { toDir, force, sign })
-  const res = await compactFromFace(toDir, {
-    ...opts,
-    predecessorKey: face.predecessorKey,
-    predecessorCheckpoint: face.predecessorCheckpoint
-  })
-  return { ...res, predecessorPath: vault.dir, bundleDir: face.bundleDir }
-}
-
-/**
- * The first half of compact: everything that needs the predecessor vault.
- * Options: toDir (REQUIRED), force, sign (as for compact). Refuses on a live
- * conflict or pathcollision without force (COMPACT_REFUSED) and on a dirty
- * toDir without force (COMPACT_DIRTY_TARGET).
- *
- * Writes the face into toDir plus `<toDir>/.okf-predecessor.json`, and
- * returns { predecessorKey, predecessorCheckpoint, bundleDir, report }.
- */
-export async function materializeForCompact(vault, opts = {}) {
-  const { toDir, force = false, sign } = opts
-  if (!toDir) throw compactError('COMPACT_NO_TODIR', 'opts.toDir is required')
+  // Staging MUST live OUTSIDE vaultDir: `new Corestore(vaultDir)` clears the
+  // vault directory on init, so a nested staging dir would be wiped before
+  // ingest ever reads it (proven under sslop/033).
+  const stageDir = opts.stageDir || `${vaultDir}.compact-src`
 
   if (typeof vault.update === 'function') await vault.update()
 
@@ -159,64 +122,15 @@ export async function materializeForCompact(vault, opts = {}) {
     )
   }
 
-  // ---- 3. checkpoint the predecessor (§10 step 4), recorded in the face ----
-  const predecessorKey = vault.keyHex
-  const predecessorCheckpoint = await vault.checkpoint() // { viewHash, writerLengths }
-  if (typeof sign === 'function') {
-    const sig = await sign(predecessorCheckpoint)
-    if (sig && sig.signer !== undefined) predecessorCheckpoint.signer = sig.signer
-    if (sig && sig.signature !== undefined) predecessorCheckpoint.signature = sig.signature
-  }
-  const provenance = { predecessorKey, predecessorCheckpoint }
-  await atomicWrite(report.root, PREDECESSOR_FILE, Buffer.from(JSON.stringify(provenance, null, 2) + '\n'))
-
-  return { predecessorKey, predecessorCheckpoint, bundleDir: report.root, report }
-}
-
-/**
- * The second half of compact: everything after the materialize step, from a
- * face directory alone. Options: initBundle and vaultDir (REQUIRED);
- * stageDir, keyPair, encryptionKey (as for compact); predecessorKey and
- * predecessorCheckpoint, which default to the face's `.okf-predecessor.json`.
- * Without either, it throws COMPACT_NO_PREDECESSOR: §10 requires the
- * generation chain in the new metadata.
- *
- * Returns what compact returns, with predecessorPath null (the predecessor
- * vault is not known here).
- */
-export async function compactFromFace(faceDir, opts = {}) {
-  const { vaultDir, keyPair, encryptionKey } = opts
-  const initBundle = checkInitBundle(opts.initBundle)
-  if (!faceDir) throw compactError('COMPACT_NO_TODIR', 'a face directory is required')
-  if (!vaultDir) throw compactError('COMPACT_NO_VAULTDIR', 'opts.vaultDir is required')
-  // Staging MUST live OUTSIDE vaultDir: `new Corestore(vaultDir)` clears the
-  // vault directory on init, so a nested staging dir would be wiped before
-  // ingest ever reads it (proven under sslop/033).
-  const stageDir = opts.stageDir || `${vaultDir}.compact-src`
-
-  let { predecessorKey = null, predecessorCheckpoint = null } = opts
-  if (predecessorKey == null && predecessorCheckpoint == null) {
-    const prov = await readProvenance(join(faceDir, PREDECESSOR_FILE))
-    if (prov === null) {
-      throw compactError(
-        'COMPACT_NO_PREDECESSOR',
-        `${faceDir} records no predecessor (${PREDECESSOR_FILE}); pass predecessorKey and ` +
-          `predecessorCheckpoint — SPEC §10 requires the generation chain`
-      )
-    }
-    predecessorKey = prov.predecessorKey
-    predecessorCheckpoint = prov.predecessorCheckpoint
-  }
-
-  // ---- 1. stage a manifest-free, _rev-stripped copy for ingest ----
+  // ---- 3. stage a manifest-free, _rev-stripped copy for ingest ----
   await rm(stageDir, { recursive: true, force: true })
   await mkdir(stageDir, { recursive: true })
   const notes = []
-  await walkNotes(faceDir, '', notes)
+  await walkNotes(toDir, '', notes)
   const conflictCopies = []
   for (const rel of notes.sort(byteCmp)) {
     if (isReservedFile(rel)) continue // index.md / log.md are regenerated faces
-    const raw = await readFile(join(faceDir, rel), 'utf8')
+    const raw = await readFile(join(toDir, rel), 'utf8')
     const { fm, body } = parseNote(raw)
     if (!fm) continue // no frontmatter => not a concept note
     const pairs = []
@@ -235,20 +149,28 @@ export async function compactFromFace(faceDir, opts = {}) {
     }
   }
 
-  // ---- 2. open the fresh vault with the generation chain (§10 step 3/4) ----
+  // ---- 4. checkpoint the predecessor and open the fresh vault (§10 step 3/4) ----
+  const predecessorKey = vault.keyHex
+  const predecessorCheckpoint = await vault.checkpoint() // { viewHash, writerLengths }
+  if (typeof sign === 'function') {
+    const sig = await sign(predecessorCheckpoint)
+    if (sig && sig.signer !== undefined) predecessorCheckpoint.signer = sig.signer
+    if (sig && sig.signature !== undefined) predecessorCheckpoint.signature = sig.signature
+  }
+
   const newVault = await initBundle(vaultDir, {
     metadata: { predecessorKey, predecessorCheckpoint },
     ...(keyPair !== undefined ? { keyPair } : {}),
     ...(encryptionKey !== undefined ? { encryptionKey } : {})
   })
 
-  // ---- 3. ingest the staged bundle with _id adoption (§6/§9/§10) ----
+  // ---- 5. ingest the staged bundle with _id adoption (§6/§9/§10) ----
   const watcher = await createIngestWatcher(newVault, stageDir, { watch: false })
   const ops = await watcher.scan()
   if (typeof newVault.update === 'function') await newVault.update()
   await watcher.close()
 
-  // ---- 4. record the generation entry in the fresh vault's log/ (§10) ----
+  // ---- 6. record the generation entry in the fresh vault's log/ (§10) ----
   // The §3 append-only wire contract has NO generation op and the view's log/
   // family is apply-only, so the §10 generation entry is a durable filesystem
   // artifact under the fresh vault's log/ (DEVIATIONS.md). It carries the
@@ -271,39 +193,18 @@ export async function compactFromFace(faceDir, opts = {}) {
   return {
     ok: true,
     predecessorKey,
-    predecessorPath: null,
+    predecessorPath: vault.dir, // §10 step 5: operator archives/destroys this
     predecessorCheckpoint,
     vault: newVault,
     vaultDir,
     generation: newVault.generation,
-    bundleDir: faceDir,
+    bundleDir: report.root,
     stageDir,
     conflictCopies,
     logEntry,
     logPath,
     ingestOps: ops.length
   }
-}
-
-/** `{ predecessorKey, predecessorCheckpoint }` from a JSON file, or null if absent. */
-async function readProvenance(path) {
-  let raw
-  try {
-    raw = await readFile(path, 'utf8')
-  } catch (err) {
-    if (err.code === 'ENOENT') return null
-    throw err
-  }
-  const { predecessorKey = null, predecessorCheckpoint = null } = JSON.parse(raw)
-  if (predecessorKey == null || predecessorCheckpoint == null) return null
-  return { predecessorKey, predecessorCheckpoint }
-}
-
-function checkInitBundle(initBundle) {
-  if (typeof initBundle !== 'function') {
-    throw compactError('COMPACT_NO_INITBUNDLE', 'opts.initBundle (@auto-okf/store Bundle.init) is required')
-  }
-  return initBundle
 }
 
 /** Count (and sample up to 4) keys under a view prefix. */

@@ -16,7 +16,7 @@
 // helpers) is passed in.
 export { materialize, renderIndex, renderLog } from './lib/materialize.js'
 export { createIngestWatcher, IngestWatcher } from './lib/ingest.js'
-export { compact, materializeForCompact, compactFromFace, PREDECESSOR_FILE } from './lib/compact.js'
+export { compact } from './lib/compact.js'
 export { wanted } from './lib/wanted.js'
 export { status } from './lib/status.js'
 export { readView, readLog, memViewReader } from './lib/view.js'
