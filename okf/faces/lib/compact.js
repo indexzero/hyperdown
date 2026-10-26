@@ -37,7 +37,10 @@
 //     `toDir` in place would make every file match that manifest and be
 //     skipped as a self-echo, so compaction stages a MANIFEST-FREE copy of the
 //     concept notes and ingests THAT — the fresh vault sees a plain, freshly
-//     authored OKF bundle.
+//     authored OKF bundle. The stage takes exactly the notes that the
+//     manifest lists, dot-segment paths included, and each staged note goes
+//     through the compaction import (`ingestFile(rel, { compaction: true })`),
+//     which does not ignore a dot segment. Reserved `.okf-*` names stay out.
 //   - Each staged note has its `_rev` line STRIPPED. A materialized `_rev` is
 //     the base an ingest SetBody cites (§6); in the fresh vault that base does
 //     not exist yet, which would flag `flag/conflict/<id>/-/<new>` and leave
@@ -54,7 +57,7 @@ import { keyspace as K } from '@auto-okf/core'
 import { materialize } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
 import { parseNote, renderNote } from './yaml.js'
-import { walkNotes, isReservedFile } from './fsatomic.js'
+import { loadManifest, isReservedDotFile, isReservedFile } from './fsatomic.js'
 import { compareTrees } from './verify.js'
 
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}\.md$/
@@ -87,10 +90,12 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *   bundleDir, stageDir, conflictCopies, logEntry, logPath, ingestOps,
  *   counts, warnings }.
  *
- *   counts    { walked, staged, ingested }: the concept notes the face walk
- *             found (index.md and log.md excluded), the notes written to the
- *             stage, and the staged notes the ingest turned into ops.
- *   warnings  [{ kind, path, message }], kind one of 'parse' and
+ *   counts    { walked, staged, ingested }: the concept notes that the face's
+ *             emission manifest lists (index.md and log.md excluded), the
+ *             notes written to the stage, and the staged notes the ingest
+ *             turned into ops.
+ *   warnings  [{ kind, path, message }], kind one of 'reserved' (a reserved
+ *             `.okf-*` name the stage excludes), 'parse' and
  *             'no-frontmatter' (the stage parse), 'ingest', 'oversize' and
  *             'skip' (the ingest watcher's events).
  *
@@ -147,16 +152,25 @@ export async function compact(vault, opts = {}) {
   }
 
   // ---- 3. stage a manifest-free, _rev-stripped copy for ingest ----
+  // The stage walks the face's emission manifest, not the directory: a
+  // directory walk (walkNotes) skips every dot name, and a concept at a
+  // dot-segment path such as `.drafts/idea` is a note that materialize wrote.
   await rm(stageDir, { recursive: true, force: true })
   await mkdir(stageDir, { recursive: true })
-  const notes = []
-  await walkNotes(toDir, '', notes)
+  const emitted = Object.keys((await loadManifest(report.root)).files)
+  const staged = []
   const conflictCopies = []
   const counts = { walked: 0, staged: 0, ingested: 0 }
   const warnings = []
-  for (const rel of notes.sort(byteCmp)) {
-    if (isReservedFile(rel)) continue // index.md / log.md are regenerated faces
+  for (const rel of emitted.sort(byteCmp)) {
+    if (!rel.endsWith('.md') || isReservedFile(rel)) continue // index.md / log.md are regenerated faces
     counts.walked++
+    if (isReservedDotFile(rel)) {
+      // The faces reserve the `.okf-*` names for their own state. The face
+      // still holds the note, so the fidelity check (step 6) fails on it.
+      warnings.push({ kind: 'reserved', path: rel, message: 'a reserved .okf- dot-file name; not staged' })
+      continue
+    }
     const raw = await readFile(join(toDir, rel), 'utf8')
     const { fm, body, warnings: parseWarnings } = parseNote(raw)
     for (const message of parseWarnings) warnings.push({ kind: 'parse', path: rel, message })
@@ -172,6 +186,7 @@ export async function compact(vault, opts = {}) {
       pairs.push([k, v])
     }
     await writeStaged(stageDir, rel, renderNote(pairs, body))
+    staged.push(rel)
     counts.staged++
     if (CONFLICT_SUFFIX_RE.test(rel)) {
       // §10 --force: enumerate every conflicted copy carried across. Identity
@@ -204,6 +219,9 @@ export async function compact(vault, opts = {}) {
     })
 
     // ---- 5. ingest the staged bundle with _id adoption (§6/§9/§10) ----
+    // Each staged path goes through the explicit compaction import, in the
+    // order of the stage. scan() would walk the stage with walkNotes again,
+    // and ingestFile without the option ignores every dot path.
     const watcher = await createIngestWatcher(newVault, stageDir, { watch: false })
     watcher.on('warning', ({ path, message }) => warnings.push({ kind: 'ingest', path, message }))
     watcher.on('oversize', ({ path, bytes, limit }) =>
@@ -213,9 +231,9 @@ export async function compact(vault, opts = {}) {
     watcher.on('ops', ({ ops }) => {
       if (ops.length > 0) counts.ingested++
     })
-    let ops
+    const ops = []
     try {
-      ops = await watcher.scan()
+      for (const rel of staged) ops.push(...(await watcher.ingestFile(rel, { compaction: true })))
       if (typeof newVault.update === 'function') await newVault.update()
     } finally {
       await watcher.close()
