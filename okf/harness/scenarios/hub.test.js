@@ -36,14 +36,15 @@ async function waitFor(cond, what) {
   assert.ok(await until(cond), `timed out waiting for ${what}`)
 }
 
-// A hub, and the hub's end of each connection it accepts, so that a test
-// can wait until the hub has read what a client sent.
-async function openHub() {
-  const hub = new FaultHub(new Rng(1), CLEAN)
+// A hub, its log lines, and the hub's end of each connection it accepts,
+// so that a test can wait until the hub has read what a client sent.
+async function openHub({ profile = CLEAN, ...opts } = {}) {
+  const logs = []
+  const hub = new FaultHub(new Rng(1), profile, (line) => logs.push(line), opts)
   const port = await hub.listen()
   const accepted = []
   hub.server.on('connection', (socket) => accepted.push(socket))
-  return { hub, port, accepted, sockets: [] }
+  return { hub, port, accepted, logs, sockets: [] }
 }
 
 async function closeHub(fx) {
@@ -62,12 +63,29 @@ async function connect(fx) {
     () => (hubEnd = fx.accepted.find((s) => s.remotePort === socket.localPort)),
     'the hub to accept the connection'
   )
-  const peer = { socket, hubEnd, sent: 0, got: '' }
+  const peer = { socket, hubEnd, sent: 0, got: '', closed: false }
   socket.on('data', (d) => {
     peer.got += d
   })
+  socket.once('close', () => {
+    peer.closed = true
+  })
   return peer
 }
+
+// Connect side 0 and then side 1 of the link, and wait until they pair.
+async function pair(fx, link) {
+  const epoch = (fx.hub.epochs.get(link) || 0) + 1
+  const s0 = await connect(fx)
+  await send(s0, header(link, 0))
+  await waitFor(() => fx.hub.pending.get(link)?.socket === s0.hubEnd, `side 0 of ${link} to register`)
+  const s1 = await connect(fx)
+  await send(s1, header(link, 1))
+  await waitFor(() => fx.hub.links.get(link)?.epoch === epoch, `${link}#${epoch} to pair`)
+  return [s0, s1]
+}
+
+const rejections = (fx) => fx.logs.filter((line) => line.includes(' rejected: '))
 
 // Write the bytes, then wait until the hub has read all of them. So no
 // later step can reach the hub before these bytes do.
@@ -132,6 +150,40 @@ test('a FIN before pairing: the pending socket leaves pending and closes', async
     await send(second, header('L', 1))
     await waitFor(() => fx.hub.pending.get('L')?.side === 1, 'side 1 to register')
     assert.equal(fx.hub.links.has('L'), false, 'side 1 paired with the ended socket')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// G48. A header must be one JSON object with a string `link` and a `side`
+// of 0 or 1. A bad header destroys only its own socket, and the hub logs
+// it. It never throws out of a 'data' listener, so the hub and a link that
+// is already paired keep running.
+test('bad headers: each destroys only its own socket, and the hub and its other links keep running', async () => {
+  const fx = await openHub()
+  try {
+    const [a, b] = await pair(fx, 'L')
+    const bad = [
+      'not-json',
+      'null',
+      '[]',
+      '"L"',
+      '{"side":0}',
+      '{"link":7,"side":0}',
+      '{"link":"M","side":2}',
+      '{"link":"M","side":"0"}'
+    ]
+    for (const line of bad) {
+      const peer = await connect(fx)
+      await send(peer, line + '\n')
+      await waitFor(() => peer.hubEnd.destroyed, `the hub to destroy the socket that sent ${line}`)
+    }
+    assert.equal(fx.hub.pending.size, 0, 'a bad header registered')
+    assert.equal(rejections(fx).length, bad.length, 'the hub did not log each bad header')
+
+    await send(a, 'ping')
+    await send(b, 'pong')
+    await waitFor(() => b.got === 'ping' && a.got === 'pong', 'the paired link to deliver both ways')
   } finally {
     await closeHub(fx)
   }

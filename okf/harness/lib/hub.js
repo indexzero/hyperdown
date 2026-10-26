@@ -109,6 +109,23 @@ class FaultDirection {
   }
 }
 
+// A header is one JSON object: { link: <string>, side: 0 or 1 }. Return
+// { link, side }, or { error } with the reason that the header is bad.
+function parseHeader(bytes) {
+  let header
+  try {
+    header = JSON.parse(bytes.toString())
+  } catch {
+    return { error: 'the header is not JSON' }
+  }
+  if (header === null || typeof header !== 'object' || Array.isArray(header)) {
+    return { error: 'the header is not an object' }
+  }
+  if (typeof header.link !== 'string') return { error: 'the header has no string link' }
+  if (header.side !== 0 && header.side !== 1) return { error: 'the header side is not 0 or 1' }
+  return { link: header.link, side: header.side }
+}
+
 export class FaultHub {
   /**
    * @param rng run Rng (children are derived per link direction)
@@ -141,21 +158,28 @@ export class FaultHub {
 
   _onConnection(socket) {
     socket.setNoDelay(true)
+    const who = `${socket.remoteAddress}:${socket.remotePort}`
     let buf = Buffer.alloc(0)
     const onData = (chunk) => {
       buf = Buffer.concat([buf, chunk])
       const nl = buf.indexOf(0x0a)
       if (nl === -1) return
       socket.off('data', onData)
-      const header = JSON.parse(buf.subarray(0, nl).toString())
-      const rest = buf.subarray(nl + 1)
-      this._register(header, socket, rest)
+      const header = parseHeader(buf.subarray(0, nl))
+      if (header.error) {
+        // A bad header ends only its own connection. The hub and its
+        // other links run on.
+        this.log(`connection ${who} rejected: ${header.error}`)
+        socket.destroy()
+        return
+      }
+      this._register(header.link, header.side, socket, buf.subarray(nl + 1))
     }
     socket.on('data', onData)
     socket.on('error', () => {})
   }
 
-  _register({ link, side }, socket, rest) {
+  _register(link, side, socket, rest) {
     const other = this.pending.get(link)
     if (!other) {
       this._wait(link, side, socket, rest)
