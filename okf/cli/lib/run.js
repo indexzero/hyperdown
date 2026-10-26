@@ -36,13 +36,6 @@ const SIBLING_MARKER = 'vault-ld.json'
 
 class WrongToolError extends Error {}
 
-// The autobee@1 to autobee@2 flag day: the store refuses a store autobee@1
-// wrote (VAULT_AUTOBEE_V1) without touching it, and the CLI names the way
-// across, in the ADR-006 shape.
-function autobee1Refusal(dir) {
-  return `${dir} was written by autobee@1; materialize it with an autobee@1 release of auto-okf, then compact --from-face`
-}
-
 async function refuseSiblingVault(dir) {
   try {
     await access(join(dir, SIBLING_MARKER))
@@ -99,10 +92,6 @@ export async function run(argv) {
       // ADR-006: the refusal shape is pinned — `error: <dir> is a … vault
       // (<marker> present); use <tool>, not <this tool>`.
       process.stderr.write(`error: ${err.message}\n`)
-      return 1
-    }
-    if (err && err.code === 'VAULT_AUTOBEE_V1') {
-      process.stderr.write(`error: ${autobee1Refusal(err.dir || parsed.args.dir)}\n`)
       return 1
     }
     process.stderr.write(`auto-okf ${parsed.name}: ${err && err.message ? err.message : err}\n`)
