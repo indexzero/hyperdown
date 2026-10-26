@@ -604,7 +604,7 @@ async function cmdWatch({ args, flags }) {
     if (flags.swarm) {
       await vault.swarm()
       swarmed = true
-      console.log('joined hyperswarm on the vault discovery key')
+      console.log("joined hyperswarm on the vault's auto-okf/2 topic")
     }
     await watcher.scan() // pick up edits made while the watcher was down
     console.log(`watching ${bundleDir} (foreground; Ctrl-C to stop)`)
