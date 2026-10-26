@@ -35,7 +35,9 @@ import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { canonical } from '@auto-okf/core'
 
-export const METADATA_VERSION = 1
+// The release states that it is v2: it writes version 2, and
+// validateMetadata (so loadMetadata) refuses every other version.
+export const METADATA_VERSION = 2
 export const METADATA_FILE = 'okf-vault.json'
 export const ROOT_GENERATION = 'root'
 

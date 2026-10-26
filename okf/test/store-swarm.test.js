@@ -1,16 +1,21 @@
-// Store scope (okf SPEC §13): hyperswarm replication on the auto-okf/2
-// topic. vault.swarm() announces the vault on
-// sha256('auto-okf/2' ‖ db.discoveryKey), never on the bare discovery key,
-// and feeds every connection into db.replicate. A peer that announces on
-// another topic never finds a vault of this release. Runs over a local
-// hyperdht testnet (no public DHT). hyperdht is a transitive dep of
-// hyperswarm, resolved through the store package's module graph. Every wait
-// has a deadline.
+// Store scope (okf SPEC §13): the two formats that state that this release
+// is v2.
+// - Hyperswarm replication on the auto-okf/2 topic. vault.swarm()
+//   announces the vault on sha256('auto-okf/2' ‖ db.discoveryKey), never
+//   on the bare discovery key, and feeds every connection into
+//   db.replicate. A peer that announces on another topic never finds a
+//   vault of this release. Runs over a local hyperdht testnet (no public
+//   DHT). hyperdht is a transitive dep of hyperswarm, resolved through the
+//   store package's module graph. Every wait has a deadline.
+// - Vault metadata version 2. A vault of this release records it, and
+//   loadMetadata refuses every other version.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { Bundle, K, tmpDir, until } from './store-helpers.js'
+import { join } from 'node:path'
+import { Bundle, K, METADATA_FILE, loadMetadata, tmpDir, until } from './store-helpers.js'
 
 const storeRequire = createRequire(new URL('../store/index.js', import.meta.url))
 const Hyperswarm = storeRequire('hyperswarm')
@@ -158,4 +163,31 @@ test('a stand-in peer on the bare discovery key never replicates with a namespac
   const namespaced = swarmC.join(namespacedTopic(c.discoveryKey), { server: true, client: true })
   await withDeadline(namespaced.flushed(), DEADLINE, 'stand-in namespaced join')
   assert.ok(await folds(c, id), 'the stand-in folds the op once it joins the auto-okf/2 topic')
+})
+
+test('a vault of this release records metadata version 2, and loadMetadata refuses every other version', { timeout: TEST_TIMEOUT }, async () => {
+  const dir = await tmpDir('meta-v2')
+  const a = await Bundle.init(dir)
+  assert.equal(a.metadata.version, 2, 'the open vault records version 2')
+  await a.close()
+
+  const path = join(dir, METADATA_FILE)
+  const meta = JSON.parse(await readFile(path, 'utf8'))
+  assert.equal(meta.version, 2, `${METADATA_FILE} records version 2`)
+  assert.deepEqual(await loadMetadata(path), meta, 'loadMetadata accepts version 2')
+
+  // undefined: JSON.stringify drops the key, so the file has no version.
+  for (const version of [0, 3, '2', null, undefined]) {
+    await writeFile(path, JSON.stringify({ ...meta, version }))
+    await assert.rejects(
+      loadMetadata(path),
+      /unsupported vault metadata version/,
+      `loadMetadata refuses version ${JSON.stringify(version)}`
+    )
+  }
+  await assert.rejects(
+    Bundle.open(dir),
+    /unsupported vault metadata version/,
+    'a vault without version 2 does not open'
+  )
 })
