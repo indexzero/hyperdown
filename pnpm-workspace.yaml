@@ -3,3 +3,8 @@ packages:
   - okf/*
   - okf/examples/*
   - vault-ld/examples/*
+
+# autobee@2 requires hypercore-crypto but declares it only in
+# devDependencies. Hoist it publicly, so that autobee resolves it without
+# pnpm's hidden hoist. okf/test/store-deps.test.js checks this.
+publicHoistPattern: [hypercore-crypto]
