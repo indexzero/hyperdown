@@ -9,6 +9,7 @@
 // (or /tmp) is removed by the test.
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import assert from 'node:assert/strict'
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
@@ -609,4 +610,55 @@ test('T13: a failed compaction keeps an out-dir that it did not create, and remo
   await expectFidelityFailure(old, base, { leaves: ['face', 'out', 'out.compact-src'] })
   assert.deepEqual(await entries(join(base, 'out')), [], 'the failed compaction left its files in the out-dir')
   await old.close()
+})
+
+const BIN = join(ROOT, 'okf', 'cli', 'bin', 'auto-okf.js')
+
+/** Run the auto-okf CLI; resolves { code, stdout, stderr }. */
+function cli(args) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [BIN, ...args], { cwd: ROOT, timeout: 90000 }, (err, stdout, stderr) => {
+      resolve({ code: err ? (err.code ?? 1) : 0, stdout, stderr })
+    })
+  })
+}
+
+test('T13: auto-okf compact reports the counts and the fidelity check on success', async () => {
+  const base = await tmpDir('fid-cli-ok')
+  const v = await Bundle.init(join(base, 'vault'))
+  const { tag } = await v.createConcept('notes/one', 'note')
+  await v.setBody(tag, null, 'one')
+  await v.createConcept('notes/two', 'note')
+  await v.update()
+  await v.close()
+
+  const r = await cli(['compact', join(base, 'vault'), join(base, 'out')])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /^notes: +2 walked, 2 staged, 2 ingested$/m)
+  assert.match(r.stdout, /^fidelity: +the new vault matches the face/m)
+  assert.equal(r.stderr, '', 'a clean compaction prints no warning')
+  assert.deepEqual(await entries(base), ['out', 'out.compact-src', 'out.face', 'vault'])
+})
+
+test('T13: auto-okf compact prints every difference and every warning, and exits 1 on COMPACT_FIDELITY', async () => {
+  const base = await tmpDir('fid-cli-fail')
+  const v = await Bundle.init(join(base, 'vault'), { metadata: { limits: { maxOpBytes: 400000 } } })
+  const a = await v.createConcept('big/report', 'note')
+  await v.setBody(a.tag, null, 'x'.repeat(100000))
+  await v.createConcept('.drafts/idea', 'note')
+  await v.createConcept('small/note', 'note')
+  await v.update()
+  await v.close()
+
+  // run.js maps an error that is not a usage error to exit 1.
+  const r = await cli(['compact', join(base, 'vault'), join(base, 'out')])
+  assert.equal(r.code, 1, r.stdout + r.stderr)
+  assert.match(r.stderr, /COMPACT_FIDELITY/)
+  for (const line of ['missing .drafts/idea.md', 'missing .drafts/index.md', 'missing big/report.md', 'missing big/index.md', 'differs index.md']) {
+    assert.ok(r.stderr.includes(line), `stderr must name '${line}':\n${r.stderr}`)
+  }
+  assert.match(r.stderr, /^warning: big\/report\.md: body is 100000 bytes; maxOpBytes is 65536; not ingested$/m)
+  assert.match(r.stderr, /^notes: +2 walked, 2 staged, 1 ingested$/m)
+  // No new vault and no verification directory remain. The face and the stage stay.
+  assert.deepEqual(await entries(base), ['out.compact-src', 'out.face', 'vault'])
 })

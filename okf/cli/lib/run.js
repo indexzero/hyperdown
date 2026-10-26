@@ -674,18 +674,33 @@ async function cmdCompact({ args, flags }) {
   const { dir, outDir } = args
   const faceDir = flags.face || `${outDir}.face`
   return withVault(dir, {}, async (vault) => {
-    const res = await compact(vault, {
-      initBundle: Bundle.init,
-      toDir: faceDir,
-      vaultDir: outDir,
-      force: flags.force === true,
-      ...encryptionOpt(flags)
-    })
+    let res
     try {
+      res = await compact(vault, {
+        initBundle: Bundle.init,
+        toDir: faceDir,
+        vaultDir: outDir,
+        force: flags.force === true,
+        ...encryptionOpt(flags)
+      })
+    } catch (err) {
+      // COMPACT_FIDELITY names every difference in its message, and run()
+      // prints the message and exits 1. Print the warnings and the counts
+      // first, so the operator sees why a note did not survive.
+      if (err.code === 'COMPACT_FIDELITY') {
+        for (const w of err.warnings) process.stderr.write(compactWarningLine(w))
+        process.stderr.write(`notes:            ${compactCountsLine(err.counts)}\n`)
+      }
+      throw err
+    }
+    try {
+      for (const w of res.warnings) process.stderr.write(compactWarningLine(w))
       console.log(`compacted ${dir} -> ${outDir} (generation ${res.generation})`)
       console.log(`hydrated face:    ${faceDir}`)
       console.log(`predecessor:      ${res.predecessorPath} (NOT deleted — archive out-of-band)`)
       console.log(`new vault key:    ${res.vault.keyHex}`)
+      console.log(`notes:            ${compactCountsLine(res.counts)}`)
+      console.log(`fidelity:         the new vault matches the face (_rev lines and log.md excluded)`)
       if (res.conflictCopies && res.conflictCopies.length) {
         console.log(`conflicted copies carried across (--force): ${res.conflictCopies.length}`)
         for (const c of res.conflictCopies) console.log(`  ${c.from} -> ${c.to}`)
@@ -696,6 +711,16 @@ async function cmdCompact({ args, flags }) {
       await res.vault.close()
     }
   })
+}
+
+/** `3 walked, 3 staged, 3 ingested`: the concept notes compact counted. */
+function compactCountsLine({ walked, staged, ingested }) {
+  return `${walked} walked, ${staged} staged, ${ingested} ingested`
+}
+
+/** `warning: notes/a.md: no parseable frontmatter; not staged` */
+function compactWarningLine({ path, message }) {
+  return `warning: ${path}: ${message}\n`
 }
 
 /** compact's fresh vault is encrypted only when asked: a key is never inherited. */
