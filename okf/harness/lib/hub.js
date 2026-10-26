@@ -104,8 +104,9 @@ class FaultDirection {
       this.bytes += chunk.length
       if (this.to.writable) {
         const ok = this.to.write(out)
-        if (!ok) {
-          // destination backpressure: pause the source until it drains
+        if (!ok && !this.from.isPaused()) {
+          // Destination backpressure: pause the source until `to` drains.
+          // One 'drain' resumes it, so wait for one, not one per write.
           this.from.pause()
           this.to.once('drain', () => {
             if (!this._destroyed) this.from.resume()

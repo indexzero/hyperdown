@@ -389,3 +389,23 @@ test('graceful close: a source paused for backpressure still closes after its de
     await closeHub(fx)
   }
 })
+
+// While side 1 does not read, many writes of the hub to side 1 return
+// false. The hub pauses side 0 once, and waits for one 'drain' to resume
+// it, not for one 'drain' per write.
+test('backpressure: the hub waits for one drain per pause, not one per write', async () => {
+  const MiB = 1024 * 1024
+  const fx = await openHub({ profile: LATENCY })
+  try {
+    const [a, b] = await pair(fx, 'L')
+    b.socket.pause()
+    a.socket.write(Buffer.alloc(32 * MiB))
+    await waitFor(
+      () => b.hubEnd.writableLength > 16 * MiB && a.hubEnd.isPaused(),
+      'the hub to hold 16 MiB for side 1 and to pause side 0'
+    )
+    assert.equal(b.hubEnd.listenerCount('drain'), 1, 'drain listeners on side 1')
+  } finally {
+    await closeHub(fx)
+  }
+})
