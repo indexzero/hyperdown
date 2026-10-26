@@ -13,7 +13,11 @@
 //   3. ingest the bundle into the fresh vault with `_id` ADOPTION (§6/§9:
 //      an incoming `_id` unknown to the fresh vault is authoritative on
 //      create, so identity lineage survives the generation);
-//   4. record the generation chain in the fresh vault's metadata
+//   4. check its own output: materialize the fresh vault into a verification
+//      directory and byte-compare it with the face (verify.js). A difference
+//      fails the cycle with COMPACT_FIDELITY, and compaction removes what it
+//      wrote to the new out-dir;
+//   5. record the generation chain in the fresh vault's metadata
 //      ({ predecessorKey, predecessorCheckpoint }) and a generation entry in the
 //      fresh vault's `log/`.
 //
@@ -44,13 +48,14 @@
 // This module imports NO substrate (consistent with the rest of @auto-okf/
 // faces: "the substrate is injected"). The @auto-okf/store `Bundle.init` is
 // passed in as `opts.initBundle`; the CLI (okf/cli) wires the two together.
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
+import { mkdir, mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { join, dirname, basename, resolve } from 'node:path'
 import { keyspace as K } from '@auto-okf/core'
 import { materialize } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
 import { parseNote, renderNote } from './yaml.js'
 import { walkNotes, isReservedFile } from './fsatomic.js'
+import { compareTrees } from './verify.js'
 
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}\.md$/
 const GENERATION_LOG_REL = 'log/generation.json'
@@ -79,7 +84,26 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *
  * Returns { ok, predecessorKey, predecessorPath, predecessorCheckpoint,
  *   vault (the fresh OPEN vault — the CALLER closes it), vaultDir, generation,
- *   bundleDir, stageDir, conflictCopies, logEntry, logPath, ingestOps }.
+ *   bundleDir, stageDir, conflictCopies, logEntry, logPath, ingestOps,
+ *   counts, warnings }.
+ *
+ *   counts    { walked, staged, ingested }: the concept notes the face walk
+ *             found (index.md and log.md excluded), the notes written to the
+ *             stage, and the staged notes the ingest turned into ops.
+ *   warnings  [{ kind, path, message }], kind one of 'parse' and
+ *             'no-frontmatter' (the stage parse), 'ingest', 'oversize' and
+ *             'skip' (the ingest watcher's events).
+ *
+ * After the ingest, compact materializes the fresh vault into a verification
+ * directory (a uniquely named sibling of stageDir, removed on success and on
+ * failure) and byte-compares it with the face (verify.js: `_rev` lines and
+ * log.md excluded, §14). On any difference it throws COMPACT_FIDELITY. The
+ * error carries `differences` ([{ path, kind }], every one also in the
+ * message), `warnings` and `counts`. A note that the face holds and the stage
+ * or the ingest dropped is such a difference. On COMPACT_FIDELITY, and on any
+ * other failure after it claims vaultDir, compact closes the fresh vault and
+ * removes what it created there: vaultDir itself when compact created it,
+ * else only the entries that it added.
  *
  * compact NEVER deletes the predecessor: it returns `predecessorPath` for the
  * operator to archive or destroy out-of-band (§10 step 5).
@@ -128,17 +152,27 @@ export async function compact(vault, opts = {}) {
   const notes = []
   await walkNotes(toDir, '', notes)
   const conflictCopies = []
+  const counts = { walked: 0, staged: 0, ingested: 0 }
+  const warnings = []
   for (const rel of notes.sort(byteCmp)) {
     if (isReservedFile(rel)) continue // index.md / log.md are regenerated faces
+    counts.walked++
     const raw = await readFile(join(toDir, rel), 'utf8')
-    const { fm, body } = parseNote(raw)
-    if (!fm) continue // no frontmatter => not a concept note
+    const { fm, body, warnings: parseWarnings } = parseNote(raw)
+    for (const message of parseWarnings) warnings.push({ kind: 'parse', path: rel, message })
+    if (!fm) {
+      // Not a concept note to the stage. The face still holds it, so the
+      // fidelity check (step 6) fails on it: a drop is never only a warning.
+      warnings.push({ kind: 'no-frontmatter', path: rel, message: 'no parseable frontmatter; not staged' })
+      continue
+    }
     const pairs = []
     for (const [k, v] of Object.entries(fm)) {
       if (k === '_rev') continue // §6/§14: re-derives in the new generation (see header)
       pairs.push([k, v])
     }
     await writeStaged(stageDir, rel, renderNote(pairs, body))
+    counts.staged++
     if (CONFLICT_SUFFIX_RE.test(rel)) {
       // §10 --force: enumerate every conflicted copy carried across. Identity
       // (_id) and path both survive the cycle, and the conflict suffix is
@@ -158,53 +192,137 @@ export async function compact(vault, opts = {}) {
     if (sig && sig.signature !== undefined) predecessorCheckpoint.signature = sig.signature
   }
 
-  const newVault = await initBundle(vaultDir, {
-    metadata: { predecessorKey, predecessorCheckpoint },
-    ...(keyPair !== undefined ? { keyPair } : {}),
-    ...(encryptionKey !== undefined ? { encryptionKey } : {})
-  })
+  // From here on, a failure closes the fresh vault and removes what this
+  // compaction created in vaultDir, so no partial out-dir remains.
+  const outDir = await claimDir(vaultDir)
+  let newVault = null
+  try {
+    newVault = await initBundle(vaultDir, {
+      metadata: { predecessorKey, predecessorCheckpoint },
+      ...(keyPair !== undefined ? { keyPair } : {}),
+      ...(encryptionKey !== undefined ? { encryptionKey } : {})
+    })
 
-  // ---- 5. ingest the staged bundle with _id adoption (§6/§9/§10) ----
-  const watcher = await createIngestWatcher(newVault, stageDir, { watch: false })
-  const ops = await watcher.scan()
-  if (typeof newVault.update === 'function') await newVault.update()
-  await watcher.close()
+    // ---- 5. ingest the staged bundle with _id adoption (§6/§9/§10) ----
+    const watcher = await createIngestWatcher(newVault, stageDir, { watch: false })
+    watcher.on('warning', ({ path, message }) => warnings.push({ kind: 'ingest', path, message }))
+    watcher.on('oversize', ({ path, bytes, limit }) =>
+      warnings.push({ kind: 'oversize', path, message: `body is ${bytes} bytes; maxOpBytes is ${limit}; not ingested` })
+    )
+    watcher.on('skip', ({ path, reason }) => warnings.push({ kind: 'skip', path, message: `skipped by the ingest (${reason})` }))
+    watcher.on('ops', ({ ops }) => {
+      if (ops.length > 0) counts.ingested++
+    })
+    let ops
+    try {
+      ops = await watcher.scan()
+      if (typeof newVault.update === 'function') await newVault.update()
+    } finally {
+      await watcher.close()
+    }
 
-  // ---- 6. record the generation entry in the fresh vault's log/ (§10) ----
-  // The §3 append-only wire contract has NO generation op and the view's log/
-  // family is apply-only, so the §10 generation entry is a durable filesystem
-  // artifact under the fresh vault's log/ (DEVIATIONS.md). It carries the
-  // generation chain and, under --force, the conflicted-copy carry-across map.
-  const logEntry = {
-    kind: 'generation',
-    generation: newVault.generation,
-    at: Date.now(),
-    predecessorKey,
-    predecessorCheckpoint,
-    conflictCopies,
-    note:
-      'generation cycle (SPEC §10): live state + identity preserved byte-for-byte; ' +
-      'history (old revisions, per-op attribution, clocks) shed by design.'
+    // ---- 6. check its own output (§10, §14) ----
+    const differences = await verifyGeneration(newVault, report.root, stageDir)
+    if (differences.length > 0) throw fidelityError(report.root, differences, warnings, counts)
+
+    // ---- 7. record the generation entry in the fresh vault's log/ (§10) ----
+    // The §3 append-only wire contract has NO generation op and the view's log/
+    // family is apply-only, so the §10 generation entry is a durable filesystem
+    // artifact under the fresh vault's log/ (DEVIATIONS.md). It carries the
+    // generation chain and, under --force, the conflicted-copy carry-across map.
+    const logEntry = {
+      kind: 'generation',
+      generation: newVault.generation,
+      at: Date.now(),
+      predecessorKey,
+      predecessorCheckpoint,
+      conflictCopies,
+      note:
+        'generation cycle (SPEC §10): live state + identity preserved byte-for-byte; ' +
+        'history (old revisions, per-op attribution, clocks) shed by design.'
+    }
+    const logPath = join(vaultDir, GENERATION_LOG_REL)
+    await mkdir(dirname(logPath), { recursive: true })
+    await writeFile(logPath, JSON.stringify(logEntry, null, 2) + '\n')
+
+    return {
+      ok: true,
+      predecessorKey,
+      predecessorPath: vault.dir, // §10 step 5: operator archives/destroys this
+      predecessorCheckpoint,
+      vault: newVault,
+      vaultDir,
+      generation: newVault.generation,
+      bundleDir: report.root,
+      stageDir,
+      conflictCopies,
+      logEntry,
+      logPath,
+      ingestOps: ops.length,
+      counts,
+      warnings
+    }
+  } catch (err) {
+    try {
+      if (newVault) await newVault.close()
+    } finally {
+      await outDir.release()
+    }
+    throw err
   }
-  const logPath = join(vaultDir, GENERATION_LOG_REL)
-  await mkdir(dirname(logPath), { recursive: true })
-  await writeFile(logPath, JSON.stringify(logEntry, null, 2) + '\n')
+}
 
+/**
+ * Claim the out-dir before the fresh vault writes to it. release() removes
+ * only what this compaction created: the directory (with any parent that
+ * mkdir created for it) when it did not exist, else only the entries that
+ * were not in it at claim time. It never removes a directory that this
+ * compaction did not create.
+ */
+async function claimDir(dir) {
+  const created = await mkdir(dir, { recursive: true }) // undefined when dir existed
+  const before = created === undefined ? new Set(await readdir(dir)) : null
   return {
-    ok: true,
-    predecessorKey,
-    predecessorPath: vault.dir, // §10 step 5: operator archives/destroys this
-    predecessorCheckpoint,
-    vault: newVault,
-    vaultDir,
-    generation: newVault.generation,
-    bundleDir: report.root,
-    stageDir,
-    conflictCopies,
-    logEntry,
-    logPath,
-    ingestOps: ops.length
+    async release() {
+      if (created !== undefined) return rm(created, { recursive: true, force: true })
+      for (const name of await readdir(dir)) {
+        if (!before.has(name)) await rm(join(dir, name), { recursive: true, force: true })
+      }
+    }
   }
+}
+
+/**
+ * Materialize the fresh vault into a verification directory and compare it
+ * with the face (§14: `_rev` lines and log.md excluded). The directory is a
+ * sibling of the stage. mkdtemp creates it exclusively under a new unique
+ * name, so no existing path is ever reused, and it is removed on every way
+ * out.
+ */
+async function verifyGeneration(newVault, faceDir, stageDir) {
+  const stage = resolve(stageDir)
+  const verifyDir = await mkdtemp(join(dirname(stage), `${basename(stage)}.verify-`))
+  try {
+    await materialize(newVault, verifyDir)
+    return await compareTrees(faceDir, verifyDir)
+  } finally {
+    await rm(verifyDir, { recursive: true, force: true })
+  }
+}
+
+/** COMPACT_FIDELITY: every difference is in the message and in `differences`. */
+function fidelityError(faceDir, differences, warnings, counts) {
+  const err = compactError(
+    'COMPACT_FIDELITY',
+    `the new vault does not match the face ${faceDir} (_rev lines and log.md excluded, SPEC §14): ` +
+      `${differences.length} difference(s). missing: only the face has the file. ` +
+      `extra: only the new vault has the file. differs: the bytes differ.\n` +
+      differences.map((d) => `  ${d.kind} ${d.path}`).join('\n')
+  )
+  err.differences = differences
+  err.warnings = warnings
+  err.counts = counts
+  return err
 }
 
 /** Count (and sample up to 4) keys under a view prefix. */
