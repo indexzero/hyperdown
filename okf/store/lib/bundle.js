@@ -51,6 +51,7 @@
 // flag/optimistic) is the only VIEW-effect gate: a held op takes effect
 // only when an indexer-authored AddWriter linearizes and core folds the
 // hold range (§8).
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import Corestore from 'corestore'
@@ -84,6 +85,11 @@ import {
 // prefix + metadata.generation, so a writer keypair can never recur across
 // generations even in a reused corestore directory.
 const GENERATION_NS = 'okf/generation/'
+
+// The swarm namespace of this protocol. swarm() announces a vault on
+// sha256(SWARM_NAMESPACE ‖ db.discoveryKey), never on the bare discovery
+// key, so a peer that announces on another topic never finds the vault.
+const SWARM_NAMESPACE = 'auto-okf/2'
 
 // Defaults for the opt-in append backpressure (vault-ld M2 ancestry, the
 // measured finding ported wholesale: a local-fold-only throttle is NOT
@@ -125,6 +131,7 @@ export class Bundle extends EventEmitter {
     this.metadata = null
     this.generation = null
     this.swarmInstance = opts.swarm || null
+    this._swarmTopic = null
     this._ownSwarm = false
     this._onConnection = null
     this._opts = opts
@@ -251,6 +258,7 @@ export class Bundle extends EventEmitter {
     this.db.on('error', (err) => this.emit('error', err))
 
     await this.db.ready()
+    this._swarmTopic = swarmTopic(this.db.discoveryKey)
 
     const vaultKeyHex = b4a.toString(this.db.key, 'hex')
     let meta = stored
@@ -721,8 +729,9 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * Join the vault's discovery key on hyperswarm; every connection is fed
-   * to db.replicate. Pass a shared swarm here or in the constructor,
+   * Join the vault's auto-okf/2 topic on hyperswarm,
+   * sha256('auto-okf/2' ‖ db.discoveryKey); every connection is fed to
+   * db.replicate. Pass a shared swarm here or in the constructor,
    * otherwise the vault creates (and owns) one. Returns the swarm.
    */
   async swarm(swarm = null) {
@@ -739,14 +748,15 @@ export class Bundle extends EventEmitter {
       }
       this.swarmInstance.on('connection', this._onConnection)
     }
-    const discovery = this.swarmInstance.join(this.db.discoveryKey, { server: true, client: true })
+    const discovery = this.swarmInstance.join(this._swarmTopic, { server: true, client: true })
     await discovery.flushed()
     return this.swarmInstance
   }
 
+  /** Leave the topic that swarm() joined. */
   async leaveSwarm() {
     if (!this.swarmInstance) return
-    await this.swarmInstance.leave(this.db.discoveryKey)
+    await this.swarmInstance.leave(this._swarmTopic)
     if (this._onConnection) {
       this.swarmInstance.off('connection', this._onConnection)
       this._onConnection = null
@@ -811,6 +821,11 @@ function normalizeBackpressure(bp) {
     maxInflight: Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_MAX_INFLIGHT,
     ackTimeout: Number.isFinite(t) && t >= 0 ? t : DEFAULT_ACK_TIMEOUT
   }
+}
+
+/** The 32-byte hyperswarm topic of a vault: sha256(SWARM_NAMESPACE ‖ discoveryKey). */
+function swarmTopic(discoveryKey) {
+  return createHash('sha256').update(SWARM_NAMESPACE).update(discoveryKey).digest()
 }
 
 function toKeyBuffer(key) {
