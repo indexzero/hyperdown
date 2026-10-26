@@ -6,6 +6,9 @@
 // first Noise handshake message at once, so a hub that dropped those bytes
 // left the link paired and dead: no handshake, no replication, both ways.
 //
+// The later tests cover a header that is bad, late or too long, a link id
+// that registers again, and a graceful close (G45 to G48).
+//
 // No step depends on a fixed sleep. Each send waits until the hub has read
 // the bytes, each step waits until the hub has registered or paired the
 // socket, and each delivery check polls until a deadline. A stall of the
@@ -17,6 +20,8 @@ import { FaultHub } from '../lib/hub.js'
 import { Rng } from '../lib/rng.js'
 
 const CLEAN = { name: 'clean', latencyMs: 0, jitterMs: 0, stallP: 0, stallMs: 0 }
+// Each chunk waits 1 s in the fault queue, so a test can act on the queue.
+const LATENCY = { name: 'latency', latencyMs: 1000, jitterMs: 0, stallP: 0, stallMs: 0 }
 const DEADLINE_MS = 5000
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -63,9 +68,12 @@ async function connect(fx) {
     () => (hubEnd = fx.accepted.find((s) => s.remotePort === socket.localPort)),
     'the hub to accept the connection'
   )
-  const peer = { socket, hubEnd, sent: 0, got: '', closed: false }
+  const peer = { socket, hubEnd, sent: 0, got: '', gotAtEnd: null, closed: false }
   socket.on('data', (d) => {
     peer.got += d
+  })
+  socket.once('end', () => {
+    peer.gotAtEnd = peer.got
   })
   socket.once('close', () => {
     peer.closed = true
@@ -297,6 +305,86 @@ test('same side: two sockets that claim one side never pair, and the newer one w
     await send(newer, 'ping')
     await send(one, 'pong')
     await waitFor(() => one.got === 'ping' && newer.got === 'pong', 'the link to deliver both ways')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// G46. An end() from one side is a graceful close. The hub delivers the
+// bytes already in that direction's fault queue, then ends the other side.
+test('graceful close: a latency-only link delivers its final payload after end()', async () => {
+  const fx = await openHub({ profile: LATENCY })
+  try {
+    const [a, b] = await pair(fx, 'L')
+    await send(a, 'final')
+    a.socket.end()
+    await waitFor(() => a.hubEnd.readableEnded, 'the hub to read the end of side 0')
+    await waitFor(() => a.hubEnd.destroyed && b.hubEnd.destroyed, 'the hub to close both ends of the link')
+    await waitFor(() => b.closed, 'side 1 to close')
+    assert.equal(b.gotAtEnd, 'final', 'what side 1 got before its end')
+    assert.ok(fx.logs.includes('L#1 0->1 ended (peer-end)'), 'the hub did not log the graceful end')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// G46. A graceful end does not protect the queue from a hard fault. After
+// the end, a cut() still drops the queued bytes at once. A kill-mid-frame
+// still delivers only the bytes in its budget, and drops the rest.
+test('after end(), a hard cut and a kill-mid-frame still drop the queued bytes at once', async () => {
+  const fx = await openHub({ profile: LATENCY })
+  try {
+    const [a, b] = await pair(fx, 'L')
+    await send(a, 'queued')
+    a.socket.end()
+    await waitFor(() => a.hubEnd.readableEnded, 'the hub to read the end of side 0 of L')
+    fx.hub.cut('L')
+    await waitFor(() => a.hubEnd.destroyed && b.hubEnd.destroyed, 'the hub to close both ends of L')
+    await waitFor(() => b.closed, 'side 1 of L to close')
+    assert.equal(b.got, '', 'a queued byte passed the cut')
+
+    const [c, d] = await pair(fx, 'M')
+    fx.hub.killAfter('M', 3)
+    await send(c, 'abcdef')
+    await send(c, 'ghi')
+    c.socket.end()
+    await waitFor(() => c.hubEnd.readableEnded, 'the hub to read the end of side 0 of M')
+    await waitFor(() => c.hubEnd.destroyed && d.hubEnd.destroyed, 'the hub to close both ends of M')
+    await waitFor(() => d.closed, 'side 1 of M to close')
+    assert.equal(d.got, 'abc', 'what side 1 of M got past the kill')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// G46. A graceful close must not keep a socket open for good. Side 1 does
+// not read, so the hub pauses side 0 until side 1 drains. Then side 1
+// sends a FIN and resets. A closed socket never drains, and a paused
+// socket with bytes in its read buffer hides its FIN. So the hub must
+// resume side 0 to see it close.
+// The 32 MiB wait in the fault queue, and then go to side 1 in a burst.
+// The test waits until the hub holds more than 16 MiB for side 1. That is
+// more than the kernel buffers of one loopback connection hold (8 MiB at
+// most on macOS), so side 1 cannot drain and resume side 0 by chance. The
+// next 1 MiB then wait in the read buffer of the paused side 0.
+test('graceful close: a source paused for backpressure still closes after its destination closes', async () => {
+  const MiB = 1024 * 1024
+  const fx = await openHub({ profile: LATENCY })
+  try {
+    const [a, b] = await pair(fx, 'L')
+    b.socket.pause()
+    a.socket.write(Buffer.alloc(32 * MiB))
+    await waitFor(
+      () => b.hubEnd.writableLength > 16 * MiB && a.hubEnd.isPaused(),
+      'the hub to hold 16 MiB for side 1 and to pause side 0'
+    )
+    a.socket.write(Buffer.alloc(MiB))
+    await waitFor(() => a.hubEnd.readableLength > 0, 'bytes to wait in the read buffer of side 0')
+    b.socket.end()
+    await waitFor(() => b.hubEnd.readableEnded, 'the hub to read the end of side 1')
+    b.socket.destroy()
+    await waitFor(() => b.hubEnd.destroyed, 'the hub to close side 1')
+    await waitFor(() => a.hubEnd.destroyed, 'the hub to close side 0')
   } finally {
     await closeHub(fx)
   }

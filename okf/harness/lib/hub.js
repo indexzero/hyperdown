@@ -31,10 +31,29 @@ class FaultDirection {
     this._timer = null
     this._lastAt = 0 // absolute-time delivery watermark (monotonic)
     this._destroyed = false
+    this._ending = false // the source sent its FIN
+    this._ended = false // the queue drained after the FIN, and `to` got its FIN
 
     from.on('data', (chunk) => this._enqueue(chunk))
     from.on('error', () => {})
-    from.on('close', () => this.destroy('peer-close'))
+    // A FIN from the source is a graceful close. The bytes already in the
+    // queue still go out, and then the destination gets a FIN. A close with
+    // no FIN before it (a reset, an error or a destroy) drops the queue at
+    // once, as cut() and kill-mid-frame do.
+    from.once('end', () => {
+      this._ending = true
+      this._endIfDrained()
+    })
+    from.on('close', () => {
+      if (!this._ending) this.destroy('peer-close')
+    })
+    // The source is paused only while `to` drains, and a closed `to` never
+    // drains. A paused source with bytes in its read buffer hides its FIN,
+    // so it would never close. Resume it: its later bytes have nowhere to
+    // go, and its FIN can arrive.
+    to.on('close', () => {
+      if (!this._destroyed) from.resume()
+    })
   }
 
   _enqueue(chunk) {
@@ -77,13 +96,13 @@ class FaultDirection {
       let out = chunk
       if (this.bytes + chunk.length > this.killAfterBytes) {
         out = chunk.subarray(0, Math.max(0, this.killAfterBytes - this.bytes))
-        if (out.length > 0 && !this.to.destroyed) this.to.write(out)
+        if (out.length > 0 && this.to.writable) this.to.write(out)
         this.log(`${this.name} kill-mid-frame after ${this.bytes + out.length}B`)
         this.destroy('kill-mid-frame')
         return
       }
       this.bytes += chunk.length
-      if (!this.to.destroyed) {
+      if (this.to.writable) {
         const ok = this.to.write(out)
         if (!ok) {
           // destination backpressure: pause the source until it drains
@@ -94,7 +113,16 @@ class FaultDirection {
         }
       }
     }
+    this._endIfDrained()
     this._schedule()
+  }
+
+  // After the source's FIN, end the destination when the queue is empty.
+  _endIfDrained() {
+    if (!this._ending || this._ended || this._destroyed || this._queue.length) return
+    this._ended = true
+    this.log(`${this.name} ended (peer-end)`)
+    if (this.to.writable) this.to.end()
   }
 
   destroy(reason) {
