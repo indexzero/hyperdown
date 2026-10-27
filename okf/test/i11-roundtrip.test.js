@@ -477,6 +477,30 @@ test("T16: two conflicted copies of one exact path keep the predecessor's holder
   await res.vault.close()
 })
 
+test('T16: the carry-across mapping names where the new vault holds each imported copy, also when the T13 check fails (G28)', async () => {
+  // The mapping comes from the import, not from the stage. A hand edit in
+  // the face takes the frontmatter out of the owner's note, so the stage
+  // drops that note (the edit makes the face dirty, so only --force reaches
+  // the stage). The copy then claims shared/note in the new vault, and the
+  // new vault holds it at shared/note.md, not at its conflict path. The T13
+  // check fails, and the error carries the mapping that the import made.
+  const old = await Bundle.init(await tmpDir('map-vault'))
+  const { tag: x } = await old.createConcept('shared/note', 'Note')
+  await old.setBody(x, null, 'X body')
+  const { tag: y } = await old.createConcept('shared/note', 'Note')
+  await old.setBody(y, null, 'Y body')
+  await old.update()
+  assert.equal(await old.val(K.path('shared/note')), x, 'setup: X must hold shared/note')
+  const base = await tmpDir('map')
+  assert.equal((await materialize(old, join(base, 'face'))).ok, true)
+  await writeFile(join(base, 'face', 'shared', 'note.md'), 'no frontmatter\n')
+
+  const err = await expectFidelityFailure(old, base, { force: true })
+  assert.ok(err.warnings.some((w) => w.kind === 'no-frontmatter' && w.path === 'shared/note.md'), JSON.stringify(err.warnings))
+  assert.deepEqual(err.conflictCopies, [{ from: copyOf(y), to: 'shared/note.md', id: y }])
+  await old.close()
+})
+
 test('I11: the face that compact writes holds only what materialize writes (§10)', async () => {
   const old = await Bundle.init(await tmpDir('face-vault'))
   await buildNonTrivial(old)

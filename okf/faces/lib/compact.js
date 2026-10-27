@@ -99,17 +99,22 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *             `.okf-*` name the stage excludes), 'parse' and
  *             'no-frontmatter' (the stage parse), 'ingest', 'oversize' and
  *             'skip' (the ingest watcher's events).
+ *   conflictCopies  [{ from, to, id }] (§10 --force), one per conflicted
+ *             copy that the import took: its path in the face, the path at
+ *             which the new vault holds the _id that the import gave it (null
+ *             when it holds none), and that _id (null when the import took no
+ *             concept). The generation log records the same list.
  *
  * After the ingest, compact materializes the fresh vault into a verification
  * directory (a uniquely named sibling of stageDir, removed on success and on
  * failure) and byte-compares it with the face (verify.js: `_rev` lines and
  * log.md excluded, §14). On any difference it throws COMPACT_FIDELITY. The
  * error carries `differences` ([{ path, kind }], every one also in the
- * message), `warnings` and `counts`. A note that the face holds and the stage
- * or the ingest dropped is such a difference. On COMPACT_FIDELITY, and on any
- * other failure after it claims vaultDir, compact closes the fresh vault and
- * removes what it created there: vaultDir itself when compact created it,
- * else only the entries that it added.
+ * message), `warnings`, `counts` and `conflictCopies`. A note that the face
+ * holds and the stage or the ingest dropped is such a difference. On
+ * COMPACT_FIDELITY, and on any other failure after it claims vaultDir,
+ * compact closes the fresh vault and removes what it created there: vaultDir
+ * itself when compact created it, else only the entries that it added.
  *
  * compact NEVER deletes the predecessor: it returns `predecessorPath` for the
  * operator to archive or destroy out-of-band (§10 step 5).
@@ -161,7 +166,6 @@ export async function compact(vault, opts = {}) {
   const emitted = Object.keys((await loadManifest(report.root)).files)
   const staged = []
   const claimOrd = new Map() // conflicted copy -> the predecessor's claim ord of its _id (§4 c/<id>/path)
-  const conflictCopies = []
   const counts = { walked: 0, staged: 0, ingested: 0 }
   const warnings = []
   for (const rel of emitted.sort(byteCmp)) {
@@ -194,12 +198,8 @@ export async function compact(vault, opts = {}) {
     staged.push(rel)
     counts.staged++
     if (isConflictCopy(rel)) {
-      // §10 --force: enumerate every conflicted copy carried across. Identity
-      // (_id) and path both survive the cycle, and the conflict suffix is
-      // first-8-hex of SHA-256(_id) (§7) — so the collision re-manifests at the
-      // SAME path in the new vault (deterministic carry-across, §9 conflict-
-      // copy awareness). old conflict path === new conflict path.
-      conflictCopies.push({ from: rel, to: rel, id: typeof fm._id === 'string' ? fm._id : null })
+      // The import order of the copies (step 5) is their claim order in the
+      // predecessor.
       const pathRec = typeof fm._id === 'string' ? await vault.val(K.cPath(fm._id)) : undefined
       claimOrd.set(rel, pathRec && typeof pathRec.ord === 'number' ? pathRec.ord : Infinity)
     }
@@ -258,16 +258,31 @@ export async function compact(vault, opts = {}) {
       if (ops.length > 0) counts.ingested++
     })
     const ops = []
+    const imported = [] // { rel, id }: each conflicted copy, and the _id that the import gave it
     try {
-      for (const rel of importOrder) ops.push(...(await watcher.ingestFile(rel, { compaction: true })))
+      for (const rel of importOrder) {
+        const fileOps = await watcher.ingestFile(rel, { compaction: true })
+        ops.push(...fileOps)
+        // Every op of one file names the concept of that file, and the
+        // create names the adopted _id. No op: the import took no concept.
+        if (isConflictCopy(rel)) imported.push({ rel, id: fileOps.length > 0 ? fileOps[0].payload.id : null })
+      }
       if (typeof newVault.update === 'function') await newVault.update()
     } finally {
       await watcher.close()
     }
 
     // ---- 6. check its own output (§10, §14) ----
-    const differences = await verifyGeneration(newVault, report.root, stageDir)
-    if (differences.length > 0) throw fidelityError(report.root, differences, warnings, counts)
+    const ids = new Set(imported.map(({ id }) => id).filter((id) => id !== null))
+    const { differences, notes } = await verifyGeneration(newVault, report.root, stageDir, ids)
+    // §10 --force: the carry-across mapping comes from what the import did.
+    // For each conflicted copy: its path in the face, the _id that the
+    // import gave it, and the path at which the new vault holds that _id
+    // (null when it holds none). When the check passes, to === from (§9
+    // conflict-copy awareness: the _id and the path both survive, and the
+    // copy name is a function of the _id, §7).
+    const conflictCopies = imported.map(({ rel, id }) => ({ from: rel, to: (id !== null && notes.get(id)) || null, id }))
+    if (differences.length > 0) throw fidelityError(report.root, differences, warnings, counts, conflictCopies)
 
     // ---- 7. record the generation entry in the fresh vault's log/ (§10) ----
     // The §3 append-only wire contract has NO generation op and the view's log/
@@ -341,21 +356,35 @@ async function claimDir(dir) {
  * with the face (§14: `_rev` lines and log.md excluded). The directory is a
  * sibling of the stage. mkdtemp creates it exclusively under a new unique
  * name, so no existing path is ever reused, and it is removed on every way
- * out.
+ * out. Returns { differences, notes }: `notes` maps each _id in `ids` to the
+ * note that materialize wrote for it.
  */
-async function verifyGeneration(newVault, faceDir, stageDir) {
+async function verifyGeneration(newVault, faceDir, stageDir, ids) {
   const stage = resolve(stageDir)
   const verifyDir = await mkdtemp(join(dirname(stage), `${basename(stage)}.verify-`))
   try {
-    await materialize(newVault, verifyDir)
-    return await compareTrees(faceDir, verifyDir)
+    const report = await materialize(newVault, verifyDir)
+    const differences = await compareTrees(faceDir, verifyDir)
+    return { differences, notes: await notesOf(report, ids) }
   } finally {
     await rm(verifyDir, { recursive: true, force: true })
   }
 }
 
+/** The note that a materialize report wrote for each _id in `ids`: Map<_id, path>. */
+async function notesOf(report, ids) {
+  const notes = new Map()
+  if (ids.size === 0) return notes
+  for (const rel of [...report.written, ...report.unchanged]) {
+    if (!rel.endsWith('.md') || isReservedFile(rel)) continue
+    const { fm } = parseNote(await readFile(join(report.root, rel), 'utf8'))
+    if (fm && ids.has(fm._id)) notes.set(fm._id, rel)
+  }
+  return notes
+}
+
 /** COMPACT_FIDELITY: every difference is in the message and in `differences`. */
-function fidelityError(faceDir, differences, warnings, counts) {
+function fidelityError(faceDir, differences, warnings, counts, conflictCopies) {
   const err = compactError(
     'COMPACT_FIDELITY',
     `the new vault does not match the face ${faceDir} (_rev lines and log.md excluded, SPEC §14): ` +
@@ -366,6 +395,7 @@ function fidelityError(faceDir, differences, warnings, counts) {
   err.differences = differences
   err.warnings = warnings
   err.counts = counts
+  err.conflictCopies = conflictCopies
   return err
 }
 
