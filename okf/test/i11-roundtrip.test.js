@@ -358,7 +358,10 @@ test('I11: a second generation cycle (generation chain of length 2) still round-
   await e2.close()
 })
 
-test('I11: --force over a path collision fails COMPACT_FIDELITY until T16 keeps the winner (G28)', async () => {
+/** The §7 conflicted-copy file name of `id` at `shared/note`: the first 8 hex of SHA-256(_id). */
+const copyOf = (id) => `shared/note.conflict-${createHash('sha256').update(id).digest('hex').slice(0, 8)}.md`
+
+test('I11: --force carries a path-collision conflict copy across the generation, and each _id keeps its file (G28)', async () => {
   const a = await Bundle.init(await tmpDir('cc-a'))
   const b = await Bundle.join(await tmpDir('cc-b'), a.key)
   let unpair = pair(a, b)
@@ -383,25 +386,95 @@ test('I11: --force over a path collision fails COMPACT_FIDELITY until T16 keeps 
     (err) => err.code === 'COMPACT_REFUSED'
   )
 
-  // ...and with force, the T13 check finds G28. The stage ingests in byte
-  // order, so the conflicted copy `shared/note.conflict-<h8>.md` claims
-  // `shared/note` in the fresh vault before the predecessor's winner does.
-  // The new vault then swaps the winner and the loser, and compact fails
-  // loudly. T16 ingests primary paths first, and puts back the carry-across
-  // assertions that this test held at f4facef.
-  // The copy named for the predecessor's loser is missing, and a copy named
-  // for its winner is extra.
-  const err = await expectFidelityFailure(a, await tmpDir('cc-force'), { force: true })
-  const byKind = (kind) => err.differences.filter((d) => d.kind === kind).map((d) => d.path)
-  const copyOf = (id) => `shared/note.conflict-${createHash('sha256').update(id).digest('hex').slice(0, 8)}.md`
-  assert.deepEqual(byKind('differs'), ['shared/index.md', 'shared/note.md'])
-  assert.equal(byKind('missing').length, 1, JSON.stringify(err.differences))
-  assert.equal(byKind('extra').length, 1, JSON.stringify(err.differences))
-  assert.deepEqual([...byKind('missing'), ...byKind('extra')].sort(), [copyOf(idA), copyOf(idB)].sort())
+  // codex-D.out #8: the earliest claim holds a path (§7), and the name of
+  // the conflicted copy `shared/note.conflict-<h8>.md` sorts before
+  // `shared/note.md`. The predecessor's owner of `shared/note` must keep it
+  // in the new vault, and the other concept must keep its conflict path.
+  const owner = await a.val(K.path('shared/note'))
+  assert.ok(owner === idA || owner === idB, 'setup: one of the two concepts must hold shared/note')
+  const copy = owner === idA ? idB : idA
+  const copyRel = copyOf(copy)
+
+  // ...and with force enumerates the carried-across conflict copy old -> new.
+  const res = await compact(a, {
+    toDir: await tmpDir('cc-face'),
+    vaultDir: await tmpDir('cc-vault'),
+    initBundle: Bundle.init,
+    force: true
+  })
+  const nu = res.vault
+  // The T13 check passed: compact throws COMPACT_FIDELITY on a difference.
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.counts, { walked: 2, staged: 2, ingested: 2 })
+  assert.deepEqual(res.warnings, [])
+  assert.equal(res.conflictCopies.length, 1, 'exactly one conflicted copy should be enumerated')
+  const cc = res.conflictCopies[0]
+  assert.match(cc.from, /^shared\/note\.conflict-[0-9a-f]{8,}\.md$/)
+  assert.equal(cc.to, cc.from, 'identity + path preserved => conflict copy re-manifests at the same path')
+
+  // The collision re-manifests in the new vault: one holder + one conflict copy.
+  const newDir = await tmpDir('cc-new-bundle')
+  await materialize(nu, newDir)
+  const bundle = await readBundle(newDir)
+  assert.ok(bundle.has('shared/note.md'), 'winner missing in new vault')
+  assert.ok(
+    [...bundle.keys()].some((k) => /shared\/note\.conflict-[0-9a-f]{8,}\.md$/.test(k)),
+    'conflict copy did not re-manifest in the new vault'
+  )
+
+  // Each _id keeps its file name: the same _id at each name in the face of
+  // the predecessor and in the new vault.
+  const face = await readBundle(res.bundleDir)
+  const idAt = (files, rel) => parseNote(files.get(rel)).fm._id
+  for (const files of [face, bundle]) {
+    assert.equal(idAt(files, 'shared/note.md'), owner, 'the owner of shared/note lost its file name')
+    assert.equal(idAt(files, copyRel), copy, 'the conflicted copy lost its file name')
+  }
+  assert.equal(await nu.val(K.path('shared/note')), owner, 'the owner of shared/note lost the path')
+
+  // The generation log's carry-across mapping matches the imported identities.
+  const logEntry = JSON.parse(await readFile(res.logPath, 'utf8'))
+  assert.deepEqual(logEntry.conflictCopies, [{ from: copyRel, to: copyRel, id: copy }])
+  assert.deepEqual(res.conflictCopies, logEntry.conflictCopies)
+  for (const { to, id } of logEntry.conflictCopies) assert.equal(idAt(bundle, to), id)
 
   unpair()
   await a.close()
   await b.close()
+  await nu.close()
+})
+
+test("T16: two conflicted copies of one exact path keep the predecessor's holder of that path (G28)", async () => {
+  // X claims `A`, then Y and Z claim `a`. The casefold group winner is X
+  // (§7), so Y and Z both materialize as conflicted copies, and neither
+  // file is at `a.md`. Y claimed `a` before Z, so Y holds the exact path
+  // `a` (path/a), where links to `/a.md` resolve. The ids make the copy
+  // name of Z sort before the copy name of Y. So an import in byte order
+  // would give `a` to Z. The face cannot show that, so the T13 check
+  // passes either way.
+  const h8 = (id) => createHash('sha256').update(id).digest('hex').slice(0, 8)
+  const ids = Array.from({ length: 256 }, (_, i) => `ab${i.toString(16).padStart(2, '0')}`)
+  const y = ids.find((id) => ids.some((other) => h8(other) < h8(id)))
+  const z = ids.find((id) => h8(id) < h8(y))
+  const old = await Bundle.init(await tmpDir('cf-vault'))
+  const { tag: x } = await old.createConcept('A', 'Note')
+  await old.createConcept('a', 'Note', { id: y })
+  await old.createConcept('a', 'Note', { id: z })
+  await old.update()
+  assert.equal(await old.val(K.path('A')), x)
+  assert.equal(await old.val(K.path('a')), y, 'setup: Y must hold the exact path a')
+  const flagged = []
+  for await (const { key } of old.scan(K.flagPrefix('pathcollision'))) flagged.push(key)
+  assert.deepEqual(flagged, [K.flag('pathcollision', 'a', y), K.flag('pathcollision', 'a', z)].sort())
+
+  const base = await tmpDir('cf')
+  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init, force: true })
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.counts, { walked: 3, staged: 3, ingested: 3 })
+  assert.equal(await res.vault.val(K.path('A')), x)
+  assert.equal(await res.vault.val(K.path('a')), y, 'the exact path a changed its holder')
+  await old.close()
+  await res.vault.close()
 })
 
 test('I11: the face that compact writes holds only what materialize writes (§10)', async () => {

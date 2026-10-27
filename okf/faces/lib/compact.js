@@ -12,7 +12,8 @@
 //      risk`). The fresh vault pins the predecessor's `limits` (§3);
 //   3. ingest the bundle into the fresh vault with `_id` ADOPTION (§6/§9:
 //      an incoming `_id` unknown to the fresh vault is authoritative on
-//      create, so identity lineage survives the generation);
+//      create, so identity lineage survives the generation). Primary paths
+//      import before conflicted copies, so each path keeps its owner (§7);
 //   4. check its own output: materialize the fresh vault into a verification
 //      directory and byte-compare it with the face (verify.js). A difference
 //      fails the cycle with COMPACT_FIDELITY, and compaction removes what it
@@ -159,6 +160,7 @@ export async function compact(vault, opts = {}) {
   await mkdir(stageDir, { recursive: true })
   const emitted = Object.keys((await loadManifest(report.root)).files)
   const staged = []
+  const claimOrd = new Map() // conflicted copy -> the predecessor's claim ord of its _id (§4 c/<id>/path)
   const conflictCopies = []
   const counts = { walked: 0, staged: 0, ingested: 0 }
   const warnings = []
@@ -191,13 +193,15 @@ export async function compact(vault, opts = {}) {
     await writeStaged(stageDir, rel, renderNote(pairs, body))
     staged.push(rel)
     counts.staged++
-    if (CONFLICT_SUFFIX_RE.test(rel)) {
+    if (isConflictCopy(rel)) {
       // §10 --force: enumerate every conflicted copy carried across. Identity
       // (_id) and path both survive the cycle, and the conflict suffix is
       // first-8-hex of SHA-256(_id) (§7) — so the collision re-manifests at the
       // SAME path in the new vault (deterministic carry-across, §9 conflict-
       // copy awareness). old conflict path === new conflict path.
       conflictCopies.push({ from: rel, to: rel, id: typeof fm._id === 'string' ? fm._id : null })
+      const pathRec = typeof fm._id === 'string' ? await vault.val(K.cPath(fm._id)) : undefined
+      claimOrd.set(rel, pathRec && typeof pathRec.ord === 'number' ? pathRec.ord : Infinity)
     }
   }
 
@@ -225,9 +229,25 @@ export async function compact(vault, opts = {}) {
     })
 
     // ---- 5. ingest the staged bundle with _id adoption (§6/§9/§10) ----
-    // Each staged path goes through the explicit compaction import, in the
-    // order of the stage. scan() would walk the stage with walkNotes again,
-    // and ingestFile without the option ignores every dot path.
+    // Each staged path goes through the explicit compaction import. scan()
+    // would walk the stage with walkNotes again, and ingestFile without the
+    // option ignores every dot path.
+    //
+    // The import order keeps each path with its owner in the predecessor
+    // (G28). §7 gives a path to the earliest claim, and a conflicted copy
+    // claims its suffix-stripped path (§9). Byte order puts
+    // `note.conflict-<h8>.md` before `note.md`, so in byte order the copy
+    // claims the path first, and the owner and the loser swap. So:
+    //   - Every primary path comes first, in byte order. No two primary
+    //     notes claim one casefold path (§7 flags every later claimant), so
+    //     their order changes no holder.
+    //   - Then every `.conflict-` copy, in the order of its claim in the
+    //     predecessor (the ord of c/<id>/path), then in byte order. Two
+    //     copies can claim one exact path: when the casefold winner is at
+    //     another exact path, each later claimant is a copy, and the earliest
+    //     of them holds the exact path (path/<p>, where links resolve).
+    const copies = staged.filter(isConflictCopy).sort((p, q) => claimOrd.get(p) - claimOrd.get(q) || byteCmp(p, q))
+    const importOrder = [...staged.filter((rel) => !isConflictCopy(rel)), ...copies]
     const watcher = await createIngestWatcher(newVault, stageDir, { watch: false })
     watcher.on('warning', ({ path, message }) => warnings.push({ kind: 'ingest', path, message }))
     watcher.on('oversize', ({ path, bytes, limit }) =>
@@ -239,7 +259,7 @@ export async function compact(vault, opts = {}) {
     })
     const ops = []
     try {
-      for (const rel of staged) ops.push(...(await watcher.ingestFile(rel, { compaction: true })))
+      for (const rel of importOrder) ops.push(...(await watcher.ingestFile(rel, { compaction: true })))
       if (typeof newVault.update === 'function') await newVault.update()
     } finally {
       await watcher.close()
@@ -365,6 +385,11 @@ async function writeStaged(stageDir, rel, text) {
   const abs = join(stageDir, rel)
   await mkdir(dirname(abs), { recursive: true })
   await writeFile(abs, text)
+}
+
+/** §7: a conflicted copy is a note whose terminal name ends `.conflict-<hex>.md`. */
+function isConflictCopy(rel) {
+  return CONFLICT_SUFFIX_RE.test(rel)
 }
 
 function byteCmp(a, b) {
