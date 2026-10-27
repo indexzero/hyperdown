@@ -3,17 +3,17 @@
 // Pattern ancestor: vault-ld/core/lib/apply.js (patterns only, no code path
 // shared — SPEC §0 copy-don't-depend).
 //
-// Transport contract (SPEC §1, verified against the installed
-// autobee@1.0.10 sources 2026-07-13): `apply(nodes, view, host)` receives
-// linearized writer nodes shaped { key, value, length, optimistic, ... }
-// (lib/writers.js createNode); the view is hyperbee2-flavored (get /
-// write() batches with tryPut+tryDelete+flush / createReadStream — see
-// memview.js for the verified surface); host exposes addWriter(key,
-// { isIndexer, weight }) and removeWriter(key) (lib/apply-calls.js — note
-// the default weight is `isIndexer ? 2 : 1`, which is why §8 mandates an
-// explicit weight). Core calls only addWriter. Re-checked for this
-// contract against autobee@2.12.1: the node shape and host.addWriter
-// signature are unchanged, and host.ackWriter is now a no-op.
+// Transport contract (SPEC §1, verified against the installed source of
+// autobee@2.12.1): `apply(nodes, view, host)` (README.md:74,
+// lib/apply-view.js:17-19) receives linearized writer nodes shaped
+// { key, value, length, optimistic, ... } (lib/writers.js:808-829); the
+// view is hyperbee2-flavored (get / write() batches with
+// tryPut+tryDelete+flush / createReadStream — see memview.js for the
+// verified surface); host exposes addWriter(key, { isIndexer, weight })
+// and removeWriter(key) (lib/apply-calls.js:33, :49 — note the default
+// weight is `isIndexer ? 2 : 1`, which is why §8 mandates an explicit
+// weight). Core calls only addWriter. host.ackWriter is a deprecated no-op
+// (README.md:224-227, lib/apply-calls.js:44-47).
 //
 // This module is PURE over (linearized prefix, config): no wall clock, no
 // randomness, no map-iteration-order dependence (every write goes through
