@@ -64,6 +64,7 @@ import {
   outsiderAppend,
   announce,
   holds,
+  deliveredTo,
   watchApply,
   runChild
 } from './attack-helpers.js'
@@ -519,9 +520,13 @@ test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }
   const applied = { a: watchApply(a), b: watchApply(b), s: watchApply(s) }
   const unpairAB = pair(a, b)
   const unpairAS = pair(a, s)
+  // No peer relays the outsider's core (attack-helpers.js outsiderAppend),
+  // so b gets the forged node only from s itself.
+  const unpairBS = pair(b, s)
   t.after(async () => {
     unpairAB()
     unpairAS()
+    unpairBS()
     await closeAll(a, b, s)
   })
   const out = { trigger: 'outsider' }
@@ -536,25 +541,23 @@ test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }
     return !!rec && rec.length >= citedLen
   }, 20000)
   const hash0 = await converged([a, b, s], 20000)
+  const peers = [
+    ['a', a, applied.a],
+    ['b', b, applied.b],
+    ['s', s, applied.s]
+  ]
 
+  let attackLen = 0
   const forged = await timed(async () => {
-    const length = await outsiderAppend(s, 'forged-witness', {
+    attackLen = await outsiderAppend(s, 'forged-witness', {
       witness: { weight: TIER, link: { key: b.localKey, length: citedLen } }
     })
-    return announce(s, [{ key: s.localKey, length }])
+    return announce(s, [{ key: s.localKey, length: attackLen }])
   }, 20000)
   out.forged = forged.status === 'ok' && forged.value === true ? 'ok' : forged.status
-  out.delivered = await until(async () => (await a.update(), await holds(a, s.localKey, 1)), 20000)
+  out.delivered = await deliveredTo(peers, [{ key: s.localKey, length: attackLen }])
   await sleep(500)
-  out.peers = await outsiderRows(
-    [
-      ['a', a, applied.a],
-      ['b', b, applied.b],
-      ['s', s, applied.s]
-    ],
-    [s.localKey],
-    hash0
-  )
+  out.peers = await outsiderRows(peers, [s.localKey], hash0)
   out.citedSys = await sys(a, b.localKey)
   out.errors = { victim: errorsOf(a), member: errorsOf(b), outsider: errorsOf(s) }
   await record(t, 'A6-G43-forged-witness-outsider', out)
@@ -562,7 +565,7 @@ test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }
   assert.equal(out.citedPresentOnA, true, 'the cited length is present in the system')
   assert.ok(hash0, 'the peers converge before the attack')
   assert.equal(out.forged, 'ok')
-  assert.equal(out.delivered, true, 'the victim holds the forged node (positive control)')
+  assert.deepEqual(out.delivered, { a: true, b: true, s: true }, 'every peer holds the forged node (positive control)')
   assertOutsiderShut(out.peers)
   assert.deepEqual(out.citedSys, W0, 'the cited member stays at weight 0')
   assert.deepEqual(out.errors, { victim: [], member: [], outsider: [] }, 'no autobee closes')

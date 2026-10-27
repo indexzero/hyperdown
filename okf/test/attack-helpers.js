@@ -130,6 +130,39 @@ export async function holds(v, key, length = 1) {
 }
 
 /**
+ * The per-peer positive control. Poll until each peer `[name, vault]` in
+ * `peers` holds the first `length` blocks of each attack core `{ key,
+ * length }` in `cores`. Returns `{ <name>: true | false }`, one entry per
+ * peer. A peer that never got the attack nodes reads false: no effect on
+ * that peer proves nothing, so a test asserts every entry true before it
+ * asserts no effect. A length below 1 is no attack, so every entry then
+ * reads false.
+ *
+ * Each poll updates the peer under a deadline. A stalled update is a
+ * liveness result that the test asserts by itself. It does not stall this
+ * check, which reads only the blocks.
+ */
+export async function deliveredTo(peers, cores, ms = 20000) {
+  const out = Object.fromEntries(peers.map(([name]) => [name, false]))
+  if (!cores.every(({ length }) => length >= 1)) return out
+  await until(
+    async () => {
+      for (const [name, v] of peers) {
+        if (out[name]) continue
+        await timed(() => v.update(), 5000)
+        let all = true
+        for (const { key, length } of cores) if (!(await holds(v, key, length))) all = false
+        out[name] = all
+      }
+      return Object.values(out).every(Boolean)
+    },
+    ms,
+    50
+  )
+  return out
+}
+
+/**
  * Record the writer key (hex) of every node that autobee hands to okf's
  * apply on `v`. It wraps the Bundle's apply handler (store/lib/bundle.js
  * `_apply`, which the Autobee `apply` option calls), never autobee.
