@@ -14,6 +14,8 @@ import assert from 'node:assert/strict'
 import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
+import hypercoreCrypto from 'hypercore-crypto'
 import { Bundle } from '../store/index.js'
 import { materialize, compact, createIngestWatcher, readView, readLog, parseNote, renderNote } from '../faces/index.js'
 import { compareTrees } from '../faces/lib/verify.js'
@@ -498,6 +500,55 @@ test('T16: the carry-across mapping names where the new vault holds each importe
   const err = await expectFidelityFailure(old, base, { force: true })
   assert.ok(err.warnings.some((w) => w.kind === 'no-frontmatter' && w.path === 'shared/note.md'), JSON.stringify(err.warnings))
   assert.deepEqual(err.conflictCopies, [{ from: copyOf(y), to: 'shared/note.md', id: y }])
+  await old.close()
+})
+
+test('T16: compact refuses every supplied keyPair by name, before it creates or writes anything (G52)', async () => {
+  // §10 step 3: the fresh vault takes the writer key pair that the store
+  // derives under the generation namespace. A supplied key pair bypasses
+  // that namespace (codex-D.out #10). With the predecessor's own pair, the
+  // new vault even gets the predecessor's vault key. So compact takes no
+  // keyPair: it refuses the predecessor's pair and a fresh random pair alike.
+  const kpOld = hypercoreCrypto.keyPair()
+  const old = await Bundle.init(await tmpDir('key-vault'), { keyPair: kpOld })
+  const { tag } = await old.createConcept('notes/a', 'Note')
+  await old.setBody(tag, null, 'A body')
+
+  /** Compact `old` with `keyPair` into a directory that already holds a face, a stage and an out-dir. */
+  const attempt = async (keyPair, name) => {
+    const base = await tmpDir(`key-${name}`)
+    const keep = new Map([['face/keep.txt', 'face\n'], ['out.compact-src/keep.txt', 'stage\n'], ['out/keep.txt', 'out\n']])
+    await writeTree(base, keep)
+    const files = await listFiles(base)
+    const before = await predecessorState(old)
+    let code = 'ok'
+    try {
+      const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init, keyPair })
+      await res.vault.close()
+    } catch (err) {
+      code = err.code
+    }
+    const bytes = await Promise.all([...keep].map(([rel]) => readFile(join(base, rel), 'utf8').catch(() => null)))
+    return {
+      code,
+      filesUnchanged: isDeepStrictEqual(await listFiles(base), files),
+      bytesUnchanged: isDeepStrictEqual(bytes, [...keep.values()]),
+      predecessorUnchanged: isDeepStrictEqual(await predecessorState(old), before)
+    }
+  }
+  const refused = { code: 'COMPACT_KEYPAIR_REFUSED', filesUnchanged: true, bytesUnchanged: true, predecessorUnchanged: true }
+  assert.deepEqual(
+    { predecessor: await attempt(kpOld, 'predecessor'), fresh: await attempt(hypercoreCrypto.keyPair(), 'fresh') },
+    { predecessor: refused, fresh: refused }
+  )
+
+  // Without keyPair, the store derives a writer key pair that is not the predecessor's.
+  const base = await tmpDir('key-none')
+  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
+  assert.equal(res.ok, true)
+  assert.notEqual(Buffer.from(res.vault.localKey).toString('hex'), Buffer.from(old.localKey).toString('hex'))
+  assert.notEqual(res.vault.keyHex, old.keyHex)
+  await res.vault.close()
   await old.close()
 })
 

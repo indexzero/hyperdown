@@ -9,7 +9,8 @@
 //      (@auto-okf/store derives writer cores under a per-generation corestore
 //      namespace keyed by the predecessor fields — §10/N2, so adoption of
 //      the predecessor's mint-shaped ids never deadlocks `mint-collision-
-//      risk`). The fresh vault pins the predecessor's `limits` (§3);
+//      risk`). compact takes no keyPair, so nothing bypasses that
+//      namespace. The fresh vault pins the predecessor's `limits` (§3);
 //   3. ingest the bundle into the fresh vault with `_id` ADOPTION (§6/§9:
 //      an incoming `_id` unknown to the fresh vault is authoritative on
 //      create, so identity lineage survives the generation). Primary paths
@@ -79,12 +80,17 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *                is non-empty (SPEC §10 guardrail). Without it, compact
  *                REFUSES (throws COMPACT_REFUSED) so live conflicts are never
  *                silently frozen into a new generation.
- *   keyPair      custom signing keypair for the fresh vault's local writer
- *                (else the store generates a fresh one under the generation ns).
  *   encryptionKey  32-byte key for a private fresh vault (end to end).
  *   sign         async (checkpoint) => { signer, signature } (hex) — signs the
  *                predecessor checkpoint that anchors the generation chain (§10:
  *                operator-signed provenance, never verified here).
+ *
+ * compact takes no `keyPair`. The fresh vault always takes the writer key
+ * pair that the store derives under the generation namespace (§10 step 3).
+ * A supplied key pair bypasses that namespace: the store gives it the same
+ * writer key in every directory, so the predecessor's pair gives the new
+ * vault the predecessor's vault key. compact refuses a supplied `keyPair`
+ * with COMPACT_KEYPAIR_REFUSED, before it reads, creates or writes anything.
  *
  * Returns { ok, predecessorKey, predecessorPath, predecessorCheckpoint,
  *   vault (the fresh OPEN vault — the CALLER closes it), vaultDir, generation,
@@ -120,7 +126,14 @@ const GENERATION_LOG_REL = 'log/generation.json'
  * operator to archive or destroy out-of-band (§10 step 5).
  */
 export async function compact(vault, opts = {}) {
-  const { toDir, vaultDir, force = false, keyPair, encryptionKey, sign } = opts
+  const { toDir, vaultDir, force = false, encryptionKey, sign } = opts
+  if (opts.keyPair !== undefined) {
+    throw compactError(
+      'COMPACT_KEYPAIR_REFUSED',
+      'compact takes no keyPair: the fresh vault takes the writer key pair that the store derives ' +
+        'under the generation namespace (SPEC §10 step 3), and a supplied key pair bypasses it'
+    )
+  }
   const initBundle = opts.initBundle
   if (typeof initBundle !== 'function') {
     throw compactError('COMPACT_NO_INITBUNDLE', 'opts.initBundle (@auto-okf/store Bundle.init) is required')
@@ -224,7 +237,6 @@ export async function compact(vault, opts = {}) {
     // check each op against them.
     newVault = await initBundle(vaultDir, {
       metadata: { predecessorKey, predecessorCheckpoint, limits: { ...vault.metadata.limits } },
-      ...(keyPair !== undefined ? { keyPair } : {}),
       ...(encryptionKey !== undefined ? { encryptionKey } : {})
     })
 
