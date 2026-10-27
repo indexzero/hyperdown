@@ -176,24 +176,8 @@ export async function compact(vault, opts = {}) {
         'materialize is the plaintext export'
     )
   }
-  // Staging MUST live OUTSIDE vaultDir: `new Corestore(vaultDir)` clears the
-  // vault directory on init, so a nested staging dir would be wiped before
-  // ingest ever reads it (proven under sslop/033).
-  const stageDir = opts.stageDir || `${vaultDir}.compact-src`
-  // The path guard (G49): before compact writes or removes anything, no two
-  // of its five areas may be equal or nested.
-  await refuseOverlap([
-    ['predecessor', vault.dir],
-    ['out-dir', vaultDir],
-    ['face', toDir],
-    ['stage', stageDir],
-    ['verification', `${verifyPrefix(stageDir)}XXXXXX`]
-  ])
-  // The fresh vault goes only into a new or empty out-dir (G16).
-  await refuseUsedOutDir(vaultDir)
-  // compact creates its stage for this run only, so a stage path that exists
-  // is refused here, before the face step.
-  if (await lstat(stageDir).catch(() => null)) throw stageExistsError(stageDir)
+  // The path guard, before compact writes or removes anything.
+  const { stageDir } = await guardCompactPaths({ predecessorDir: vault.dir, toDir, vaultDir, stageDir: opts.stageDir })
 
   if (typeof vault.update === 'function') await vault.update()
 
@@ -245,6 +229,40 @@ export async function compact(vault, opts = {}) {
   } finally {
     if (ownStage) await rm(stageDir, { recursive: true, force: true })
   }
+}
+
+/**
+ * The path guard of compaction (T18). compact() runs it before it writes or
+ * removes anything. A caller that must refuse before it opens the
+ * predecessor runs it first too: the CLI does, because an open and a close
+ * of a vault rewrite files in its storage. It writes nothing. In order:
+ *
+ *   - the five areas (predecessorDir, vaultDir, toDir, the stage and the
+ *     verification directory) must be separate: COMPACT_PATH_OVERLAP (G49);
+ *   - vaultDir must be new or an empty directory: COMPACT_OUT_DIR_NOT_EMPTY
+ *     (G16);
+ *   - the stage must not exist: COMPACT_STAGE_EXISTS.
+ *
+ * Returns { stageDir }: the stage that compact uses (default
+ * `<vaultDir>.compact-src`).
+ */
+export async function guardCompactPaths({ predecessorDir = null, toDir, vaultDir, stageDir }) {
+  // Staging MUST live OUTSIDE vaultDir: `new Corestore(vaultDir)` clears the
+  // vault directory on init, so a nested staging dir would be wiped before
+  // ingest ever reads it (proven under sslop/033).
+  const stage = stageDir || `${vaultDir}.compact-src`
+  await refuseOverlap([
+    ['predecessor', predecessorDir],
+    ['out-dir', vaultDir],
+    ['face', toDir],
+    ['stage', stage],
+    ['verification', `${verifyPrefix(stage)}XXXXXX`]
+  ])
+  await refuseUsedOutDir(vaultDir)
+  // compact creates its stage for this run only, and step 3 creates it
+  // exclusively.
+  if (await lstat(stage).catch(() => null)) throw stageExistsError(stage)
+  return { stageDir: stage }
 }
 
 /** Everything after the stage is created: the staged copy, the fresh vault, its ingest, its check and its generation entry. */

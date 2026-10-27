@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
-import { mkdir, readdir, readFile, rm, writeFile, access } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile, access, symlink } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
@@ -840,15 +840,13 @@ test('T18: auto-okf compact refuses a re-run into an existing generation, so a l
   await nv.update()
   await nv.close()
 
-  const dirs = { out, face: `${out}.face` }
+  const dirs = { vault: storage, out, face: `${out}.face` }
   const before = await bytesOf(dirs)
-  const predecessor = await snapshotHash(storage)
   const again = await cli(['compact', storage, out])
   assert.equal(again.code, 1, again.stdout + again.stderr)
   assert.match(again.stderr, /^auto-okf compact: COMPACT_OUT_DIR_NOT_EMPTY: /m)
-  assert.deepEqual(await bytesOf(dirs), before, 'the refused re-run changed the new generation or its face')
+  assert.deepEqual(await bytesOf(dirs), before, 'the refused re-run changed the predecessor, the new generation or its face')
   assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
-  assert.equal(await snapshotHash(storage), predecessor)
 
   const after = await Bundle.open(out)
   try {
@@ -878,15 +876,13 @@ test('T18: auto-okf compact --encryption-key refuses an out-dir that holds an un
   assert.equal(first.code, 0, first.stderr)
   assert.equal((await pinned(out)).encrypted, false)
 
-  const dirs = { out, face: `${out}.face` }
+  const dirs = { vault: storage, out, face: `${out}.face` }
   const before = await bytesOf(dirs)
-  const predecessor = await snapshotHash(storage)
   const again = await cli(['compact', storage, out, '--encryption-key', NEW_KEY])
   assert.equal(again.code, 1, again.stdout + again.stderr)
   assert.match(again.stderr, /^auto-okf compact: COMPACT_OUT_DIR_NOT_EMPTY: /m)
-  assert.deepEqual(await bytesOf(dirs), before, 'the refused re-run changed the new generation or its face')
+  assert.deepEqual(await bytesOf(dirs), before, 'the refused re-run changed the predecessor, the new generation or its face')
   assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
-  assert.equal(await snapshotHash(storage), predecessor)
 
   assert.equal((await pinned(out)).encrypted, false)
   const after = await Bundle.open(out)
@@ -895,6 +891,37 @@ test('T18: auto-okf compact --encryption-key refuses an out-dir that holds an un
   } finally {
     await after.close()
   }
+})
+
+test('T18: auto-okf compact checks its paths before it opens the predecessor, so a refusal leaves the predecessor bytes unchanged (G49, G16)', async () => {
+  // An open and a close of a vault rewrite files in its storage. So the
+  // CLI runs the path guard of compaction before it opens the predecessor.
+  const base = await tmpDir('guard-cli')
+  const storage = join(base, 'vault')
+  const v = await Bundle.init(storage)
+  await seedSecret(v)
+  await v.close()
+  await symlink(storage, join(base, 'alias'))
+  await mkdir(join(base, 'used'))
+  await writeFile(join(base, 'used', 'keep.txt'), 'keep\n')
+  await mkdir(join(base, 'staged.compact-src'))
+  const before = await treeHash(storage)
+
+  const cases = [
+    ['out-dir a symlink alias of the predecessor', [join(base, 'alias')], 'COMPACT_PATH_OVERLAP'],
+    ['face equal to the predecessor', [join(base, 'out'), '--face', storage], 'COMPACT_PATH_OVERLAP'],
+    ['out-dir in the predecessor', [join(storage, 'next')], 'COMPACT_PATH_OVERLAP'],
+    ['a non-empty out-dir', [join(base, 'used')], 'COMPACT_OUT_DIR_NOT_EMPTY'],
+    ['a stage that exists', [join(base, 'staged')], 'COMPACT_STAGE_EXISTS']
+  ]
+  const got = {}
+  for (const [name, args] of cases) {
+    const r = await cli(['compact', storage, ...args])
+    const code = /^auto-okf compact: (COMPACT_[A-Z_]+): /m.exec(r.stderr)
+    got[name] = { exit: r.code, code: code && code[1], predecessorBytes: (await treeHash(storage)) === before }
+  }
+  assert.deepEqual(got, Object.fromEntries(cases.map(([name, , code]) => [name, { exit: 1, code, predecessorBytes: true }])))
+  assert.deepEqual(await entries(base), ['alias', 'staged.compact-src', 'used', 'vault'])
 })
 
 test('undelete restores a tombstoned concept', async () => {

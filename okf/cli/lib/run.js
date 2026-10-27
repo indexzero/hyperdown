@@ -23,6 +23,7 @@ import { command, flag, arg, rest, summary, header, footer, bail, validate } fro
 import { keyspace as K } from '@auto-okf/core'
 import { Bundle, METADATA_FILE } from '@auto-okf/store'
 import { materialize, createIngestWatcher, wanted, compact, status } from '@auto-okf/faces'
+import { guardCompactPaths } from '@auto-okf/faces/compact'
 
 const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
 const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage, 3 pending-ingest only (materialize)'
@@ -696,6 +697,11 @@ async function cmdFlags({ args, flags }) {
 async function cmdCompact({ args, flags }) {
   const { dir, outDir } = args
   const faceDir = flags.face || `${outDir}.face`
+  // compact runs the path guard before it writes anything. The CLI runs it
+  // first, before it opens the predecessor: an open and a close of a vault
+  // rewrite files in its storage, so a refusal here leaves the predecessor's
+  // bytes as they were.
+  await guardCompactPaths({ predecessorDir: dir, toDir: faceDir, vaultDir: outDir })
   return withVault(dir, {}, async (vault) => {
     let res
     try {
