@@ -372,7 +372,13 @@ async function childHugeApproval(weight) {
     }, 30000)
     out.forgedAppend = forged.status
     out.forgedError = forged.error ?? null
-    out.delivered = await until(async () => (await a.update(), await holds(a, s.localKey, 1)), 20000)
+    out.delivered = await deliveredTo(
+      [
+        ['a', a],
+        ['s', s]
+      ],
+      [{ key: s.localKey, length: forged.status === 'ok' ? forged.value : 0 }]
+    )
     await sleep(1000)
     out.peers = {}
     for (const [name, v] of [['a', a], ['s', s]]) {
