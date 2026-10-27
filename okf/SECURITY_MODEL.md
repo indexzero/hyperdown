@@ -93,18 +93,30 @@ rules; a file deleted on disk becomes `DeleteConcept` only behind a
 confirmation guard, default on; edits to the generated `index.md`/`log.md`
 are ignored.
 
-This boundary is where okf's known defects live, and that is evidence, not
-coincidence:
+This boundary is where okf's known defects were found, and that is
+evidence, not coincidence. Both are repaired, and each repair has its
+regression test:
 
 - [#30](https://github.com/indexzero/hyperwiki2/issues/30) (**major**,
-  open): a directory move through the live watcher loses data. `SetPath` on
-  a tombstoned concept is a silent no-op, so the delete wins. Subtree moves
-  do not exist in v1 (§7): a directory "move" is N per-concept `SetPath`
-  ops with no atomicity claim, and #30 is that gap observed from the disk
-  side.
-- [#28](https://github.com/indexzero/hyperwiki2/issues/28) (**minor**): a
-  human-authored double `.conflict-` suffix becomes permanent
-  pending-ingest.
+  repaired): a directory move through the live watcher lost data. `SetPath`
+  on a tombstoned concept was a silent no-op, so the delete won. Three
+  changes close it. A file on disk that bears a tombstoned `_id` is
+  intent-to-keep, so ingest undeletes it before it moves it
+  (`faces/lib/ingest.js:329-339`). A vanished path is never deleted from
+  inside the event that noticed it: the delete waits for a quiet window, so
+  the moved file's `SetPath` lands first (`:184-207`). A directory event
+  schedules one coalesced rescan instead of being dropped (`:127-153`).
+  Tests: `test/regressions/dirmove-dataloss.test.js` "#30(1)" to "#30(4)".
+- [#28](https://github.com/indexzero/hyperwiki2/issues/28) (**minor**,
+  repaired): a human-authored double `.conflict-` suffix became permanent
+  pending-ingest. Ingest now strips every trailing reserved suffix
+  (`faces/lib/ingest.js:310-318`). Test:
+  `test/regressions/double-conflict-suffix-ingest.test.js` "P7 (#28)".
+
+What remains at this boundary is a non-goal and not a defect. Subtree moves
+do not exist in v1 (§7, §12). A directory "move" is N per-concept `SetPath`
+ops with no atomicity claim, so an interrupted run leaves part of the
+subtree moved. #30 was that gap observed from the disk side.
 
 ### What the substrate decides, and what okf decides
 
@@ -327,10 +339,20 @@ right after a successful decode and before every check that can reject it
 ### The generation chain is provenance, not proof
 
 Compaction is an operator act via the hydrated face, never an op (§10).
-The new vault records `{ predecessorKey, predecessorCheckpoint }`, signed
-by the operator key that ran compact; consumers MUST treat cross-generation
-identity as trusted-operator scope. Within one generation, identity is checked
-by apply. Across generations, you are trusting the operator.
+The new vault records `{ predecessorKey, predecessorCheckpoint }` in its
+metadata (`faces/lib/compact.js:355-373`).
+
+**That record is unsigned by default.** `compact()` adds a `signer` and a
+`signature` to the checkpoint only when its caller passes the optional
+`sign` hook (`faces/lib/compact.js:110-112`, `:358-362`), and
+`auto-okf compact` passes no hook (`cli/lib/run.js:712-719`). Nothing in
+okf verifies such a signature either (§10 names it as never verified
+here). So the default chain is a recorded claim, and not an attestation.
+
+Consumers MUST treat cross-generation identity as trusted-operator scope.
+Within one generation, identity is checked by apply. Across generations,
+you are trusting the operator who ran compact, and by default you have
+only the bytes that run wrote.
 
 History is shed by design: old revisions, per-op attribution, and clocks
 do not survive a cycle. [I11](GLOSSARY.md#invariant-i1i11) is the
@@ -365,12 +387,13 @@ definition that is a major, not a blocker — a scale concern, no invariant
 falsified. Tracked in `orchestration/BACKLOG.md`; repro:
 `node okf/harness/soak/soak.js`.
 
-#30 above sits in the same class: measured data loss at the ingest
-boundary, no hash divergence. A major, documented here until dispositioned.
+C1 is the only open item in this class. The ingest defects above are
+repaired, and the regression test of each repair is named there.
 
 ## Non-goals (v1)
 
 From §12, the security-relevant ones: no per-key merge policy, no
-subtree-move atomicity (the #30 gap), no text CRDT for bodies, no HTTP
-API. And from the privacy boundary above: no read ACLs finer than the
-vault.
+subtree-move atomicity, no text CRDT for bodies, no HTTP API. And from the
+privacy boundary above: no read ACLs finer than the vault. The missing
+subtree-move atomicity is what #30 observed from the disk side. The
+data-loss failure of #30 is repaired, as the ingest boundary above states.
