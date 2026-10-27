@@ -69,7 +69,7 @@
 // TIMEOUT.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   Bundle,
   K,
@@ -797,11 +797,20 @@ test('G50: no writer climbs, also when a member forges a higher-tier approval', 
 // approvals, lib/writers.js:719 wakeup).
 // ===========================================================================
 
-/** Every view key under `prefix` on one peer, sorted. */
-async function viewKeys(v, prefix) {
+/**
+ * Every view ENTRY under `prefix` on one peer, as `[key, value]`, ordered
+ * by key. Keys alone would miss a changed value under a key that stays
+ * (D-038 F02), so the no-c/-change criterion of T11 compares entries.
+ */
+async function viewEntries(v, prefix) {
   const out = []
-  for await (const { key } of v.scan(prefix)) out.push(key)
-  return out.sort()
+  for await (const { key, value } of v.scan(prefix)) out.push([key, value])
+  return out.sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0))
+}
+
+/** A short digest of an ordered entry list, for the recorded result line. */
+function entriesDigest(entries) {
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 16)
 }
 
 /** `[seq, reason]` of every flag/rejected entry of writer `w`, sorted. */
@@ -1203,7 +1212,9 @@ test('G32: a key that a member approves costs one flag per op, no rate token and
   out.carrierAppend = (await timed(() => b.createConcept('g32/carrier', 'note'), 20000)).status
   out.granted = await until(async () => (await s.update(), s.writable), 20000)
   out.hash0 = await converged([a, b, s], 25000)
-  const cBefore = await viewKeys(a, K.cRoot())
+  // The c/ range before the attack, ENTRIES and not key names: the
+  // criterion is that no content key and no content value changes.
+  const cBefore = await viewEntries(a, K.cRoot())
 
   // the attack: OPS content ops and GRANTS AddWriter ops from a key okf
   // never admitted
@@ -1221,7 +1232,7 @@ test('G32: a key that a member approves costs one flag per op, no rate token and
   out.delivered = await deliveredTo(peers, [{ key: s.localKey, length: attackLen }])
   out.converged = (await converged([a, b, s], 30000)) !== null
   out.peers = {}
-  const cKeys = {} // the full key lists stay out of the recorded line
+  const cEntries = {} // the full entry lists stay out of the recorded line
   for (const [name, v] of peers) {
     const granted = []
     for (const key of grantKeys) {
@@ -1231,18 +1242,20 @@ test('G32: a key that a member approves costs one flag per op, no rate token and
         govWriter: (await v.val(K.govWriter(hex(key)))) ?? null
       })
     }
-    cKeys[name] = await viewKeys(v, K.cRoot())
+    cEntries[name] = await viewEntries(v, K.cRoot())
     out.peers[name] = {
       applied: applied[name].has(sHex),
       flags: (await rejectionsOf(v, sHex)).map(([seq, reason]) => `${seq}:${reason}`).join(' '),
       seen: (await v.val(K.seen(sHex))) ?? null,
       rate: (await v.val(K.rate(sHex))) ?? null,
       govWriter: (await v.val(K.govWriter(sHex))) ?? null,
-      cKeyCount: cKeys[name].length,
+      cEntryCount: cEntries[name].length,
+      cDigest: entriesDigest(cEntries[name]),
       granted
     }
   }
-  out.cKeyCountBefore = cBefore.length
+  out.cEntryCountBefore = cBefore.length
+  out.cDigestBefore = entriesDigest(cBefore)
   out.expectedFlags = Array.from({ length: OPS + GRANTS }, (_, i) =>
     i < OPS ? `${i}:not-a-writer` : `${i}:policy-governance`
   ).join(' ')
@@ -1260,7 +1273,9 @@ test('G32: a key that a member approves costs one flag per op, no rate token and
     assert.equal(p.seen, OPS + GRANTS, `${name}: seen/ moves past every op`)
     assert.equal(p.rate, null, `${name}: the ops take no rate token, so the growth is unmetered`)
     assert.equal(p.govWriter, null, `${name}: okf membership comes only from gov/`)
-    assert.deepEqual(cKeys[name], cBefore, `${name}: no c/ key changes`)
+    // The whole c/ range, ordered, keys AND values. A changed value under
+    // a key that stays is the case that key names miss (D-038 F02).
+    assert.deepEqual(cEntries[name], cBefore, `${name}: no c/ entry changes, key or value`)
     for (const g of p.granted) {
       assert.equal(g.system, true, `${name}: an AddWriter op of a non-member still grants its key`)
       assert.deepEqual(g.sys, W0, `${name}: the granted key stands at weight 0`)
