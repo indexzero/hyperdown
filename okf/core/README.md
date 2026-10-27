@@ -50,7 +50,7 @@ await apply(
 )
 
 const meta = await view.get(K.cMeta(W + '0'))
-console.log(JSON.parse(meta.value)) // { type: 'guide', created: '…0' }
+console.log(JSON.parse(meta.value)) // { created: '…0', type: 'guide' }
 console.log(view.dump('wanted/')) // { 'wanted/guides%2Farchitecture/…': true }
 ```
 
@@ -88,10 +88,17 @@ loser is renamed or the winner vacates. `index`/`log` terminals and
 ### Governance (SPEC §8)
 
 Genesis key is the first indexer. Governance ops require an indexer
-issuer; revocation is causal (clock-based, never positional) with a
-seq-at-removal cross-check; unacked writers hold up to 512 ops that fold
-when an indexer's `add-writer` acks them; per-writer token buckets refill
-on accepted indexer ops.
+issuer (else `policy-governance`). A writer's ops take effect only once an
+indexer's `add-writer` has admitted it: an op from a key with no
+`gov/writer` record is rejected `not-a-writer`, and admission revives no
+earlier op. apply calls `host.addWriter(key, { weight: 0 })` for every
+`add-writer` op it folds, accepted or rejected, so a reorder never undoes
+a substrate grant; okf membership comes only from `gov/`. Revocation is
+causal (clock-based, never positional) with a seq-at-removal cross-check,
+and `host.removeWriter` is never called. An op's seq is its node's
+position in its writer's core (`node.length - 1`); a clock whose self
+entry differs from it is rejected `forged-clock`. Per-writer token
+buckets refill on accepted indexer ops.
 
 ## API
 
