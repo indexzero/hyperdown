@@ -73,7 +73,11 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *                fresh-vault factory. Injected so faces stays substrate-free.
  *   toDir        (REQUIRED) directory to materialize the hydrated face into
  *                (the operator's archival OKF bundle — keeps _id/_rev).
- *   vaultDir     (REQUIRED) storage directory for the fresh vault.
+ *   vaultDir     (REQUIRED) storage directory for the fresh vault: a new or
+ *                an empty directory. A vaultDir that exists and is not an
+ *                empty directory, a pinned one included, throws
+ *                COMPACT_OUT_DIR_NOT_EMPTY before compact writes anything
+ *                (G16).
  *   stageDir     staging dir for the manifest-free, _rev-stripped bundle that
  *                is actually ingested (default `<vaultDir>.compact-src`). It
  *                holds plaintext. compact creates it for this run only, and
@@ -185,6 +189,8 @@ export async function compact(vault, opts = {}) {
     ['stage', stageDir],
     ['verification', `${verifyPrefix(stageDir)}XXXXXX`]
   ])
+  // The fresh vault goes only into a new or empty out-dir (G16).
+  await refuseUsedOutDir(vaultDir)
   // compact creates its stage for this run only, so a stage path that exists
   // is refused here, before the face step.
   if (await lstat(stageDir).catch(() => null)) throw stageExistsError(stageDir)
@@ -416,7 +422,9 @@ async function generateFromFace(vault, report, warnings, { stageDir, vaultDir, e
  * only what this compaction created: the directory (with any parent that
  * mkdir created for it) when it did not exist, else only the entries that
  * were not in it at claim time. It never removes a directory that this
- * compaction did not create.
+ * compaction did not create. compact admits an out-dir that exists only
+ * when it is empty (refuseUsedOutDir), so release() leaves such an out-dir
+ * as it was before the run.
  */
 async function claimDir(dir) {
   const created = await mkdir(dir, { recursive: true }) // undefined when dir existed
@@ -448,6 +456,32 @@ async function verifyGeneration(newVault, faceDir, stageDir, ids) {
   } finally {
     await rm(verifyDir, { recursive: true, force: true })
   }
+}
+
+/**
+ * G16: an out-dir that exists and is not an empty directory throws
+ * COMPACT_OUT_DIR_NOT_EMPTY. A store in the out-dir would take the ingest of
+ * the face, which reverts the edits made in it, or the encryption key, which
+ * makes it unreadable. A pinned out-dir holds its metadata file, so this
+ * refuses it too.
+ */
+async function refuseUsedOutDir(vaultDir) {
+  let names
+  try {
+    names = await readdir(vaultDir)
+  } catch (err) {
+    if (err.code === 'ENOENT') return
+    if (err.code !== 'ENOTDIR') throw err
+    names = null
+  }
+  if (names !== null && names.length === 0) return
+  const what = names === null ? 'is not a directory' : `is not empty (${names.sort().slice(0, 4).join(', ')}${names.length > 4 ? ', ...' : ''})`
+  throw compactError(
+    'COMPACT_OUT_DIR_NOT_EMPTY',
+    `the out-dir ${vaultDir} ${what}. Compaction makes the fresh vault only in a new or empty directory, so it ` +
+      'never writes into an existing store: the ingest would revert the edits made there, and an encryption key ' +
+      'would make it unreadable. Give a new out-dir'
+  )
 }
 
 /** COMPACT_STAGE_EXISTS: compact creates its stage for this run only. */

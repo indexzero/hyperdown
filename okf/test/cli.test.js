@@ -6,6 +6,7 @@
 // through @auto-okf/store, exactly as a library caller would.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { mkdir, readdir, readFile, rm, writeFile, access } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
@@ -790,6 +791,110 @@ test('T17, T18: compact refuses a stage directory that it did not create, keeps 
   await old.createConcept('notes/.okf-state', 'note')
   assert.deepEqual(await attempt('stage-own-fail'), refused)
   await old.close()
+})
+
+// ---------- T18: guard every compaction path ----------
+
+/** A sha256 over every file under `root`, dot-files included: each path and its bytes. */
+async function treeHash(root) {
+  const h = createHash('sha256')
+  const files = (await readdir(root, { recursive: true, withFileTypes: true }))
+    .filter((e) => e.isFile())
+    .map((e) => join(e.parentPath, e.name))
+    .sort()
+  for (const file of files) {
+    h.update(`${file}\0`)
+    h.update(await readFile(file))
+    h.update('\0')
+  }
+  return h.digest('hex')
+}
+
+/** treeHash of each directory in `dirs` ({ name: dir }), by name. */
+async function bytesOf(dirs) {
+  const out = {}
+  for (const [name, dir] of Object.entries(dirs)) out[name] = await treeHash(dir)
+  return out
+}
+
+test('T18: auto-okf compact refuses a re-run into an existing generation, so a later edit stays (s1.mjs H, G16)', async () => {
+  // scratch-D/s1.mjs scenario H, ported to the plain compact path: a second
+  // compact into the out-dir that holds the new generation ingested the
+  // predecessor's state again, and reverted an edit made in the new
+  // generation, with exit 0.
+  const base = await tmpDir('guard-rerun')
+  const storage = join(base, 'vault')
+  const v = await Bundle.init(storage)
+  const { tag } = await v.createConcept('doc/one', 'note')
+  await v.setBody(tag, null, 'original text')
+  await v.setField(tag, 'status', 'draft')
+  await v.close()
+  const out = join(base, 'out')
+  const first = await cli(['compact', storage, out])
+  assert.equal(first.code, 0, first.stderr)
+
+  // A peer works in the new generation.
+  const nv = await Bundle.open(out)
+  await nv.setBody(tag, await nv.val(K.cBody(tag)), 'edited in the new generation')
+  await nv.setField(tag, 'status', 'final')
+  await nv.update()
+  await nv.close()
+
+  const dirs = { out, face: `${out}.face` }
+  const before = await bytesOf(dirs)
+  const predecessor = await snapshotHash(storage)
+  const again = await cli(['compact', storage, out])
+  assert.equal(again.code, 1, again.stdout + again.stderr)
+  assert.match(again.stderr, /^auto-okf compact: COMPACT_OUT_DIR_NOT_EMPTY: /m)
+  assert.deepEqual(await bytesOf(dirs), before, 'the refused re-run changed the new generation or its face')
+  assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
+  assert.equal(await snapshotHash(storage), predecessor)
+
+  const after = await Bundle.open(out)
+  try {
+    assert.equal(await headText(after, tag), 'edited in the new generation')
+    assert.deepEqual((await after.val(K.cField(tag, 'status'))).values, ['final'])
+    let conflicts = 0
+    for await (const _ of after.scan(K.flagPrefix('conflict'))) conflicts++
+    assert.equal(conflicts, 0)
+  } finally {
+    await after.close()
+  }
+})
+
+test('T18: auto-okf compact --encryption-key refuses an out-dir that holds an unencrypted generation, which stays readable (s1.mjs K, G16)', async () => {
+  // scratch-D/s1.mjs scenario K, ported to the plain compact path: the
+  // operator forgot the key, and ran compact again with --encryption-key
+  // into the same out-dir. The key went to the existing store, and the
+  // store became unreadable.
+  const base = await tmpDir('guard-rekey')
+  const storage = join(base, 'vault')
+  const v = await Bundle.init(storage)
+  const { tag } = await v.createConcept('k/l', 'note')
+  await v.setBody(tag, null, 'secret-ish')
+  await v.close()
+  const out = join(base, 'out')
+  const first = await cli(['compact', storage, out])
+  assert.equal(first.code, 0, first.stderr)
+  assert.equal((await pinned(out)).encrypted, false)
+
+  const dirs = { out, face: `${out}.face` }
+  const before = await bytesOf(dirs)
+  const predecessor = await snapshotHash(storage)
+  const again = await cli(['compact', storage, out, '--encryption-key', NEW_KEY])
+  assert.equal(again.code, 1, again.stdout + again.stderr)
+  assert.match(again.stderr, /^auto-okf compact: COMPACT_OUT_DIR_NOT_EMPTY: /m)
+  assert.deepEqual(await bytesOf(dirs), before, 'the refused re-run changed the new generation or its face')
+  assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
+  assert.equal(await snapshotHash(storage), predecessor)
+
+  assert.equal((await pinned(out)).encrypted, false)
+  const after = await Bundle.open(out)
+  try {
+    assert.equal(await headText(after, tag), 'secret-ish')
+  } finally {
+    await after.close()
+  }
 })
 
 test('undelete restores a tombstoned concept', async () => {

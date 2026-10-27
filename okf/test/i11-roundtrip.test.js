@@ -1126,3 +1126,41 @@ test('T18: compact refuses a stage that equals, contains or aliases the predeces
   assert.deepEqual(await state(), before, 'a refused compaction changed the predecessor, the face or the directory')
   await old.close()
 })
+
+test('T18: compact refuses a pinned or non-empty out-dir by name before it writes, and the predecessor and the out-dir stay unchanged (G16)', async () => {
+  // scratch-D/s1.mjs H and K: compaction into an out-dir that holds a store
+  // reverted the edits made there, or handed the store a new encryption key.
+  // The fresh vault goes only into a new or empty out-dir. A pinned out-dir
+  // holds its okf-vault.json, so it is not empty.
+  const base = await tmpDir('guard-out')
+  const old = await Bundle.init(join(base, 'vault'))
+  const { tag } = await old.createConcept('notes/a', 'note')
+  await old.setBody(tag, null, 'a')
+  const gen = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'gen-face'), vaultDir: join(base, 'gen') })
+  await gen.vault.close()
+  await writeTree(base, new Map([['stray/keep.txt', 'keep\n'], ['file', 'a file\n']]))
+  const state = async () => ({
+    predecessor: await predecessorState(old),
+    gen: await treeHash(join(base, 'gen')),
+    stray: await treeHash(join(base, 'stray')),
+    file: await readFile(join(base, 'file'), 'utf8'),
+    entries: await entries(base)
+  })
+  const before = await state()
+
+  const got = {}
+  for (const name of ['gen', 'stray', 'file']) {
+    try {
+      const res = await compact(old, { initBundle: Bundle.init, toDir: join(base, `${name}-face`), vaultDir: join(base, name) })
+      await res.vault.close()
+      got[name] = 'ok'
+    } catch (err) {
+      got[name] = err.code
+    }
+  }
+  const refused = 'COMPACT_OUT_DIR_NOT_EMPTY'
+  assert.deepEqual(got, { gen: refused, stray: refused, file: refused })
+  // No face, no stage and no verification directory: the refusal comes before the face step.
+  assert.deepEqual(await state(), before, 'a refused compaction changed the predecessor, an out-dir or the directory')
+  await old.close()
+})
