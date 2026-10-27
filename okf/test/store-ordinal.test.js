@@ -2,7 +2,7 @@
 // T9 adopts spike T8 (D-027). The ports of ab2-review/scratch-A
 // s4-race.mjs (G9a), s5-clock-units.mjs (G8) and s6-strand.mjs (G10),
 // adapted to admit before writing, plus the core rules that the ordinal
-// changes.
+// changes and the G13 ack check.
 //
 // The actual seq of an op is its node's position in its writer's core,
 // node.length - 1 (autobee README, Apply: "node.length — position in the
@@ -333,6 +333,40 @@ test('G9a (s4): after the governance race, the race writer\'s next op claims its
     hs.push(await v.snapshotHash())
   }
   assert.ok(hs.every((h) => h === hs[0]), `equal view hashes: ${hs.map((h) => h.slice(0, 16))}`)
+})
+
+test('G13: with autobee\'s default ackThreshold, a writer that falls 40 flushes behind appends no empty block', { timeout: 60000 }, async (t) => {
+  // An ack is an empty node in the local core (autobee index.js:1297-1314).
+  // A threshold ack needs a head that the local writer does not trust
+  // (index.js:1305, :1316-1330). okf passes no isTrusted and no
+  // mostRecentTrusted hook, so every key is trusted (lib/trusted.js:30-32).
+  // Each append of a is one batch, and each batch is one system flush on b
+  // (index.js:1447-1462, lib/system.js:447). So b falls 40 flushes behind,
+  // above the default threshold of 32 (index.js:30, :134).
+  const a = await Bundle.init(await tmpDir('g13-a'))
+  const b = await Bundle.join(await tmpDir('g13-b'), a.key)
+  const un = pair(a, b)
+  t.after(async () => {
+    un()
+    await a.close()
+    await b.close()
+  })
+  await a.writers.add(b.localKey)
+  assert.ok(await until(async () => (await b.update(), b.writable)))
+  const { tag } = await b.createConcept('b/one', 'note')
+  assert.ok(await until(async () => (await a.update(), (await a.val(K.cMeta(tag))) !== undefined)))
+  const before = b.db.local.length
+  assert.equal(before, 1)
+  const aHex = hex(a.localKey)
+  for (let i = 0; i < 40; i++) {
+    await a.createConcept(`a/n${i}`, 'note')
+  }
+  const aOps = await a.val(K.seen(aHex))
+  assert.ok(await until(async () => (await b.update(), (await b.val(K.seen(aHex))) === aOps)), 'b folds every op of a')
+  await sleep(500)
+  await b.update()
+  assert.equal(b.db.local.length, before, 'no empty block landed in the local core of b')
+  assert.equal(await b.val(K.seen(hex(b.localKey))), 1)
 })
 
 /** Every file under `dir`, relative to it, except node_modules. */

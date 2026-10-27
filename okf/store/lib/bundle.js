@@ -16,8 +16,8 @@
 //   bootstrapWeight, ... })`. `optimistic` defaults to true (index.js:95,
 //   README.md:81). `bootstrapWeight` defaults to 2 (index.js:49) and is not
 //   in the README. The Bundle sets `optimistic: false`, `fastForward:
-//   false`, `ackThreshold: Infinity` and `bootstrapWeight: 0` (see the
-//   constructor call).
+//   false` and `bootstrapWeight: 0` (see the constructor call).
+//   `ackThreshold` stays at its default of 32 (index.js:30, :134).
 // - apply receives `(nodes, view, host)`, and only nodes with a non-empty
 //   value (index.js _applyBatch); node = `{ key, value, length, optimistic,
 //   timestamp, links, weight, witness, approvals, ... }` (lib/writers.js
@@ -273,12 +273,14 @@ export class Bundle extends EventEmitter {
       // pinned config. autobee@2 would otherwise fast-forward onto a view
       // head another writer stamped, trusting every writer by default
       // (lib/trusted.js), and skip apply for the whole prefix.
-      fastForward: false,
-      // No empty "ack" nodes while trusted and 32 flushes behind
-      // (index.js _appendAck). An ack takes a position in the local core,
-      // and the seq of an op is its position (§3, AD4), so an ack shifts
-      // no seq.
-      ackThreshold: Infinity
+      fastForward: false
+      // ackThreshold stays at its default. A threshold ack needs a head
+      // that is not trusted (index.js:1303-1305), and with no isTrusted or
+      // mostRecentTrusted hook every key is trusted (lib/trusted.js:30-32),
+      // so autobee appends no ack at any threshold. An ack takes a
+      // position in the local core, so it shifts no seq (§3, AD4), unless
+      // it lands while _append waits between _nextPosition() and
+      // db.append. A trust hook would make that window real.
     })
     this.db.on('error', (err) => this.emit('error', err))
 
