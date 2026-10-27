@@ -372,7 +372,8 @@ export class Bundle extends EventEmitter {
    * writer at seq s proves that peer had linearized us through op s when it
    * appended — the peer-fold acknowledgment append()'s admission control
    * waits on. Only runs once backpressure has been used (`_trackAcks`), so
-   * the default path never pays the extra decode.
+   * the default path never pays the extra decode. A peer's clock cites us
+   * only once our gov/writer record is in its view (see clock()).
    */
   _observeAck(node) {
     if (!this.db || !this.db.local || b4a.equals(node.key, this.db.local.key)) return
@@ -538,13 +539,13 @@ export class Bundle extends EventEmitter {
   /**
    * Encode and append one §3 op. Fills the common fields when absent:
    * `clock` (the writer's observed vector clock — the last folded position
-   * of each writer in okf's view, self entry pinned to this op's own seq
-   * per the §8 forged-clock rule, see clock()) and `at` (informational
-   * wall-clock ms, §3). Returns `{ seq, tag }` — `seq` is the position of
-   * the op's node in the local core (§3), and `tag` is the §3 opId apply
-   * will derive (`writerKey || seq`), which for a minting `create-concept`
-   * is the concept's `_id`. It resolves only once the local core holds the
-   * node (T10, see _durable()).
+   * of each writer with a gov/writer record in okf's view, self entry
+   * pinned to this op's own seq per the §8 forged-clock rule, see clock())
+   * and `at` (informational wall-clock ms, §3). Returns `{ seq, tag }` —
+   * `seq` is the position of the op's node in the local core (§3), and
+   * `tag` is the §3 opId apply will derive (`writerKey || seq`), which for
+   * a minting `create-concept` is the concept's `_id`. It resolves only
+   * once the local core holds the node (T10, see _durable()).
    *
    * Appends are internally serialized (one at a time): the §8 forged-clock
    * rule pins each op's self-clock entry to its actual local position, so
@@ -794,22 +795,33 @@ export class Bundle extends EventEmitter {
    * `seqAtRemoval` derives from exactly this entry), in the same unit as
    * the seq of every op (G8). No entry comes from substrate state that the
    * view has not folded.
+   *
+   * §8 (T12, G33): the clock carries self and each writer with a
+   * gov/writer/<W> record in the view, and no other key. Only an indexer's
+   * AddWriter writes that record, so a member cannot grow the clock: a key
+   * that a member's AddWriter op grants at the substrate (AD7) gets no
+   * record, and its ops never put it here. Core never deletes the record,
+   * so a revoked writer stays in the clock: the §8 window test compares
+   * every entry, and a revocation clock without a writer that an in-flight
+   * op cites would reject that op (I10). A writer with a record and no
+   * folded op has no entry.
    * The self entry is pinned to `seq`, the op's own 0-based position: §8's
    * forged-clock rule rejects any op whose claimed self entry differs from
-   * its actual seq.
+   * its actual seq. It is there whether or not self has a record.
    */
   async clock(seq = null) {
     const entries = new Map()
+    const self = this.db && this.db.local ? b4a.toString(this.db.local.key, 'hex') : null
     if (this.db && this.db.view) {
-      for await (const { key, value } of this.scan(K.seenPrefix())) {
-        const w = K.parseKey(key)[1]
+      const writers = []
+      for await (const { key } of this.scan(K.govWriterPrefix())) writers.push(K.parseKey(key)[2])
+      if (self !== null && seq === null) writers.push(self)
+      for (const w of writers) {
+        const value = await this.val(K.seen(w))
         if (Number.isInteger(value) && value > 0) entries.set(w, value - 1)
       }
     }
-    if (this.db && this.db.local) {
-      const self = b4a.toString(this.db.local.key, 'hex')
-      if (seq !== null) entries.set(self, seq)
-    }
+    if (self !== null && seq !== null) entries.set(self, seq)
     return [...entries].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
   }
 

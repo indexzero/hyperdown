@@ -16,6 +16,12 @@
 // G10 test simulates a crash: it rewrites the boot record of the local core
 // and clears one replicated block, through the documented hypercore API of
 // a closed store. Nothing here changes autobee behaviour.
+//
+// T12 bounds the clock (G33). An op's clock carries self and each writer
+// with a gov/writer record, a revoked writer too, and no other key. The G33
+// test is the port of ab2-review/scratch-B/s7-clock-size.mjs, adapted to
+// admit before writing: 1,000 keys that a member approves write one op
+// each, as an attacker's client does (outsiderAppend, decision 5).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
@@ -24,7 +30,7 @@ import { fileURLToPath } from 'node:url'
 import Corestore from '../store/node_modules/corestore/index.js'
 import { Bundle, K, makeTag, tmpDir, pair, until, sleep } from './store-helpers.js'
 import { Env, hostStub, rejectedReasons } from './helpers.js'
-import { holds } from './attack-helpers.js'
+import { holds, outsiderAppend } from './attack-helpers.js'
 import { decodeOp, normalizeClock } from '../core/index.js'
 
 const OKF = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -343,6 +349,147 @@ test('G9a (s4): after the governance race, the race writer\'s next op claims its
     hs.push(await v.snapshotHash())
   }
   assert.ok(hs.every((h) => h === hs[0]), `equal view hashes: ${hs.map((h) => h.slice(0, 16))}`)
+})
+
+// ---------- T12: the clock carries self and the writers with a gov/writer record ----------
+
+test('T12: the clock carries self and each writer with a gov/writer record, a revoked one too, and no other key', { timeout: 60000 }, async (t) => {
+  const a = await Bundle.init(await tmpDir('t12-a')) // the genesis indexer
+  const b = await Bundle.join(await tmpDir('t12-b'), a.key) // admitted, then revoked
+  const m = await Bundle.join(await tmpDir('t12-m'), a.key) // a member
+  const s = await Bundle.join(await tmpDir('t12-s'), a.key) // a key that m approves
+  const unpair = [pair(a, b), pair(a, m), pair(a, s)]
+  t.after(async () => {
+    for (const un of unpair) un()
+    for (const v of [a, b, m, s]) await v.close()
+  })
+  const [aHex, bHex, mHex, sHex] = [a, b, m, s].map((v) => hex(v.localKey))
+  await a.writers.add(b.localKey, { indexer: false })
+  await a.writers.add(m.localKey, { indexer: false })
+  assert.ok(await until(async () => (await b.update(), await m.update(), b.writable && m.writable)), 'b and m are admitted before they write')
+  await b.createConcept('t12/b', 'note')
+  // m is no indexer, so core rejects its AddWriter op policy-governance,
+  // and grants s at weight 0 all the same (AD7).
+  await m.writers.add(s.localKey)
+  assert.ok(await until(async () => (await s.update(), s.writable)), 's is an autobee writer (positive control)')
+  const sOp = await s.createConcept('t12/s', 'note')
+  assert.ok(
+    await until(async () => (await a.update(), (await a.val(K.seen(bHex))) === 1 && (await a.val(K.seen(sHex))) === 1)),
+    'a folds the op of b and the op of s'
+  )
+  // s has no gov/writer record, and its op still claims its own position:
+  // the clock carries self in every case.
+  assert.equal(await s.val(K.govWriter(sHex)), undefined)
+  assert.deepEqual(await a.val(K.flagRejected(sHex, sOp.seq)), { reason: 'not-a-writer' }, 'not forged-clock')
+  await a.removeWriter(b.localKey)
+  await a.update()
+  const removed = await a.val(K.govRemoved(bHex))
+  assert.equal(removed.seqAtRemoval, 0)
+  assert.deepEqual(Object.keys(removed.clock).sort(), [aHex, bHex, mHex].sort(), 'the revocation clock cites no key without a record')
+  assert.notEqual(await a.val(K.govWriter(bHex)), undefined, 'a revoked writer keeps its gov/writer record')
+
+  const byKey = (x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0)
+  const expected = [
+    [aHex, (await a.val(K.seen(aHex))) - 1],
+    [bHex, 0], // revoked, and still clocked
+    [mHex, 0]
+  ].sort(byKey)
+  assert.deepEqual(await a.clock(), expected, 'self, the admitted writers and the revoked b. Not s.')
+  const r = await a.createConcept('t12/a', 'note')
+  const clock = normalizeClock((await opAt(a, r.seq)).clock)
+  assert.deepEqual(Object.keys(clock).sort(), [aHex, bHex, mHex].sort(), 'the next op of a carries the same writers')
+  assert.equal(clock[aHex], r.seq, 'its self entry is its own position')
+})
+
+test('G33 (s7): with 1,000 keys that a member approves, of one op each, an honest op stays under maxOpBytes', { timeout: 240000 }, async (t) => {
+  const N = 1000
+  const a = await Bundle.init(await tmpDir('g33-a')) // the genesis indexer
+  const m = await Bundle.join(await tmpDir('g33-m'), a.key) // a member
+  // The attacker's client holds the junk writers in one corestore.
+  const junk = new Corestore(await tmpDir('g33-junk'))
+  let unAM = pair(a, m)
+  let unAJ = () => {}
+  t.after(async () => {
+    unAM()
+    unAJ()
+    await a.close()
+    await m.close()
+    await junk.close()
+  })
+  const [aHex, mHex] = [a, m].map((v) => hex(v.localKey))
+  await a.writers.add(m.localKey, { indexer: false })
+  assert.ok(await until(async () => (await m.update(), m.writable)), 'm is admitted before it writes')
+
+  // The junk store gets the first node of a and nothing more. autobee
+  // flushes no optimistic local node while its system is at genesis
+  // (lib/writers.js:608-611, :644-645). So each junk writer folds one node
+  // and not the vault, and N writers cost O(N).
+  unAJ = pair(a, junk)
+  const boot = junk.get({ key: a.key })
+  await boot.ready()
+  await boot.download({ start: 0, end: 1 }).done()
+  await boot.close()
+  unAJ()
+
+  // The junk writers share one corestore, and autobee keeps a joiner's
+  // local key in the user data of the bootstrap core (lib/boot.js:30, :94,
+  // :153-160). So each one passes its own key pair, through the documented
+  // keyPair option. The local key is the hash of the core's manifest, so
+  // each junk writer opens once to tell its key.
+  const junkWriter = async (i) =>
+    Bundle.join(junk.namespace(`junk/${i}`), a.key, { keyPair: await junk.createKeyPair(`junk/${i}`) })
+  const keys = []
+  for (let i = 0; i < N; i++) {
+    const j = await junkWriter(i)
+    keys.push(hex(j.localKey))
+    await j.close()
+  }
+  assert.equal(new Set(keys).size, N, 'N distinct junk keys')
+
+  // m's AddWriter op makes each junk key an autobee writer at weight 0
+  // (AD7). All grants come first: a junk op that sorts before a grant
+  // would make peer a undo and apply again every grant after it.
+  for (const k of keys) await m.writers.add(k)
+  const mLength = m.db.local.length
+  assert.ok(await until(async () => (await a.update(), (await a.val(K.seen(mHex))) === mLength)), 'a folds every grant of m')
+  unAM()
+  unAM = () => {}
+
+  // Each junk key appends one op, as an attacker's client does.
+  for (let i = 0; i < N; i++) {
+    const j = await junkWriter(i)
+    assert.equal(hex(j.localKey), keys[i])
+    await outsiderAppend(j, `junk/${i}`)
+    await j.close()
+  }
+
+  // A junk writer's own client would announce its core over the wakeup
+  // protocol. The junk store has no such client, so a learns of each core
+  // through the documented db.wakeup (autobee README). Without the hint,
+  // autobee closes an idle writer core that holds no node at its next reset
+  // (lib/writers.js:445-459), and nothing opens it again. A hinted length
+  // keeps it open and active (lib/writers.js:67-88, :410-415).
+  await Promise.all(keys.map((k) => a.db.wakeup({ key: Buffer.from(k, 'hex'), length: 1 })))
+  unAJ = pair(a, junk)
+  const foldedAll = async () => {
+    await a.update()
+    for (const k of keys) if ((await a.val(K.seen(k))) !== 1) return false
+    return true
+  }
+  assert.ok(await until(foldedAll, 180000, 250), 'a folds the op of every junk key (positive control)')
+  for (const k of keys) {
+    assert.deepEqual(await a.val(K.flagRejected(k, 0)), { reason: 'not-a-writer' })
+  }
+
+  const r = await a.createConcept('g33/honest', 'note')
+  const block = await a.db.local.get(r.seq)
+  const bytes = (await a.db.constructor.decodeValue(block)).byteLength // README: Autobee.decodeValue
+  assert.ok(bytes <= a.metadata.limits.maxOpBytes, `the honest op is ${bytes} bytes, at most maxOpBytes ${a.metadata.limits.maxOpBytes}`)
+  await a.update()
+  assert.equal(await a.val(K.flagRejected(aHex, r.seq)), undefined, 'the honest op is not rejected oversize-op')
+  assert.notEqual(await a.val(K.cMeta(r.tag)), undefined, 'the honest op takes effect')
+  const clock = normalizeClock((await opAt(a, r.seq)).clock)
+  assert.deepEqual(Object.keys(clock).sort(), [aHex, mHex].sort(), 'its clock carries self and m, and no junk key')
 })
 
 test('G13: with autobee\'s default ackThreshold, a writer that falls 40 flushes behind appends no empty block', { timeout: 60000 }, async (t) => {
