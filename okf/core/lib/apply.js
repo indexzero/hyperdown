@@ -55,9 +55,8 @@ const DEFAULTS = {
   limits: DEFAULT_LIMITS,
   // §8: defaultCeiling is the admitted-writer ceiling when no
   // SetWriterPolicy has set one (spec-silent; pinned here and in vault
-  // metadata by the store package). unackedCeiling and holdMax have no use
-  // in core; the store's pinned metadata still carries them.
-  rate: { defaultCeiling: 1024, unackedCeiling: 64, holdMax: 512 }
+  // metadata by the store package). It is the only rate setting.
+  rate: { defaultCeiling: 1024 }
 }
 
 // §5: reserved field keys — identity and revision are never fields, tag
@@ -250,7 +249,7 @@ class Tx {
  * config: {
  *   genesisKey,   // Buffer|hex: the vault creator's key, first indexer (§8)
  *   limits: { maxOpBytes, maxPathBytes, maxPathDepth },      // §3
- *   rate:   { defaultCeiling, unackedCeiling, holdMax }      // §8
+ *   rate:   { defaultCeiling }                               // §8
  * }
  */
 export function createApply(config = {}) {
