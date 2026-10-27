@@ -15,9 +15,15 @@
 // helpers only read, and watchApply wraps okf's apply handler, not
 // autobee. Product code never does any of this.
 //
+// This file is also a child-process entry point (see the end): the G2
+// approval at a huge weight can exhaust a heap, so it runs in a child.
+//
 // Vaults live under the store tests' temp root (store-helpers.js tmpDir).
 import { mkdir, appendFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { randomBytes } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { encodeOp } from '../core/index.js'
 import { Bundle, K, tmpDir, pair, until, sleep, converged } from './store-helpers.js'
 
@@ -251,3 +257,114 @@ export async function reopenCheck(vault, dir, ms = 20000) {
   return { status: out.status, ms: out.ms, ...(out.value || {}), error: out.error }
 }
 
+/**
+ * Run this file as a child process with `args`, kill it after `ms`, and
+ * parse the `CHILD-RESULT {json}` line it prints. Resolves `{ code,
+ * signal, ms, result, stderrTail }`, so a crash or a heap exhaustion is a
+ * RESULT and never takes the test runner down.
+ */
+export function runChild(args, ms) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...args], {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    let stdout = ''
+    let stderr = ''
+    const t0 = Date.now()
+    const timer = setTimeout(() => child.kill('SIGKILL'), ms)
+    child.stdout.on('data', (d) => {
+      stdout += d
+    })
+    child.stderr.on('data', (d) => {
+      stderr += d
+    })
+    child.on('close', (code, signal) => {
+      clearTimeout(timer)
+      const line = stdout.split('\n').find((l) => l.startsWith('CHILD-RESULT '))
+      resolve({
+        code,
+        signal,
+        ms: Date.now() - t0,
+        result: line ? JSON.parse(line.slice('CHILD-RESULT '.length)) : null,
+        stderrTail: stderr.split('\n').filter(Boolean).slice(-4).join(' | ')
+      })
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Child-process entry point. A peer that applies an approval at weight W
+// builds one Set entry and one digest slot per tier (autobee
+// lib/promotions.js:137, :144). At W = 1e9 that exhausts the heap, so the
+// G2 test spawns this file and reads the JSON line it prints:
+//
+//   node okf/test/attack-helpers.js huge-approval <weight>
+//
+// The carrier is an outsider: a Bundle that no indexer admitted. Adopted
+// from the T1 spike (D-003) as its outsider arm only.
+// ---------------------------------------------------------------------------
+async function childHugeApproval(weight) {
+  const rss = () => Math.round(process.memoryUsage().rss / 1048576)
+  const out = { weight, rssStart: rss() }
+  const a = quiet(await Bundle.init(await tmpDir('g2-a'))) // the victim
+  const s = quiet(await Bundle.join(await tmpDir('g2-s'), a.key)) // the outsider
+  const applied = { a: watchApply(a), s: watchApply(s) }
+  const unpair = pair(a, s)
+  const named = randomBytes(32)
+  const sHex = hex(s.localKey)
+  try {
+    const { tag } = await a.createConcept('seed', 'note')
+    out.synced = await until(async () => (await s.update(), (await s.val(K.cMeta(tag))) !== undefined), 20000)
+    const hash0 = await converged([a, s], 20000)
+    out.hash0 = hash0
+    const forged = await timed(async () => {
+      const length = await outsiderAppend(s, 'carrier', { approvals: [{ key: named, weight }] })
+      if (!(await announce(s, [{ key: s.localKey, length }]))) throw new Error('announce found no peer')
+      return length
+    }, 30000)
+    out.forgedAppend = forged.status
+    out.forgedError = forged.error ?? null
+    out.delivered = await until(async () => (await a.update(), await holds(a, s.localKey, 1)), 20000)
+    await sleep(1000)
+    out.peers = {}
+    for (const [name, v] of [['a', a], ['s', s]]) {
+      const row = await timed(async () => {
+        const upd = await timed(() => v.update(), 20000)
+        const hash = upd.status === 'ok' ? await timed(() => v.snapshotHash(), 20000) : { status: 'SKIPPED' }
+        return {
+          update: upd.status,
+          hash: hash.status !== 'ok' ? hash.status : hash.value === hash0 ? 'unchanged' : 'CHANGED',
+          applied: applied[name].has(sHex),
+          seen: (await v.val(K.seen(sHex))) !== undefined,
+          namedInSystem: (await v.db.system.get(named)) !== null,
+          outsiderInSystem: (await v.db.system.get(s.localKey)) !== null
+        }
+      }, 60000)
+      out.peers[name] = row.status === 'ok' ? row.value : { status: row.status, error: row.error ?? null }
+    }
+  } catch (err) {
+    out.error = err && err.message ? err.message : String(err)
+  } finally {
+    out.rssEnd = rss()
+    out.errors = { victim: errorsOf(a), outsider: errorsOf(s) }
+    unpair()
+    out.closed = (
+      await timed(async () => {
+        await s.close().catch(() => {})
+        await a.close().catch(() => {})
+      }, 30000)
+    ).status
+    console.log(`CHILD-RESULT ${JSON.stringify(out)}`)
+  }
+}
+
+if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+  const [, , what, weight = '1000000000'] = process.argv
+  if (what !== 'huge-approval') {
+    console.error(`unknown child attack ${what}`)
+    process.exit(2)
+  }
+  await childHugeApproval(Number(weight))
+  process.exit(0)
+}

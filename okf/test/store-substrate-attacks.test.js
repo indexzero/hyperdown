@@ -24,7 +24,12 @@
 // returns within its deadline, and the view hash does not change. Every
 // honest op runs before the attack, so the hash before the attack is the
 // hash that must stay.
+// - A1, G3: a stranger's approval that names itself (s1).
 // - A4, G1: the livelock driven by strangers only (s5).
+// - A5, G2: an outsider's approval at weight 1e9, in a child process.
+// - A6, G43: an outsider's forged witness that cites a present length.
+// - A7, G5: an outsider's backdated node that links one side of a
+//   concurrent pair.
 //
 // Not here: the member residuals and G44 (A5 member, A6 member, A7b, A8,
 // A9: T11 adopts them).
@@ -59,7 +64,8 @@ import {
   outsiderAppend,
   announce,
   holds,
-  watchApply
+  watchApply,
+  runChild
 } from './attack-helpers.js'
 
 // The tier an attacker asks for: indexer standing.
@@ -115,6 +121,64 @@ function assertOutsiderShut(rows) {
     assert.deepEqual(r.system, [], `${name}: autobee records no outsider key`)
   }
 }
+
+// ---------------------------------------------------------------------------
+// G3 (ab2-review/scratch-B/s1-stranger-self-admit.mjs): a stranger sends one
+// optimistic node whose approvals name itself. With optimistic: true that
+// node reached apply, its approval added the stranger to autobee's system,
+// and the stranger became writable.
+// ---------------------------------------------------------------------------
+test('A1 G3: a stranger cannot admit itself with a forged approval (s1)', { timeout: TIMEOUT }, async (t) => {
+  const a = quiet(await Bundle.init(await tmpDir('a1-a')))
+  const s = quiet(await Bundle.join(await tmpDir('a1-s'), a.key)) // never admitted
+  const applied = { a: watchApply(a), s: watchApply(s) }
+  const unpair = pair(a, s)
+  t.after(async () => {
+    unpair()
+    await closeAll(a, s)
+  })
+  const sHex = hex(s.localKey)
+  const out = { trigger: 'outsider' }
+
+  const { tag: seed } = await a.createConcept('seed', 'note')
+  out.strangerSynced = await until(async () => (await s.update(), (await s.val(K.cMeta(seed))) !== undefined), 20000)
+  const hash0 = await converged([a, s], 20000)
+
+  // the attack: one optimistic node whose approvals name the stranger
+  const forged = await timed(async () => {
+    const length = await outsiderAppend(s, 'from-s', { approvals: [{ key: s.localKey, weight: TIER }] })
+    return announce(s, [{ key: s.localKey, length }])
+  }, 20000)
+  out.forged = forged.status === 'ok' && forged.value === true ? 'ok' : forged.status
+  out.delivered = await until(async () => (await a.update(), await holds(a, s.localKey, 1)), 20000)
+  out.strangerWritable = await until(async () => (await s.update(), s.writable), 3000)
+  // the stranger's next append, through its Bundle
+  const plain = await timed(() => s.createConcept('from-s-plain', 'note'), 20000)
+  out.plainAppend = plain.status
+  out.plainError = plain.error ?? null
+  out.peers = await outsiderRows(
+    [
+      ['a', a, applied.a],
+      ['s', s, applied.s]
+    ],
+    [s.localKey],
+    hash0
+  )
+  out.govWriterOnA = (await a.val(K.govWriter(sHex))) ?? null
+  out.errors = { victim: errorsOf(a), stranger: errorsOf(s) }
+  await record(t, 'A1-G3-self-admission', out)
+
+  assert.equal(out.strangerSynced, true)
+  assert.ok(hash0, 'the peers converge before the attack')
+  assert.equal(out.forged, 'ok')
+  assert.equal(out.delivered, true, 'the forged node reached the victim (positive control)')
+  assert.equal(out.strangerWritable, false, 'the stranger never becomes writable')
+  assert.equal(out.plainAppend, 'ERROR')
+  assert.match(out.plainError, /^VAULT_NOT_WRITABLE/, 'its next append fails fast')
+  assertOutsiderShut(out.peers)
+  assert.equal(out.govWriterOnA, null, 'okf never records a gov/writer for the stranger')
+  assert.deepEqual(out.errors, { victim: [], stranger: [] }, 'no autobee closes')
+})
 
 // ---------------------------------------------------------------------------
 // G4 (ab2-review/scratch-B/s2-weight0-approval-climbs.mjs): a member's
@@ -400,6 +464,196 @@ test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', 
   assertOutsiderShut(out.peers)
   assert.equal(out.undoDelta, 0, 'genesis undoes nothing: no outsider node sorts into its order')
   assert.deepEqual(out.errors, { victim: [], carrier: [], claimant: [] }, 'no autobee closes')
+})
+
+// ---------------------------------------------------------------------------
+// G2 (ab2-review/codex-B.out #1): an approval's weight is unbounded. The
+// peer that applies an approval at weight 1e9 walks one tier per unit of
+// weight (lib/promotions.js:137, :144) until its heap runs out. With
+// optimistic: true an outsider's optimistic node carried it into apply.
+// Now autobee drops the node before _applyBatch, where approvals are read
+// (index.js:1432-1441). It runs in a child process: a heap it exhausts
+// must not take the test runner with it.
+// ---------------------------------------------------------------------------
+test('A5 G2: an outsider approval at weight 1e9 reaches no apply (child process)', { timeout: 2 * TIMEOUT }, async (t) => {
+  const run = await runChild(['huge-approval', '1000000000'], 180000)
+  const r = run.result
+  await record(t, 'A5-G2-huge-approval-outsider', {
+    trigger: 'outsider',
+    childExit: run.code,
+    childSignal: run.signal,
+    childMs: run.ms,
+    stderrTail: run.stderrTail || null,
+    result: r
+  })
+
+  assert.equal(run.code, 0, `the child exits cleanly (${run.stderrTail})`)
+  assert.ok(r, 'the child prints its result')
+  assert.equal(r.error ?? null, null, 'the child throws nothing')
+  assert.ok(r.hash0, 'the peers converge before the attack')
+  assert.equal(r.forgedAppend, 'ok')
+  assert.equal(r.delivered, true, 'the victim holds the forged node (positive control)')
+  for (const name of ['a', 's']) {
+    const p = r.peers[name]
+    assert.equal(p.update, 'ok', `${name}: update() returns within the deadline`)
+    assert.equal(p.hash, 'unchanged', `${name}: the view hash does not change`)
+    assert.equal(p.applied, false, `${name}: no outsider node reaches apply`)
+    assert.equal(p.seen, false, `${name}: no outsider op is counted in seen/`)
+    assert.equal(p.namedInSystem, false, `${name}: the approval adds no writer`)
+    assert.equal(p.outsiderInSystem, false, `${name}: autobee records no outsider key`)
+  }
+  assert.deepEqual(r.errors, { victim: [], outsider: [] }, 'no autobee closes')
+})
+
+// ---------------------------------------------------------------------------
+// G43, the reachable variant (D-003 A6): a forged witness whose link cites
+// a writer length that is present in the system. An outsider sends it.
+// autobee still resolves the node's weight before the drop
+// (lib/writers.js:195), so update() returning also shows that this
+// resolution ends.
+// ---------------------------------------------------------------------------
+test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }, async (t) => {
+  const a = quiet(await Bundle.init(await tmpDir('a6-a')))
+  const b = quiet(await Bundle.join(await tmpDir('a6-b'), a.key)) // a member, the cited writer
+  const s = quiet(await Bundle.join(await tmpDir('a6-s'), a.key)) // the outsider
+  const applied = { a: watchApply(a), b: watchApply(b), s: watchApply(s) }
+  const unpairAB = pair(a, b)
+  const unpairAS = pair(a, s)
+  t.after(async () => {
+    unpairAB()
+    unpairAS()
+    await closeAll(a, b, s)
+  })
+  const out = { trigger: 'outsider' }
+
+  await a.writers.add(b.localKey, { indexer: false })
+  assert.ok(await until(async () => (await b.update(), b.writable), 20000), 'b becomes writable')
+  await b.createConcept('b-op', 'note')
+  const citedLen = b.db.local.length
+  out.citedPresentOnA = await until(async () => {
+    await a.update()
+    const rec = await a.db.system.get(b.localKey)
+    return !!rec && rec.length >= citedLen
+  }, 20000)
+  const hash0 = await converged([a, b, s], 20000)
+
+  const forged = await timed(async () => {
+    const length = await outsiderAppend(s, 'forged-witness', {
+      witness: { weight: TIER, link: { key: b.localKey, length: citedLen } }
+    })
+    return announce(s, [{ key: s.localKey, length }])
+  }, 20000)
+  out.forged = forged.status === 'ok' && forged.value === true ? 'ok' : forged.status
+  out.delivered = await until(async () => (await a.update(), await holds(a, s.localKey, 1)), 20000)
+  await sleep(500)
+  out.peers = await outsiderRows(
+    [
+      ['a', a, applied.a],
+      ['b', b, applied.b],
+      ['s', s, applied.s]
+    ],
+    [s.localKey],
+    hash0
+  )
+  out.citedSys = await sys(a, b.localKey)
+  out.errors = { victim: errorsOf(a), member: errorsOf(b), outsider: errorsOf(s) }
+  await record(t, 'A6-G43-forged-witness-outsider', out)
+
+  assert.equal(out.citedPresentOnA, true, 'the cited length is present in the system')
+  assert.ok(hash0, 'the peers converge before the attack')
+  assert.equal(out.forged, 'ok')
+  assert.equal(out.delivered, true, 'the victim holds the forged node (positive control)')
+  assertOutsiderShut(out.peers)
+  assert.deepEqual(out.citedSys, W0, 'the cited member stays at weight 0')
+  assert.deepEqual(out.errors, { victim: [], member: [], outsider: [] }, 'no autobee closes')
+})
+
+// ---------------------------------------------------------------------------
+// G5 (ab2-review/codex-B.out #3, D-003 A7): one node, backdated below a
+// concurrent pair of member writes, linking only one side, with no system
+// hash, so a receiver sorts it into the middle (index.js:1377-1384). With
+// optimistic: true an outsider's node did this, and it flipped the LWW
+// winner on every peer. The member variant stays a residual (T11).
+// ---------------------------------------------------------------------------
+test('A7 G5: an outsider backdated node flips no winner', { timeout: TIMEOUT }, async (t) => {
+  const a = quiet(await Bundle.init(await tmpDir('a7-a')))
+  const b = quiet(await Bundle.join(await tmpDir('a7-b'), a.key)) // a member
+  const s = quiet(await Bundle.join(await tmpDir('a7-s'), a.key)) // the outsider
+  const applied = { a: watchApply(a), b: watchApply(b), s: watchApply(s) }
+  let unpairAB = pair(a, b)
+  const unpairAS = pair(a, s)
+  let unpairBS = pair(b, s) // full mesh
+  t.after(async () => {
+    unpairAB()
+    unpairAS()
+    unpairBS()
+    await closeAll(a, b, s)
+  })
+  const out = { trigger: 'outsider' }
+
+  await a.writers.add(b.localKey, { indexer: false })
+  assert.ok(await until(async () => (await b.update(), b.writable), 20000), 'b becomes writable')
+  const { tag: id } = await a.createConcept('conflict/target', 'note')
+  assert.ok(await until(async () => (await b.update(), (await b.val(K.cMeta(id))) !== undefined), 20000))
+
+  // the concurrent pair: b is cut off from every peer while both writes
+  // happen, so neither write links the other
+  unpairAB()
+  unpairBS()
+  await a.setField(id, 'status', ['from-a'])
+  await sleep(150)
+  await b.setField(id, 'status', ['from-b'])
+  const bLen = b.db.local.length
+  unpairAB = pair(a, b)
+  unpairBS = pair(b, s)
+  const hash0 = await converged([a, b, s], 25000)
+  const w0 = hash0 ? await a.val(K.cField(id, 'status')) : null
+  out.winnerBefore = w0 ? w0.values : null
+
+  // the attack: backdated below both writes, linking only b's write
+  const forged = await timed(async () => {
+    const length = await outsiderAppend(s, 'attacker-node', {
+      timestamp: Date.now() - 3600 * 1000,
+      links: [{ key: b.localKey, length: bLen }],
+      hash: null
+    })
+    return announce(s, [{ key: s.localKey, length }])
+  }, 20000)
+  out.forged = forged.status === 'ok' && forged.value === true ? 'ok' : forged.status
+  out.delivered = await until(
+    async () => (await a.update(), await b.update(), (await holds(a, s.localKey, 1)) && (await holds(b, s.localKey, 1))),
+    20000
+  )
+  await sleep(1000)
+  const before = coreStats(a)
+  out.peers = await outsiderRows(
+    [
+      ['a', a, applied.a],
+      ['b', b, applied.b],
+      ['s', s, applied.s]
+    ],
+    [s.localKey],
+    hash0
+  )
+  out.undoDelta = coreStats(a).undos - before.undos
+  out.winnerAfter = {}
+  for (const [name, v] of [['a', a], ['b', b], ['s', s]]) {
+    const w = await v.val(K.cField(id, 'status'))
+    out.winnerAfter[name] = w ? w.values : null
+  }
+  out.errors = { victim: errorsOf(a), member: errorsOf(b), outsider: errorsOf(s) }
+  await record(t, 'A7-G5-backdated-outsider', out)
+
+  assert.ok(hash0, 'the peers converge before the attack')
+  assert.ok(out.winnerBefore, 'the concurrent pair has a winner')
+  assert.equal(out.forged, 'ok')
+  assert.equal(out.delivered, true, 'a and b hold the backdated node (positive control)')
+  assertOutsiderShut(out.peers)
+  for (const name of ['a', 'b', 's']) {
+    assert.deepEqual(out.winnerAfter[name], out.winnerBefore, `${name}: the winner does not flip`)
+  }
+  assert.equal(out.undoDelta, 0, 'no reorder')
+  assert.deepEqual(out.errors, { victim: [], member: [], outsider: [] }, 'no autobee closes')
 })
 
 // ---------------------------------------------------------------------------
