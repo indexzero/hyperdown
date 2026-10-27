@@ -45,12 +45,16 @@ into ops, so the watched tree is untrusted input by design (§9).
   indexer-authored `AddWriter` has admitted it, at that op's linearized
   position. An op from a writer with no `gov/writer` record is rejected
   `not-a-writer`. It never reaches the content pipeline and changes no `c/`
-  key. There is no hold buffer and no optimistic onboarding. A joiner
-  writes nothing before its admission, because the store refuses every
+  key. There is no hold buffer and no optimistic onboarding. A joiner that
+  only holds the vault key writes nothing at all. The store refuses every
   append until autobee reports the local writer writable
   (`VAULT_NOT_WRITABLE`, test `test/store-writers.test.js` "an append from
-  a writer that is not writable fails fast"). Admission is not
-  retroactive.
+  a writer that is not writable fails fast"). That gate reads `db.writable`
+  (`store/lib/bundle.js:734-747`), which is substrate state. So a key that
+  a member admitted at the substrate alone passes it and does append. okf
+  membership is a separate thing, and it is not retroactive. apply rejects
+  every op of such a key and flags it ("What the substrate decides" points
+  (a) and (d), G32).
 - **Rate policy (§8):** a writer-local token bucket, enforced in apply. A
   writer earns tokens only from accepted indexer-authored ops, so a flooder
   cannot mint its own budget. The bucket meters admitted writers. An op
@@ -104,11 +108,12 @@ coincidence:
 
 ### What the substrate decides, and what okf decides
 
-The substrate is autobee@2.12.1, pinned. Every path reference below is a
-file and line of that release, and every test reference is a test name in
-`okf/test/`. The store configures autobee with `optimistic: false`,
-`bootstrapWeight: 0` and `fastForward: false`, and `HostAdapter` grants
-every writer at `weight: 0` (`store/lib/bundle.js`).
+The substrate is autobee@2.12.1 with autobee-wakeup@1.1.3, both pinned.
+Every path reference below is a file and line of those releases, and every
+test reference is a test name in `okf/test/`. The store configures autobee
+with `optimistic: false`, `bootstrapWeight: 0` and `fastForward: false`,
+and `HostAdapter` grants every writer at `weight: 0`
+(`store/lib/bundle.js`).
 
 The division of labour: the substrate decides which nodes reach apply and
 in which order, and apply decides every effect on the view. An attack whose
@@ -116,11 +121,18 @@ mechanism sits inside the substrate has three dispositions. The
 configuration keeps it out, okf's own code closes it, or this document
 states it as a residual.
 
-**(a) An outsider changes no view state.** An outsider is a peer that
-holds the vault key and that no indexer admitted. With `optimistic:
-false`, autobee drops every node of a writer it has not added before
-`_applyBatch` (`index.js:1357-1364`), and that writer's own reader stops
-earlier (`lib/writers.js:613-615`). A dropped node's `approvals` add
+**(a) An outsider changes no view state.** An outsider is a key that
+autobee has not added: no `AddWriter` op granted it, and no approval on a
+folded node named it. Holding the vault key makes a peer an outsider, never
+a writer. The reverse does not hold. A key that okf never admitted can
+still be in autobee's writer set, because a member can put it there
+(points (d) and (f)). Such a key is not an outsider. Point (d) measures
+what its ops cost.
+
+With `optimistic: false`, autobee drops every node of a writer it has not
+added, before `_applyBatch` (`index.js:1357-1364`), and that writer's own
+reader stops earlier (`lib/writers.js:613-615`). A dropped node's
+`approvals` add
 nothing, because autobee reads approvals inside `_applyBatch`
 (`index.js:1432-1441`), which the dropped node never reaches. Measured in
 `test/store-substrate-attacks.test.js`: "A1 G3" (a forged approval that
@@ -154,11 +166,32 @@ residual for every vault.
   the ratio of 20 appends after the flood against 20 before it.
 - It is a cost, never a brick. In "A8 G44" the vault still appends, and it
   still reopens and folds.
-- Honest use never triggers it. No okf code sends an announce, and autobee
-  announces only the writers of its own system that it still has work for
-  (`autobee-wakeup/index.js:18-22`, `:99-107`). The flood is a modified
-  client, which the test writes itself (`test/attack-helpers.js`
-  `announce`).
+- A second trigger needs no announce: a node whose links name keys that the
+  receiver does not hold. The link check runs before the membership drop
+  (`lib/writers.js:603-606` against `:613-615`). A witness link joins the
+  link set (`:673-678`). The first missing link leaves a retained wait
+  (`:706`), and every missing link is woken (`:719`). So one such node opens
+  one core per missing link, and it leaves one wait per writer. The node
+  itself reaches no apply while a link stays missing, so okf's rate check
+  and its rejection flag never run for it. A member can send such a node,
+  and an outsider's node reaches the same check before the drop.
+- **The suite does not measure that second trigger.** autobee's own local
+  flush gate refuses to flush a node whose links are missing
+  (`lib/writers.js:641-664`). A test attacker that appends through autobee
+  therefore cannot publish that dependency graph. The gate binds a client
+  that runs autobee's drain. It does not bind the log adversary of this
+  document, which appends to the core it owns, as "A5c G2" does for G2
+  (`test/attack-helpers.js` `forgeRawNode`).
+- Only an attacker starts a flood, and an honest peer can pass it on. No
+  okf code sends an announce, and no honest client invents writer keys. But
+  autobee's wakeup answers a lookup with its active pending writers
+  (`autobee-wakeup/index.js:18-22`, `:99-107`). That filter is `isPending`
+  alone, never membership in the responder's own system. So a
+  peer that already took the flood announces those same keys to the next
+  peer that sends it a lookup. It does that after the attacker disconnects.
+  The flood reaches one hop past the peers the attacker spoke to. The flood
+  itself comes from a modified client, which the test writes itself
+  (`test/attack-helpers.js` `announce`).
 - **Public-swarm caveat.** `Bundle.swarm()` and `auto-okf watch --swarm`
   announce the vault on the public hyperswarm DHT, so any peer that learns
   the vault key can connect from anywhere and reach the wakeup protocol.
@@ -194,20 +227,42 @@ autobee's own `isIndexer` is therefore always false
 (`test/store-writers.test.js` "isIndexer answers from gov/").
 
 **(d) What a member, or a key a member approves, can still do.** A member
-is a key that autobee has added. That set is genesis plus every key that
-an `AddWriter` op has granted (point (f)), and okf never removes a key from
-it (G34 below). Every row is open to any key in that set, with no okf
-membership needed.
+is a key that autobee has added. Three paths add one, and okf never removes
+a key again (G34 below):
+
+- genesis, at `bootstrapWeight` 0.
+- Every key that an `AddWriter` op granted, whatever apply decided about
+  the op (point (f)).
+- Every key that an approval on a folded node named, with no `AddWriter` op
+  at all. autobee reads the approvals of a node inside `_applyBatch` and
+  calls `system.addWriter` for each one (`index.js:1432-1441`,
+  `lib/system.js:66-93`). Tests "A2 G4" and "G32" measure that path.
+
+Every row below is open to any key in that set, with no okf membership
+needed.
 
 | Attack | Trigger | Effect, as measured | Evidence |
 |---|---|---|---|
-| G2, an approval at an unbounded weight | a member | the peer that folds it walks one tier per unit of weight (`lib/promotions.js:137`, `:144`). Above V8's `Set` limit the folding peer dies with `Set maximum size exceeded`. A member folds its own node before the drain writes it to its core (`index.js:818`, `:824`), so at weight 1e9 the attacker dies first and the node never leaves its core. Below that limit every peer pays the walk, and the named key lands in the system of the peer that folds it, with no okf op | "A5b G2" (both arms, in a child process) |
+| G2, an approval at an unbounded weight | a member | every peer that folds the node walks one tier per unit of weight (`lib/system.js:424`, `lib/promotions.js:137`, `:144`), inside `_applyBatch` and before any okf apply (`index.js:1432-1441`, `:1462`). Above V8's `Set` limit that peer dies with `Set maximum size exceeded`, and it appends no more. Below the limit every peer pays the walk, and the named key lands in the system of the peer that folds it, with no okf op | "A5c G2" (delivery proved first, then the victim), "A5b G2" (the sender arm, both weights). Both in a child process |
 | G5, a node whose timestamp the attacker chooses | a member | it reorders concurrent writes and picks the LWW winner on every peer. The reorder is uniform, so the peers still converge: a consistent rewrite, never a split. autobee bounds the future by two hours (`lib/writers.js:15`, `:595`, `:649`) and does not bound the past | "A7b G5" |
-| G32, unmetered growth through free identities | a member, or any key a member approves | one `flag/rejected` entry per op on every peer, no rate token (the op is rejected before the bucket), and no `c/` change. Its `AddWriter` ops grant more autobee writers at weight 0, so the identity supply is free | "G32" |
+| G32, unmetered growth through free identities | a member, or any key a member approves | one `flag/rejected` entry per op on every peer, no rate token (the op is rejected before the bucket), and no change in `c/`: the test compares the whole ordered `c/` range, keys and values, against the range before the attack, on every peer. Its `AddWriter` ops grant more autobee writers at weight 0, so the identity supply is free | "G32" |
 | G34, a revoked member keeps its substrate standing | a revoked member | okf never calls `host.removeWriter`, so the key stays an autobee writer. Its later ops keep reaching apply and keep being rejected, each with a flag (I4). Calling `removeWriter` would be worse: `canApply` turns false for a removed writer (`lib/system.js:242-251`), so its node reaches the system of some peers and the apply of others, which is the split that point (f) exists to prevent | `test/store-writers.test.js` "writer add/remove round trip", "G32" |
 | G43, a forged witness | a member | measured inert on the claimant's weight, because the claim never verifies at weight 0 (point (c)). The resolution is not free: autobee resolves a node's weight before any drop (`index.js:1374`, `lib/writers.js:195`), and a claim makes it open the cited core and read one block (`lib/witness.js:33-41`, `:53-62`). That read takes no rate token | "A2 G4", "G50", "A6 G43" |
+| G44, a node whose links are missing | a member, and an outsider's node reaches the same check | the receiver opens one writer core per missing link and keeps one retained wait, before the membership drop (`lib/writers.js:603-606`, `:673-678`, `:706`, `:719` against `:613-615`). The node reaches no apply while a link stays missing, so it takes no rate token and leaves no flag | point (b), which also states why the suite does not measure this trigger |
 
-A member also needs no forged node for the substrate part of G32: one
+Two notes on the G2 row. First, the sender's own cost is not a bound on the
+attack. autobee folds a local node (`index.js:818`) before the drain
+flushes it to the core (`:824`). So at weight 1e9 a sender that appends
+through autobee dies before its node leaves its core. That is "A5b G2". A
+client that writes the oplog block to the core it owns skips that order.
+Its block is durable at once, and it replicates. "A5c G2" measures that
+arm. It proves delivery to a victim on stock autobee first. The victim then
+dies folding the approval, and it appends no more. The reopen is no repair.
+In one measured branch the boot drain folds the stored block again, and the
+peer dies inside `Bundle.open` (`index.js:620`, then `:818`). In the other
+the peer reopens with the attack core still in its store.
+
+Second, a member needs no forged node for the substrate part of G32. One
 `AddWriter` op adds the named key to every peer's autobee system, whatever
 apply decides about the op (point (f)).
 
@@ -221,9 +276,20 @@ the table runs before or outside okf's apply:
 - A wakeup announce opens cores in the drain (`index.js:807`, `:878-893`),
   with no node and no op involved.
 
-apply never sees an approval, a witness, a timestamp it can refuse, or a
-wakeup hint. It sees the nodes of the batch that carry a value
-(`index.js:1444`). okf's product code uses autobee's constructor options,
+apply has no veto over any of it. autobee executes an approval, resolves a
+witness and takes a timestamp, all before apply runs. It offers the
+application no hook to undo that work. The approval is already in the
+system when apply starts, and nothing apply returns puts it back.
+
+apply does SEE those fields. autobee hands the original node objects of the
+batch to the application, every node that carries a value
+(`index.js:1444`), and it projects nothing away. The store forwards them
+unwrapped (`store/lib/bundle.js:357-366`). So an approval, a witness and a
+timestamp are visible and inert, which is a lack of control and not a lack
+of visibility. A wakeup hint reaches apply in no form at all, as the last
+bullet above states.
+
+okf's product code uses autobee's constructor options,
 its documented instance API and the host API passed to apply, and nothing
 else, so the remedy for every row above is a change inside autobee. The
 owner accepted these residuals: a vault trusts its members with liveness,
