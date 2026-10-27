@@ -832,9 +832,16 @@ Byte reclamation is an **operator act via the hydrated face**, never an op:
    preserve `_rev` too.
 4. New vault metadata records `{ predecessorKey, predecessorCheckpoint }` —
    the generation chain. `predecessorCheckpoint = { viewHash: <the I2 full-range
-   hash>, writerLengths: [[key, len], ...] }`, signed by the operator key
-   that ran compact; the chain is provenance metadata, not proof —
-   consumers MUST treat cross-generation identity as trusted-operator scope.
+   hash>, writerLengths: [[key, len], ...] }`. The checkpoint is unsigned
+   by default. Signing is optional: compact adds a hex `signer` and
+   `signature` only when its caller passes a `sign` hook
+   (`okf/faces/lib/compact.js:358-362`), and `auto-okf compact` passes no
+   hook (`okf/cli/lib/run.js:712-719`). okf never verifies a signature.
+   The store checks only that each of the two fields, when present, is a
+   hex string (`okf/store/lib/metadata.js:177-181`). A consumer that needs
+   a signature verifies it outside okf. The chain is provenance metadata,
+   not proof. Consumers MUST treat cross-generation identity as
+   trusted-operator scope.
 5. The old vault is archived or destroyed out-of-band.
 
 Effect = CouchDB compaction: live state and identity survive; history (old

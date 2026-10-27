@@ -96,7 +96,14 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
   `DeleteConcept` is a tombstone; bytes and `_id` remain.
 - **Generation chain** (`predecessorKey`, `predecessorCheckpoint`) — SPEC §10:
   which vault this one was compacted from, with the predecessor's I2 view
-  hash and writer lengths (operator-signed; provenance, not proof).
+  hash and writer lengths (provenance, not proof). The checkpoint is
+  unsigned by default. `compact()` adds a `signer` and a `signature` only
+  when its caller passes the optional `sign` hook
+  (`okf/faces/lib/compact.js:358-362`), and `auto-okf compact` passes no
+  hook (`okf/cli/lib/run.js:712-719`). The store checks only that each of
+  the two fields, when present, is a hex string
+  (`okf/store/lib/metadata.js:177-181`). Nothing in okf verifies a
+  signature. A consumer that needs one verifies it outside okf.
 - **`generation`** — the per-generation corestore namespace, derived purely from the
   predecessor fields (`'root'` when null). Writer cores derive under
   it, so a writer keypair can never recur across generations, even in a reused
