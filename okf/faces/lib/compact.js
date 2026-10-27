@@ -90,13 +90,23 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *                is non-empty (SPEC §10 guardrail). Without it, compact
  *                REFUSES (throws COMPACT_REFUSED) so live conflicts are never
  *                silently frozen into a new generation.
- *   encryptionKey  32-byte key for a private fresh vault (end to end).
- *                REQUIRED when the predecessor is encrypted (its pinned
- *                `metadata.encrypted`). Without it, compact refuses with
- *                COMPACT_ENCRYPTION_KEY_REQUIRED, before it reads, creates
- *                or writes anything. No option makes an unencrypted copy of an
- *                encrypted vault. The key is never carried over from the
- *                predecessor: the caller names the fresh vault's key.
+ *   encryptionKey  32-byte key for a private fresh vault (end to end): a
+ *                Buffer or a Uint8Array of exactly 32 bytes. REQUIRED when
+ *                the predecessor is encrypted (its pinned
+ *                `metadata.encrypted`). Without it (undefined or null),
+ *                compact refuses with COMPACT_ENCRYPTION_KEY_REQUIRED. Any
+ *                other value that is not such a key (false, '', 0, a hex
+ *                string, a key of another length) throws
+ *                COMPACT_ENCRYPTION_KEY_INVALID: compact never reads a value
+ *                as no key. Both refusals come before compact reads, creates
+ *                or writes anything, and neither message holds the value.
+ *                No option makes an unencrypted copy of an encrypted vault.
+ *                The key is never carried over from the predecessor: the
+ *                caller names the fresh vault's key. With a key, the fresh
+ *                vault must be encrypted: compact reads its metadata after
+ *                initBundle, before the import, and again before success,
+ *                and throws COMPACT_SUCCESSOR_NOT_ENCRYPTED when it says
+ *                otherwise.
  *   sign         async (checkpoint) => { signer, signature } (hex) — signs the
  *                predecessor checkpoint that anchors the generation chain (§10:
  *                operator-signed provenance, never verified here).
@@ -163,7 +173,7 @@ const GENERATION_LOG_REL = 'log/generation.json'
  * operator to archive or destroy out-of-band (§10 step 5).
  */
 export async function compact(vault, opts = {}) {
-  const { force = false, encryptionKey, sign } = opts
+  const { force = false, sign } = opts
   if (opts.keyPair !== undefined) {
     throw compactError(
       'COMPACT_KEYPAIR_REFUSED',
@@ -179,14 +189,7 @@ export async function compact(vault, opts = {}) {
   if (!opts.vaultDir) throw compactError('COMPACT_NO_VAULTDIR', 'opts.vaultDir is required')
   // A key is never carried over, and no option makes an unencrypted copy of
   // an encrypted vault. materialize is the plaintext export.
-  if (vault.metadata.encrypted === true && (encryptionKey === undefined || encryptionKey === null)) {
-    throw compactError(
-      'COMPACT_ENCRYPTION_KEY_REQUIRED',
-      'the predecessor vault is encrypted, and compaction never makes an unencrypted copy: ' +
-        'give the fresh vault an encryption key (opts.encryptionKey, auto-okf compact --encryption-key <hex64>). ' +
-        'materialize is the plaintext export'
-    )
-  }
+  const encryptionKey = freshVaultKey(opts.encryptionKey, vault.metadata.encrypted === true)
   // The path guard, before compact writes or removes anything. From here on,
   // compact uses the normalized paths that it returns.
   const { toDir, vaultDir, stageDir } = await guardCompactPaths({
@@ -357,6 +360,10 @@ async function generateFromFace(vault, report, warnings, { expected, stageDir, v
       metadata: { predecessorKey, predecessorCheckpoint, limits: { ...vault.metadata.limits } },
       ...(encryptionKey !== undefined ? { encryptionKey } : {})
     })
+    // With a key, the fresh vault is encrypted before the import writes any
+    // content to it. initBundle is injected, so compact reads the metadata
+    // of the vault that it got.
+    if (encryptionKey !== undefined) requireEncrypted(newVault, vaultDir)
 
     // ---- 5. ingest the staged bundle with _id adoption (§6/§9/§10) ----
     // Each staged path goes through the explicit compaction import. scan()
@@ -433,6 +440,9 @@ async function generateFromFace(vault, report, warnings, { expected, stageDir, v
     const logPath = join(vaultDir, GENERATION_LOG_REL)
     await mkdir(dirname(logPath), { recursive: true })
     await writeFile(logPath, JSON.stringify(logEntry, null, 2) + '\n')
+
+    // With a key, the fresh vault is still encrypted at success.
+    if (encryptionKey !== undefined) requireEncrypted(newVault, vaultDir)
 
     return {
       ok: true,
@@ -526,6 +536,46 @@ async function refuseUsedOutDir(vaultDir) {
     `the out-dir ${vaultDir} ${what}. Compaction makes the fresh vault only in a new or empty directory, so it ` +
       'never writes into an existing store: the ingest would revert the edits made there, and an encryption key ' +
       'would make it unreadable. Give a new out-dir'
+  )
+}
+
+/**
+ * The fresh vault's encryption key: undefined when the caller gave none
+ * (undefined or null), else the 32-byte Buffer or Uint8Array that the caller
+ * gave. No key for an encrypted predecessor throws
+ * COMPACT_ENCRYPTION_KEY_REQUIRED. Any other value throws
+ * COMPACT_ENCRYPTION_KEY_INVALID: the store reads a false value as no key,
+ * so a value that is not a key would give an unencrypted fresh vault. The
+ * messages never hold the value.
+ */
+function freshVaultKey(key, predecessorEncrypted) {
+  if (key === undefined || key === null) {
+    if (!predecessorEncrypted) return undefined
+    throw compactError(
+      'COMPACT_ENCRYPTION_KEY_REQUIRED',
+      'the predecessor vault is encrypted, and compaction never makes an unencrypted copy: ' +
+        'give the fresh vault an encryption key (opts.encryptionKey, auto-okf compact --encryption-key <hex64>). ' +
+        'materialize is the plaintext export'
+    )
+  }
+  if (key instanceof Uint8Array && key.byteLength === 32) return key
+  const what = key instanceof Uint8Array ? `${key.byteLength} bytes` : Array.isArray(key) ? 'an array' : `a value of type ${typeof key}`
+  throw compactError(
+    'COMPACT_ENCRYPTION_KEY_INVALID',
+    `opts.encryptionKey is ${what}, and it must be a Buffer or a Uint8Array of 32 bytes. ` +
+      'Compaction never reads another value as no key, so it never makes an unencrypted vault by mistake. ' +
+      'Give a 32-byte key (auto-okf compact --encryption-key <hex64>), or leave the option out'
+  )
+}
+
+/** COMPACT_SUCCESSOR_NOT_ENCRYPTED: compact got a key, and the fresh vault's metadata does not say encrypted. */
+function requireEncrypted(newVault, vaultDir) {
+  if (newVault.metadata && newVault.metadata.encrypted === true) return
+  throw compactError(
+    'COMPACT_SUCCESSOR_NOT_ENCRYPTED',
+    `the fresh vault at ${vaultDir} is not encrypted (its metadata does not say encrypted: true), ` +
+      'but compact got an encryption key for it. Compaction never makes an unencrypted copy of an encrypted ' +
+      'vault: initBundle must pass opts.encryptionKey to the store'
   )
 }
 

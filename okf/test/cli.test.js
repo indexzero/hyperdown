@@ -758,6 +758,79 @@ test('T17: the in-process compact reports the plaintext face as a warning, on su
   await ctl.close()
 })
 
+// ---------- G3-P5 F02: only a valid key, and an encrypted new vault ----------
+
+test('F02: the in-process compact refuses a key that is not 32 bytes by name, false, empty and zero included, before it writes anything', async () => {
+  // D-029 F02: the guard refused only undefined and null. false, '' and 0
+  // passed it, the store took each one as no key, and the new vault of an
+  // encrypted vault was unencrypted, with the plaintext in its raw blocks.
+  const base = await tmpDir('enc-badkey')
+  const old = await Bundle.init(join(base, 'vault'), { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
+  await seedSecret(old)
+  const plain = await Bundle.init(join(base, 'plain'))
+  await seedSecret(plain)
+  const before = { old: await old.snapshotHash(), plain: await plain.snapshotHash() }
+  const bad = [false, '', 0, NEW_KEY, Buffer.alloc(16, 1), Buffer.alloc(33, 1), [...Buffer.from(NEW_KEY, 'hex')]]
+  for (const [i, encryptionKey] of bad.entries()) {
+    // An encrypted predecessor, and an unencrypted one: a value that is not
+    // a key is never read as no key.
+    for (const [name, v] of [['old', old], ['plain', plain]]) {
+      await assert.rejects(
+        () => compact(v, { initBundle: Bundle.init, toDir: join(base, `face-${name}-${i}`), vaultDir: join(base, `out-${name}-${i}`), encryptionKey }),
+        (err) => {
+          assert.equal(err.code, 'COMPACT_ENCRYPTION_KEY_INVALID', `${name} ${JSON.stringify(encryptionKey)}: ${err.stack}`)
+          assert.ok(!err.message.includes(NEW_KEY), 'the message holds the key')
+          return true
+        }
+      )
+    }
+  }
+  assert.deepEqual(await entries(base), ['plain', 'vault'], 'a refusal created a face, a stage or an out-dir')
+  assert.deepEqual({ old: await old.snapshotHash(), plain: await plain.snapshotHash() }, before)
+  await old.close()
+  await plain.close()
+})
+
+test('F02: compact checks that the new vault is encrypted before the import and before it returns, and refuses a factory that drops the key', async () => {
+  // initBundle is injected. A factory that does not pass the key on gives
+  // an unencrypted new vault. compact reads the metadata of the new vault
+  // before the import writes any content to it, and again before success.
+  const base = await tmpDir('enc-meta')
+  const old = await Bundle.init(join(base, 'vault'), { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
+  await seedSecret(old)
+  const key = Buffer.from(NEW_KEY, 'hex')
+  /**
+   * A factory that drops the key. Its vault counts the concepts that the
+   * import creates. With `claim`, its metadata says encrypted until the
+   * import starts, so only the check before success can see the truth.
+   */
+  const dropKey = (seen, claim) => async (dir, { encryptionKey, ...opts }) => {
+    const v = await Bundle.init(dir, opts)
+    return new Proxy(v, {
+      get(target, prop, receiver) {
+        if (prop === 'createConcept') seen.created++
+        if (prop === 'metadata' && claim && seen.created === 0) return { ...target.metadata, encrypted: true }
+        return Reflect.get(target, prop, receiver)
+      }
+    })
+  }
+  for (const [name, claim, created] of [['before-import', false, 0], ['before-success', true, 1]]) {
+    const seen = { created: 0 }
+    await assert.rejects(
+      () => compact(old, { initBundle: dropKey(seen, claim), toDir: join(base, `face-${name}`), vaultDir: join(base, `out-${name}`), encryptionKey: key }),
+      (err) => {
+        assert.equal(err.code, 'COMPACT_SUCCESSOR_NOT_ENCRYPTED', `${name}: ${err.stack}`)
+        return true
+      }
+    )
+    assert.equal(seen.created, created, `${name}: the import created ${seen.created} concept(s)`)
+  }
+  // Each failure removed the new vault, its stage and its verification
+  // directory. The faces stay: they are the announced plaintext artifacts.
+  assert.deepEqual(await entries(base), ['face-before-import', 'face-before-success', 'vault'])
+  await old.close()
+})
+
 test('T17, T18: compact refuses a stage directory that it did not create, keeps its contents and writes nothing (G15)', async () => {
   // compact removes only the stage that it created (the tests above). A
   // stage directory that existed before is not compact's to remove. compact
