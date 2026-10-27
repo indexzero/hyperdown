@@ -1,6 +1,7 @@
-// I10 Governance (okf SPEC §8, §11): revoked-writer ops after the causal
-// revocation point, unauthorized governance ops, and policy-violating ops
-// never mutate c/; the applied/rejected partition is replay-stable.
+// I10 Governance (okf SPEC §8, §11): ops from a writer with no gov/writer
+// record, revoked-writer ops after the causal revocation point,
+// unauthorized governance ops, and policy-violating ops never mutate c/;
+// the applied/rejected partition is replay-stable.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey, hostStub, keysUnder, rejectedReasons } from './helpers.js'
@@ -159,65 +160,71 @@ test('I10: the applied/rejected partition is replay-stable', async () => {
   assert.deepEqual(rejectedReasons(v1), rejectedReasons(v2))
 })
 
-test('I10: optimistic holds fold on ack, in seq order; the AddWriter is the only ack', async () => {
+test('I10: an op from a writer with no gov/writer record is rejected not-a-writer and changes no c/ key', async () => {
   const env = new Env({ genesis: 'A' })
-  // D is unadmitted: its content ops hold, never touching c/
-  env.op('D', 'create-concept', { path: 'opt/doc', type: 'note' })
-  const dId = env.tag('D', 0)
-  env.op('D', 'set-body', { id: dId, base: null, text: 'held body' })
+  env.op('A', 'create-concept', { path: 'nw/doc', type: 'note' })
+  const id = env.tag('A', 0)
+  env.op('A', 'set-body', { id, base: null, text: 'body from A' })
+  const before = await env.run()
+
+  // D has no gov/writer record: a mint, then each mutation op on A's
+  // concept (all nine content ops)
+  const D = env.hex('D')
+  env.op('D', 'create-concept', { path: 'nw/from-d', type: 'note' })
+  env.op('D', 'set-field', { id, key: 'status', value: ['d'] })
+  env.op('D', 'add-tag', { id, value: 'from-d' })
+  env.op('D', 'rem-tag', { id, value: 'from-d', tags: [env.tag('D', 2)] })
+  env.op('D', 'set-body', { id, base: null, text: 'body from D' })
+  env.op('D', 'set-path', { id, path: 'nw/moved-by-d' })
+  env.op('D', 'delete-concept', { id })
+  env.op('D', 'undelete-concept', { id })
+  env.op('D', 'resolve-conflict', { id, keep: 'ab'.repeat(32), supersede: [] })
+  // a governance op from D meets the indexer-issuer rule first (§8)
+  env.op('D', 'add-writer', { key: writerKey('E'), indexer: true })
+  const view = await env.run()
+
+  const reasons = rejectedReasons(view)
+  for (let seq = 0; seq < 9; seq++) {
+    assert.equal(reasons[`${D}/${String(seq).padStart(12, '0')}`], 'not-a-writer', `D seq ${seq}`)
+  }
+  assert.equal(reasons[`${D}/000000000009`], 'policy-governance')
+  assert.equal(Object.keys(reasons).length, 10, 'only D is rejected')
+  // the content pipeline never ran: no c/ key and no index key changed
+  for (const prefix of ['c/', 'path/', 'pcl/', 'link/', 'bl/', 'wanted/', 'revbybase/', 'log/']) {
+    assert.deepEqual(view.dump(prefix), before.dump(prefix), `no ${prefix} key changed`)
+  }
+  // §3: seen/ counts every node; a rejected non-writer takes no rate token
+  assert.equal(view.dump('seen/' + D)['seen/' + D], 10)
+  assert.equal(keysUnder(view, 'rate/' + D).length, 0, 'no rate/ record for D')
+  assert.equal(keysUnder(view, 'gov/writer/' + env.hex('E')).length, 0, 'E never admitted')
+})
+
+test('I10: admission is not retroactive: ops before the AddWriter stay rejected, ops after it take effect', async () => {
+  const env = new Env({ genesis: 'A' })
+  const D = env.hex('D')
+  // D is unadmitted: its ops are rejected and never touch c/
+  env.op('D', 'create-concept', { path: 'adm/early', type: 'note' })
+  const early = env.tag('D', 0)
+  env.op('D', 'set-body', { id: early, base: null, text: 'early body' })
   const host = hostStub()
   const mid = await env.run(env.nodes, { host })
-  assert.equal(keysUnder(mid, 'c/').length, 0, 'unacked ops never mutate c/')
-  assert.equal(keysUnder(mid, 'hold/' + env.hex('D') + '/').length, 2)
+  assert.equal(keysUnder(mid, 'c/').length, 0, 'ops of a non-writer never mutate c/')
 
-  // the indexer's AddWriter is the ack: holds fold at its position
+  // the indexer's AddWriter admits D at its linearized position
   env.op('A', 'add-writer', { key: writerKey('D'), indexer: false })
+  env.op('D', 'create-concept', { path: 'adm/late', type: 'note' })
+  const late = env.tag('D', 2)
   const view = await env.run(env.nodes, { host })
-  assert.equal(keysUnder(view, 'hold/').length, 0, 'holds consumed')
-  assert.equal(view.dump(`c/${dId}/meta`)[`c/${dId}/meta`].type, 'note')
-  assert.notEqual(view.dump(`c/${dId}/body`)[`c/${dId}/body`], undefined)
+  assert.deepEqual(rejectedReasons(view), {
+    [`${D}/000000000000`]: 'not-a-writer',
+    [`${D}/000000000001`]: 'not-a-writer'
+  })
+  assert.equal(view.dump(`c/${early}/meta`)[`c/${early}/meta`], undefined, 'the AddWriter revives no earlier op')
+  assert.equal(view.dump(`c/${late}/meta`)[`c/${late}/meta`].type, 'note', 'an op after the admission takes effect')
+  assert.equal(view.dump('path/adm%2Flate')['path/adm%2Flate'], late)
   // the substrate grant is host.addWriter; no separate substrate ack
-  // (autobee@2 records optimistic nodes itself; its ackWriter is a no-op)
-  assert.ok(host.calls.some(([m, k]) => m === 'addWriter' && k === env.hex('D')))
+  assert.ok(host.calls.some(([m, k]) => m === 'addWriter' && k === D))
   assert.ok(!host.calls.some(([m]) => m === 'ackWriter'))
-})
-
-test('I10: a held op that fails at fold time writes flag/optimistic (permanent)', async () => {
-  const env = new Env({ genesis: 'A' })
-  env.op('A', 'create-concept', { path: 'opt/taken', type: 'note' })
-  const existing = env.tag('A', 0)
-  // D (unacked) adopts an id that already exists → folds into duplicate-id
-  env.op('D', 'create-concept', { id: existing, path: 'opt/other', type: 'note' })
-  env.op('A', 'add-writer', { key: writerKey('D'), indexer: false })
-  const view = await env.run()
-  const flags = view.dump('flag/optimistic/' + env.hex('D') + '/')
-  assert.deepEqual(Object.values(flags), [{ reason: 'duplicate-id' }])
-})
-
-test('I10: RemoveWriter of an unacked writer drops holds unfolded', async () => {
-  const env = new Env({ genesis: 'A' })
-  env.op('D', 'create-concept', { path: 'opt/never', type: 'note' })
-  env.op('A', 'remove-writer', { key: writerKey('D') })
-  env.op('A', 'add-writer', { key: writerKey('D'), indexer: false }) // re-admission
-  const view = await env.run()
-  assert.equal(keysUnder(view, 'hold/').length, 0)
-  assert.equal(keysUnder(view, 'c/').length, 0, 'dropped holds never fold')
-})
-
-test('I10: hold overflow rejects at H_max; unacked rate ceiling caps holds', async () => {
-  const env = new Env({ genesis: 'A', config: { rate: { holdMax: 2 } } })
-  env.op('D', 'create-concept', { path: 'h/1', type: 'note' })
-  env.op('D', 'create-concept', { path: 'h/2', type: 'note' })
-  env.op('D', 'create-concept', { path: 'h/3', type: 'note' }) // 513th-equivalent
-  const view = await env.run()
-  assert.equal(keysUnder(view, 'hold/').length, 2)
-  assert.deepEqual(Object.values(rejectedReasons(view)), ['hold-overflow'])
-
-  const env2 = new Env({ genesis: 'A', config: { rate: { unackedCeiling: 1 } } })
-  env2.op('D', 'create-concept', { path: 'h/1', type: 'note' })
-  env2.op('D', 'create-concept', { path: 'h/2', type: 'note' }) // bucket empty
-  const view2 = await env2.run()
-  assert.deepEqual(Object.values(rejectedReasons(view2)), ['policy-rate'])
 })
 
 test('I10: token buckets refill from accepted indexer ops', async () => {

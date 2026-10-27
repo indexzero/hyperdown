@@ -1,5 +1,5 @@
 // Adversarial cases the spec reviews surfaced (okf SPEC changelog): N1
-// squat-proof minting (incl. future/unacked writer), M4 reserved field
+// squat-proof minting (incl. a future or unadmitted writer), M4 reserved field
 // keys, M5 fabricated-base SetBody, casefold path collision, keyspace
 // injection/escaping, empty-type, reserved paths.
 import { test } from 'node:test'
@@ -22,12 +22,17 @@ test('N1: adopting an id shaped like a KNOWN writer’s future mint is rejected'
   assert.deepEqual(reasons, ['mint-collision-risk', 'mint-collision-risk'])
 })
 
-test('N1: an unacked writer’s future mints are protected too (seen/ counts every node)', async () => {
+test('N1: an unadmitted writer’s future mints are protected too (seen/ counts every node)', async () => {
   const env = new Env({ genesis: 'A' })
-  env.op('D', 'create-concept', { path: 'opt/held', type: 'note' }) // D unacked, held; seen/D = 1
+  // D has no gov/writer record: its op is rejected not-a-writer, and seen/D = 1
+  env.op('D', 'create-concept', { path: 'nw/d', type: 'note' })
   env.op('A', 'create-concept', { id: makeTag(env.hex('D'), 3), path: 'squat/d', type: 'note' })
   const view = await env.run()
-  assert.deepEqual(Object.values(rejectedReasons(view)), ['mint-collision-risk'])
+  assert.deepEqual(rejectedReasons(view), {
+    [`${env.hex('D')}/000000000000`]: 'not-a-writer',
+    [`${env.hex('A')}/000000000000`]: 'mint-collision-risk'
+  })
+  assert.equal(view.dump('seen/' + env.hex('D'))['seen/' + env.hex('D')], 1)
 })
 
 test('N1: a squat on an UNKNOWN future writer cannot block its mint — fallback + flag/squat', async () => {

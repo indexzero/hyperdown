@@ -37,7 +37,6 @@ import {
   normalizeClock,
   makeTag,
   parseTag,
-  opToJson,
   opFromJson,
   GOVERNANCE_OPS
 } from './ops.js'
@@ -55,10 +54,10 @@ export const DEFAULT_LIMITS = Object.freeze({
 const DEFAULTS = {
   // §3 limits: fixed check order, single recorded reason.
   limits: DEFAULT_LIMITS,
-  // §8: unacked writers use a fixed default ceiling (64) until admitted;
-  // H_max = 512 held ops per writer. defaultCeiling is the admitted-writer
-  // ceiling when no SetWriterPolicy has set one (spec-silent; pinned here
-  // and in vault metadata by the store package).
+  // §8: defaultCeiling is the admitted-writer ceiling when no
+  // SetWriterPolicy has set one (spec-silent; pinned here and in vault
+  // metadata by the store package). unackedCeiling and holdMax have no use
+  // in core; the store's pinned metadata still carries them.
   rate: { defaultCeiling: 1024, unackedCeiling: 64, holdMax: 512 }
 }
 
@@ -388,22 +387,12 @@ class Applier {
       return this.writeLog(nodePos)
     }
 
-    if (!writerRec) {
-      // §8 optimistic hold path: full decoded payloads buffered until an
-      // indexer-authored AddWriter acks the writer. Rate-checked at hold
-      // time against the fixed unacked ceiling; bucket starts full at
-      // first hold.
-      const rrec = (await this.val(K.rate(W))) ?? null
-      if (((rrec && rrec.held) || 0) >= this.cfg.rate.holdMax) {
-        return this.reject(W, seq, 'hold-overflow')
-      }
-      if (!(await this.takeToken(W, null))) return this.reject(W, seq, 'policy-rate')
-      const after = await this.val(K.rate(W))
-      after.held = (after.held ?? 0) + 1
-      this.put(K.rate(W), after)
-      this.put(K.hold(W, seq), { type, op: opToJson(op), seq, at: this.at })
-      return
-    }
+    // §8: a writer's ops take effect only once an indexer's AddWriter has
+    // admitted it. A content op from a key with no gov/writer record is
+    // rejected here. It never reaches the content pipeline, and it takes no
+    // rate token. The governance branch above runs first, so a governance
+    // op from such a key keeps the reason 'policy-governance'.
+    if (!writerRec) return this.reject(W, seq, 'not-a-writer')
 
     if (!(await this.takeToken(W, writerRec))) return this.reject(W, seq, 'policy-rate')
     const res = await this.contentPipeline(type, op, W, seq, writerRec)
@@ -453,7 +442,6 @@ class Applier {
 
   // ---------- token bucket (§8) ----------
   capacityFor(writerRec) {
-    if (!writerRec) return this.cfg.rate.unackedCeiling
     if (Number.isInteger(writerRec.rateCeiling)) return writerRec.rateCeiling
     return this.cfg.rate.defaultCeiling
   }
@@ -461,8 +449,9 @@ class Applier {
   async takeToken(W, writerRec) {
     const cap = this.capacityFor(writerRec)
     const indexerOps = (await this.val(K.rateIndexerOps())) ?? 0
-    // §8: buckets start full — at admission and at first hold.
-    const rec = (await this.val(K.rate(W))) ?? { tokens: cap, seenIndexerOps: indexerOps, held: 0 }
+    // §8: buckets start full: at admission (opAddWriter writes the
+    // record), and for the genesis indexer at its first op.
+    const rec = (await this.val(K.rate(W))) ?? { tokens: cap, seenIndexerOps: indexerOps }
     const delta = indexerOps - (rec.seenIndexerOps ?? 0)
     rec.tokens = Math.min(cap, (rec.tokens ?? cap) + delta)
     rec.seenIndexerOps = indexerOps
@@ -509,7 +498,7 @@ class Applier {
     }
     // §8: bucket starts full at admission.
     const indexerOps = (await this.val(K.rateIndexerOps())) ?? 0
-    this.put(K.rate(target), { tokens: this.capacityFor(rec), seenIndexerOps: indexerOps, held: 0 })
+    this.put(K.rate(target), { tokens: this.capacityFor(rec), seenIndexerOps: indexerOps })
     // §8: this AddWriter is the ack of the writer's held optimistic ops.
     // The ack is this fold; the substrate needs no call (autobee@2 records
     // every optimistic node itself, and its host.ackWriter is a no-op).
