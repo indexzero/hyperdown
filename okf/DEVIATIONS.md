@@ -10,142 +10,6 @@ the copied code wins and DEVIATIONS.md records it." The copied
 byte-identical between the two stacks, which is exactly what the copy rule
 exists to preserve; the u32-LE prose in §5 is the deviation being recorded.
 
-**okf §3 per-writer ordinal: `seen/` view counter, after checking autobee's
-node.** As §3 instructs, autobee@1.0.10 was checked before resolving:
-`lib/writers.js` `createNode()` does expose a per-node `length` (and
-`_applyBatch` hands those nodes to apply), so a transport-side seq exists.
-Core nevertheless derives position from the stream itself via the
-view-kept `seen/<writerKey>` count (incremented for every node regardless
-of disposition), because core is transport-agnostic and the §8 unforgeable-
-position rule (`seqAtRemoval`, forged-clock) must bind to the same ordinal
-apply uses for `flag/rejected`/`hold/` keys. Under autobee@1.0.10's
-per-writer FIFO delivery the seen-count equalled the node seq.
-
-On autobee@2.12.1 the two can differ, and `seen/` is the one that counts.
-autobee@2 appends empty "ack" nodes to a writer's core (`index.js`
-`_appendAck`), and apply never sees an empty node (`index.js`
-`_applyBatch` passes only non-empty values), so `node.length` can run
-ahead of the seen-count. The store therefore seeds its next local seq
-from `seen/<self>` after an `update()`, never from `local.length`, and
-sets `ackThreshold: Infinity` so autobee appends no threshold acks. The
-one ack autobee appends after a reindex is still possible; the seed
-covers it.
-
-**okf §8 hold buffer stores full payloads: acked optimistic nodes are NOT
-re-delivered to apply.** §8 requires verifying re-delivery before choosing
-between payload-holding and seq-dedup. autobee@1.0.10 `index.js`
-`_optimisticBatch()` applies an unacked writer's optimistic batch exactly
-once at its linearized position (rolling back only when
-`system.canApply()` fails); a later `host.ackWriter()`
-(`lib/apply-calls.js`) flips writer state without replaying prior nodes
-into apply. Therefore `hold/<writerKey>/<seq>` stores the full decoded
-payload (JSON-safe hydration) and the ack's `AddWriter` folds holds in seq
-order at its own linearized position, as specified for this branch.
-Re-checked on autobee@2.12.1: still no re-delivery. Each applied
-optimistic node advances the writer's recorded length
-(`lib/system.js` `ackWriter`, called from `index.js` `_applyBatch`), and
-a writer is read from its recorded length onward (`lib/writers.js`
-`Writer._next`), so a later grant never replays earlier nodes.
-
-**okf §8 uniform topo weight is 2, not the literal `weight: 1`.** §8
-mandates `host.addWriter(key, { isIndexer: op.indexer, weight: 1 })` to
-avoid autobee's mixed defaults, but autobee@1.0.10's GENESIS auto-add is
-uncontrollable from apply and uses the defaults (`index.js`
-`_processApplyBatch` → `lib/apply-calls.js` `weight = isIndexer ? 2 : 1`
-with `isIndexer` defaulting true): the genesis writer is always weight 2.
-A literal `weight: 1` for admitted writers would therefore re-create
-exactly the mixed-weight condition §8 exists to prevent (`lib/topo.js`:
-`isOrderedBefore()` breaks the walk on `node.weight < link.weight` while
-`cmp()` sorts higher weight first — divergent linearizations under
-concurrency). §8's substance is the UNIFORM weight; the store's
-HostAdapter (`okf/store/lib/bundle.js`) pins every `addWriter` at the
-genesis value `weight: 2` (the vault-ld harness-proven resolution),
-overriding the `weight: 1` core passes. Side effect: autobee's cosmetic
-`isIndexer` getter (`lib/writers.js`: `weight === 2`) reads true for all
-writers; §8 governance authority is decided from `gov/` by core, never
-from autobee state.
-
-On autobee@2.12.1 the store still pins `weight: 2`, but the value means
-something else, and the weights are no longer uniform at every moment:
-
-- **A ceiling, capped at the carrier.** `weight` sets the writer's
-  `maxWeight`, capped at the resolved weight of the node that carries the
-  grant (`lib/system.js` `addWriter`). A writer admitted by a member still
-  sorting at 0 gets ceiling 0.
-- **The climb.** A new writer's nodes sort at 0. A peer whose standing
-  reaches the requested tier adds an approval to its next non-optimistic
-  append (`index.js` `_collectApprovals`), and the writer's next append
-  cites that approval as a witness (`index.js` `append`;
-  `lib/witness.js`). From then on the writer sorts at the approved
-  weight. The approval also lifts a capped ceiling. Only genesis starts
-  at 2 (`bootstrapWeight`).
-- **Who can approve.** Only a peer with standing 2 can approve a tier-2
-  climb. Genesis has it from the start. Every other member has it only
-  after its own climb. If no member at 2 is online, nobody climbs: in
-  `test/store-writers.test.js` ("a writer added while genesis is
-  offline"), a writer admitted by a not-yet-climbed indexer while genesis
-  was offline stayed at weight 0, ceiling 0, through further appends, and
-  both writers reached weight 2 only after genesis came back and
-  appended.
-- **Why mixed weights are safe now.** The 1.0.10 comparator split is
-  fixed: `isOrderedBefore` is `cmp() < 0` (`lib/topo.js`), and each
-  node's resolved weight is pinned in its flush's system record, so every
-  peer orders a climb's mixed weights the same way.
-- **What a climb changes.** While a member sorts at 0, each of its
-  writes sorts after every concurrent write from a member at 2, whatever
-  the timestamps (`lib/topo.js` `cmp`: weight first). So it loses a
-  first-wins race (a path claim, §7) and wins a last-writer-wins register
-  (§5) against that member. okf's outcomes stay a pure function of the
-  linearized order (I6), but which concurrent write wins can differ from
-  what the same writes produced on 1.0.10.
-- **What 2 still buys.** Members at 2 sort above strangers (unknown or
-  optimistic writers), who resolve to 0 and cannot sort before a heavier
-  node they do not link (`lib/topo.js` `cmp`).
-
-`isIndexer` on autobee@2 means ceiling >= 2 (`lib/writers.js`), so it
-reads false for a writer whose grant was capped. It remains cosmetic.
-
-**okf §8 optimistic nodes need no substrate ack on autobee@2; okf makes
-none.** SPEC §8 (v1.4) still describes the autobee@1.0.10 resolution: the
-store's `_apply` called `host.ackWriter(node.key)` for every
-optimistic-flagged node, and core called it again at the `AddWriter`,
-because 1.0.10 rolled an unacked writer's optimistic batch back unless the
-writer was in its system after apply (`index.js` `_optimisticBatch`).
-
-autobee@2.12.1 changed the rule, and okf no longer calls `ackWriter` at
-all:
-
-- every optimistic node reaches apply, whether its writer is unknown,
-  granted or removed (`lib/system.js` `canApply`);
-- once applied, autobee records the node itself and, unless apply granted
-  the writer, records the writer as removed (`index.js` `_applyBatch` →
-  `lib/system.js` `ackWriter`);
-- that writer's later optimistic nodes still reach apply; its plain
-  appends are refused with "Not writable" until an `AddWriter` grants it
-  (`index.js` `append`);
-- `host.ackWriter` is a no-op kept for old contracts
-  (`lib/apply-calls.js`).
-
-core's `hold/` buffer remains the only VIEW-effect gate, so the §8
-semantics (effects land at the in-log `AddWriter`'s linearized position)
-are unchanged. The onboarding test (`test/store-convergence.test.js`,
-"optimistic onboarding") passes unchanged. vault-ld stays on 1.0.10 and
-keeps its DAG-level ack.
-
-**okf core fix required by T4 (out of store scope, minimal):
-`opFromJson`/`opToJson` hold hydration corrupted held `SetField` ops.**
-`okf/core/lib/ops.js` hex-converted any field named `key` when rehydrating
-a held op (`Buffer.from('status', 'hex')` → empty buffer), so an unacked
-writer's held `set-field` folded under an empty frontmatter key on every
-peer — converged (I2 held) but wrong, and unreachable by core's unit suite
-(its hold tests held only `create-concept`/`set-body`). Since governance
-ops (the only ops with a buffer `key`) are rejected before the hold branch,
-a held op can never carry a buffer: hydration is now a plain
-null-normalizing copy. View bytes are unchanged for every previously
-passing case (string fields always serialized as-is); the store's
-optimistic-onboarding integration test is the regression test. Full suite
-(114 vault-ld + 62 okf-core + 15 store) green after the fix.
-
 **okf §10 epoch namespace derivation (spec-silent detail).** §10 requires
 writer cores namespaced per epoch and "recorded in vault metadata" but not
 HOW the id is minted. The store derives it purely:
@@ -266,60 +130,248 @@ predecessor bundle).
 
 ---
 
-## The autobee@1 to autobee@2 flag day
+## Substrate behaviour that okf relies on (autobee@2.12.1)
 
-**A store autobee@1 wrote is refused before anything opens it for writing.**
-autobee@2 cannot open an autobee@1 store: it boots onto the v1 system head,
-throws "Out of bounds" on the first v1 writer record, and closes, after
-writing user data. So `Bundle` decides which autobee wrote a generation's
-store before it constructs an Autobee (`store/lib/substrate.js`), and throws
-`VAULT_AUTOBEE_V1` for an autobee@1 store.
+This section goes with `SPEC.md` §1. Each entry names a behaviour
+of autobee@2.12.1 that okf relies on, the okf rule that needs it, and the
+installed source. A path such as `index.js:95` is relative to the autobee
+package root. A citation of another package names it. The lockfile
+resolves autobee 2.12.1, corestore 7.16.1, hypercore 11.39.2 and hyperbee2
+2.20.1. If a later release changes one of these behaviours, the rule that
+the entry names breaks. Each entry names the tests that cover it. okf
+reads no undocumented autobee property (test: "the store, core, faces and
+cli read no undocumented autobee property" in
+`okf/test/store-ordinal.test.js`). Where an entry relies on a part of
+autobee that the README does not document, it says so.
 
-The rule was checked against stores written by the last autobee@1 release
-of okf (autobee 1.0.10, corestore 7.11.0) and by this one:
+**The pins, and the corestore floor.** `okf/store/package.json` pins
+`autobee` `^2.12.1` and `corestore` `^7.16.1`. autobee lists corestore
+only as a dev dependency (`package.json`), and the store hands it a
+corestore session.
+autobee asks for its system and view cores at manifest version 3
+(`index.js:213-221`, `lib/constants.js:3`). corestore honours a per-core
+`manifestVersion` from 7.12.6 on (upstream commit `d109402a`, "support
+passing manifestVersion and name"). In 7.16.1 the option reaches the
+manifest through `_preload` and `_auth` (corestore `index.js:673-682`,
+`:714`). Up to 7.12.5, corestore builds every new manifest at the
+store-wide version (corestore 7.12.5 `index.js:670`), which is 1 by
+default (corestore `index.js:258`). autobee's view encryption refuses a
+view core below version 3 (`lib/encryption.js:83-86`). So 7.12.6 is the
+floor, and the pin `^7.16.1` is above it. Test:
+`okf/test/store-encryption.test.js`.
 
-| | autobee@1 | autobee@2 |
-| --- | --- | --- |
-| bootstrap core `autobee/local` | names the local core | same |
-| local core `autobee/head` | the boot record, once a node applied | same |
-| system core named by the head | manifest version 1 | manifest version 3 |
-| local oplog blocks | oplog version 3 | oplog version 4 |
-| local core `okf/substrate` | absent | `autobee@2`, written on every open |
+**The apply contract.** autobee calls `apply(nodes, view, host)`
+(`README.md:74`, `:185-208`, `lib/apply-view.js:17-19`). `view` is what
+the `open` handler returns (`README.md:75`, `lib/apply-view.js:8-10`).
+autobee opens both its working view and `db.view` through that handler
+(`index.js:93-94`, `:127-128`). So apply and every read use the same
+`ViewAdapter` surface. A node has `key`, `value` and `length`
+(`README.md:192-194`), plus the other fields of `createNode`
+(`lib/writers.js:808-829`). Core takes the nodes unwrapped. A throw from
+apply closes autobee (`README.md:140-141`, `index.js:669-690`). So core
+records a failed op as a rejection. Only a node that breaks the transport
+contract throws (SPEC §3).
 
-A store with no `autobee/head` has applied nothing (an autobee@1 joiner
-that never synced), so it is opened as a fresh store. The plan's rule was
-the marker alone: a head with no marker is autobee@1. The store keeps that
-rule as the fast path, and decides an unmarked store with a head by the
-manifest version of the system core the head names (`test/store-
-substrate.test.js`). That way a v2 store that lost its marker is not
-refused, and the marker is written again.
+**`optimistic: false`: a node of a writer that autobee has not added
+reaches no apply.** autobee reads the option at `index.js:95`. The default
+is `true` (`README.md:81`). With `false`, autobee processes a batch only
+when its writer is added (`index.js:1357-1364`). The one exception is a
+removed writer that a pending node of another writer links
+(`lib/writers.js:382-388`). okf never calls `host.removeWriter` (below).
+autobee drops every other batch before `_applyBatch`. So the batch reaches
+no apply, its approvals add no writer (`index.js:1432-1441`), and the
+system records nothing. A plain node of such a writer stops earlier, in
+`Writer._next` (`lib/writers.js:613-615`). SPEC §8 needs this: an
+outsider puts no op and no approval into apply. autobee still reads such a
+node and checks its links before the drop (`lib/writers.js:547-618`). The
+wakeup cost of an outsider is G44 in `SECURITY_MODEL.md`. Tests: `A4` to
+`A7` in `okf/test/store-substrate-attacks.test.js`.
 
-A directory is checked through its own read-only corestore, and the
-read-write corestore opens only after the check passes. A refused open
-leaves every file in the directory byte-identical, and the autobee@1
-release still opens the store to the same view hash. Opening the directory
-read-write would have rotated RocksDB's housekeeping files; the data files
-would not change either way, and corestore 7.16.1 reads the 7.11.0 storage
-format (hypercore-storage `VERSION` 2 in both) without migrating it.
+**`bootstrapWeight: 0` and grants at weight 0: every writer stands at
+weight 0.** `bootstrapWeight` is a constructor option that autobee reads
+at `index.js:49`, with a default of 2. The README does not list it.
+autobee adds the bootstrap writer on its first node at this weight
+(`index.js:1411-1413`). okf makes every other grant with
+`host.addWriter(key, { weight: 0 })`. The README lists only `isIndexer`
+for that call (`README.md:210-218`). The `weight` option is at
+`lib/apply-calls.js:33`, with the default `isIndexer ? 2 : 1`. Weight 0
+gives okf these results:
 
-**The face that crosses the flag day comes from the old release's
-`compact`, not its `materialize`.** The upgrade plan's step 1 is "run
-`auto-okf materialize` with the current release". But the old release's
-materialize records nothing about the vault it came from: the face holds
-concept notes, `index.md`, `log.md` and the emission manifest
-(`{ files }`), with no vault key and no view hash. The new release cannot
-open the autobee@1 store to compute the checkpoint either. §10 requires
-`{ predecessorKey, predecessorCheckpoint }` in the new metadata, and
-metadata validation requires the checkpoint's 64-hex `viewHash`.
+- A grant at weight 0 changes no weight. The carrier node is at 0, so the
+  effective weight is 0, and it is not above the current ceiling
+  (`lib/system.js:75-88`). The grant writes no promotion request, because
+  the wanted weight 0 is not above the anchored weight
+  (`lib/promotions.js:111-113`).
+- Nodes sort by weight, then timestamp, then writer key, then length
+  (`lib/topo.js:168-179`). Every weight is 0, so nodes sort by timestamp,
+  then key. This is the uniform weight of SPEC §8.
+- No honest peer approves. An append collects approvals only when the
+  standing of its writer is above 0 (`index.js:1250-1255`). The standing is
+  the current weight of the writer (`index.js:1223-1226`,
+  `lib/witness.js:8-12`).
+- No honest node cites a witness. An append cites one only when the grant
+  hint of its writer is above its current weight (`index.js:1546-1553`). A
+  host grant sets no hint (`lib/system.js:76-77`).
+- No writer climbs. A witness raises a weight only when the approver
+  stands at the claimed weight or above (`lib/witness.js:19-51`). Genesis
+  qualifies only up to `bootstrapWeight` (`lib/witness.js:46-47`).
+- autobee's `isIndexer` is always false. It means a ceiling of 2 or more
+  (`index.js:188-190`, `lib/writers.js:352-354`, `:531-532`). So
+  `Bundle.isIndexer` reads `gov/`.
 
-So compaction is split at the materialize seam (`faces/lib/compact.js`):
-`materializeForCompact` records the provenance in the face as
-`.okf-predecessor.json`, and `compactFromFace` reads it from there or from
-explicit options. The old release has no such file. Its `compact`, run
-with `--face`, writes the same face and records exactly that provenance in
-the scratch vault's `okf-vault.json`. The new release's
-`compact --from-face <face> <out> --predecessor <scratch>/okf-vault.json`
-reads it there (`okf/cli/README.md`, "Crossing the autobee@2 flag day").
-Run by hand on a store the old release wrote, this reproduced the old
-release's own generation id and a bundle byte-identical to the old face
-modulo `_rev` and `log.md`.
+A member can still forge a node with approvals. autobee then adds each
+named key at weight 0, because the weight of the carrier caps the grant
+(`index.js:1432-1441`, `lib/system.js:75`). `SECURITY_MODEL.md` lists this
+residual. Tests: "every writer stands at weight 0 on every peer" in
+`okf/test/store-writers.test.js`, and `G35` and `G50` in
+`okf/test/store-substrate-attacks.test.js`.
+
+**The grant at every `AddWriter` op (AD7).** Core grants the key of every
+`AddWriter` op that it folds, at weight 0, whatever the outcome of the op
+(SPEC §8). This relies on four behaviours:
+
+- The grant records the key as an added writer in the system. After the
+  flush, every peer adds the writer (`index.js:1462`, `:1474-1477`).
+- The nodes of a granted key pass the filter at `index.js:1359`. That
+  filter reads `isAdded` from the system record (`lib/writers.js:526-533`).
+  They also pass `canApply` (`lib/system.js:242-251`). So they reach apply
+  on every peer, and core rejects each one `not-a-writer`.
+- After an undo, autobee applies the batches again (`index.js:1386-1392`,
+  `:1405-1408`), so core grants again. A repeated grant changes no weight.
+  It only records the writer as added again (`lib/system.js:80-88`).
+- autobee copies a writer key into a fixed 34-byte system key
+  (`lib/encoding.js:64-69`). So core grants only a 32-byte key.
+
+Test: `okf/test/store-governance-race.test.js`.
+
+**The `update` handler.** The constructor option `update (view, changes)`
+is in the README (`README.md:77`). autobee calls it after apply, once
+`db.view` holds the new state (`index.js:793-794`, `:840`,
+`:1051-1058`). The Bundle refreshes `isIndexer` from `gov/` there, and once
+at open. Test: "isIndexer answers from gov/" in
+`okf/test/store-writers.test.js`.
+
+**`fastForward: false`: every peer folds every op through its own apply.**
+autobee reads the option at `index.js:105-108`. The README shows only an
+object value (`README.md:86`). The source comment at `index.js:105`
+states what `false` does. A fast-forward moves the system and the view
+onto a head that another writer stamped, with no apply for that prefix
+(`README.md:243-245`, `index.js:1722-1736`). With `false`, autobee boots
+from no head (`index.js:111`), runs no network boot (`index.js:601-604`),
+and queues no fast-forward from a wakeup hint (`index.js:922-923`). okf
+never calls `moveTo` (`index.js:1607-1618`). I2 and I3 need this. Test: "a
+joiner folds every op through its own apply" in
+`okf/test/store-convergence.test.js`.
+
+**The position is the per-writer ordinal (AD4).** The README documents
+`node.length` as the "position in the writer's core" (`README.md:194`).
+autobee sets it to the length of the core after the node. For a block
+that it reads from the core, that is `lib/writers.js:571-579`. For a local
+node, it is `appendLength`, which starts at the core length plus one
+(`lib/writers.js:332`, `:748`). So the 0-based position is
+`node.length - 1`, the same on every peer. Every node of a batch enters
+the system (`index.js:1430`). Apply gets only the nodes with a non-empty
+value (`index.js:1444`). So an empty node takes a position and reaches no
+apply, and the seqs of the ops of a writer can have gaps (SPEC §3). Tests:
+the position tests in `okf/test/store-ordinal.test.js`, and
+`okf/test/store-restart.test.js`.
+
+**The length of the local core gives the next position.** The store takes
+the seq of a new op from `db.local` before it encodes the op. The README
+documents `db.local` as the local writer Hypercore (`README.md:102-104`).
+The local writer appends through that core (`index.js:257`,
+`lib/writers.js:19`, `:37`, `:785`). Three behaviours hold the rule:
+
+- The Bundle serializes its appends. A plain `db.append` resolves with the
+  drain that applies its node and writes it to the core (`index.js:1575`,
+  `:634-646`, `:824`, `lib/writers.js:137-147`, `:768-789`). So the length
+  counts every earlier node, unless a node waits.
+- A local node that links a node missing from the system waits in memory
+  (`lib/writers.js:651`). Then the length is behind, and the store takes
+  one past the seq of its last append.
+- autobee appends no other local node in this configuration. Its only
+  other local append is the empty ack (`index.js:1297-1314`). The
+  threshold ack needs a system head that is not trusted
+  (`index.js:1303-1305`, `:1316-1330`). okf passes no `isTrusted` and no
+  `mostRecentTrusted` hook, so every key is trusted (`lib/trusted.js:30-32`,
+  `README.md:251`). `README.md:304` states the threshold alone, and the
+  source adds the trust condition. The ack after a reindex needs
+  `_reindexed` (`index.js:1298`). `compactMaybe` sets it (`index.js:707`)
+  only for a system or view core below manifest version 3
+  (`index.js:692-693`, `:710-718`, `:738-751`). This release makes both
+  cores at version 3 (see the corestore floor). `ackThreshold` stays at its
+  default of 32 (`index.js:30`, `:134`).
+
+Between the read of the length and the append inside `db.append`, autobee
+awaits (`index.js:1529-1561`). If a later autobee appends a local node in
+that window, the op lands one position later. Every peer then rejects it
+`forged-clock`, and the views stay equal. Tests: `G10` and `G13` in
+`okf/test/store-ordinal.test.js`.
+
+**An append returns only once its node is durable.** `Bundle.append`
+resolves only once `db.local` holds the position of its node. This relies
+on five behaviours:
+
+- A new local node lives only in memory, in the pending list of the local
+  writer (`lib/writers.js:729-754`). Only `Writer.flush` writes it to the
+  core (`lib/writers.js:768-789`). Only the drain calls that
+  (`index.js:824`, `:1578-1605`, `lib/writers.js:137-147`).
+- The close of autobee calls no flush. `_close` sets `_interrupting`
+  (`index.js:392`). `_teardown` closes the writers, `db.local` and the
+  store, and then awaits the drain in flight (`index.js:424`, `:439`,
+  `:442`, `:446`).
+- A reopen starts the local writer with no pending node, at the core
+  length (`lib/writers.js:330-332`). No code reads a pending node back.
+- A node that waits behind a missing link never reaches apply, so no
+  system or view state holds it (`lib/writers.js:547-667`). autobee stores
+  its boot record only after a drain that was not interrupted
+  (`index.js:833-841`).
+- The wait listens to the hypercore events `append` and `close` on
+  `db.local` (hypercore `README.md:591-593`, `:759-761`). A flush that
+  passed the closed check can still commit after `close` (hypercore
+  `index.js:1150-1151`, `lib/session-state.js:780-786`). The closed
+  session then gets no `append`. Once closed, `db.local.length` reads 0
+  (hypercore `index.js:651-654`). So the store decides only after
+  `db.close()` resolves, from the length in storage, through its root
+  corestore.
+
+An append that the close stops fails `VAULT_CLOSED_BEFORE_DURABLE`, and it
+wrote nothing. Tests: `okf/test/store-append.test.js`.
+
+**`db.writable` is the admission signal.** `db.writable` is `true` once
+autobee has added this writer (`README.md:114-116`). autobee sets it from
+the system record of the local writer: added and not removed
+(`index.js:196-198`, `lib/writers.js:208-216`). Its own `append` refuses
+only a removed writer (`index.js:1531-1533`). A writer that autobee has not
+added fails the local flush with `Not writable` (`lib/writers.js:633-638`),
+and then autobee closes (`index.js:669-690`). So the store checks
+`db.writable` before every append, and refuses with `VAULT_NOT_WRITABLE`.
+Test: the `G12` test in `okf/test/store-writers.test.js`.
+
+**`host.removeWriter` is never called.** SPEC §8 revocation is causal, in
+okf's apply. A removal at the substrate records the writer as removed
+(`lib/apply-calls.js:49-52`, `lib/system.js:108-114`). Then `canApply` is
+false for its nodes (`lib/system.js:242-251`, `index.js:1447`), and they
+reach no apply. The §8 clock rule needs every node of a revoked writer to
+reach apply on every peer. So `HostAdapter` exposes only `addWriter`. A
+revoked member stays an autobee writer (G34 in `SECURITY_MODEL.md`).
+
+**Genesis, the vault key and the stored encryption key.** A creator passes
+no vault key. autobee then takes the key of the local writer core as the
+vault key (`lib/boot.js:65-89`, `:86`). So `metadata.genesisKey` equals
+`db.key` on every peer. Core's genesis indexer is then autobee's bootstrap
+writer (`index.js:1411-1413`). autobee keeps the encryption key in the user
+data of the local core (`lib/boot.js:108-131`), so a reopen needs no key.
+`encryptionKey` encrypts the writer cores, the system and the view
+(`README.md:308-320`, `index.js:52`, `:219`, `:263`, `lib/writers.js:269`).
+Tests: `okf/test/store-encryption.test.js`.
+
+**The store session, replication and close.** The Bundle hands autobee a
+per-generation namespace of its root corestore (corestore
+`README.md:88`). `db.replicate(stream)` passes its arguments to
+`store.replicate`, and adds the stream to the wakeup protocol
+(`index.js:454-458`). The README documents only `isInitiator`
+(`README.md:155-163`). corestore's `replicate` also takes a stream
+(corestore `README.md:62-81`). `db.close()` closes the store that it was
+handed (`index.js:442`). So the Bundle closes its root corestore itself,
+after `db.close()`.
