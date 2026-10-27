@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bundle, K, tmpDir, pair, until, sleep, converged } from './store-helpers.js'
-import { forgeNext, sys, linearized, carriers } from './attack-helpers.js'
+import { forgeNext, sys, linearized, carriers, hex } from './attack-helpers.js'
 
 test('writer add/remove round trip: causal revocation, uniform on every peer', async (t) => {
   const a = await Bundle.init(await tmpDir('wr-a'))
@@ -376,5 +376,62 @@ test('a forged approval from a member at weight 0 also adds the key, at weight 0
   for (const v of [a, b, s]) {
     assert.equal(await v.val(K.seen(sHex)), 1, 'the plain op reached apply')
     assert.equal(await v.val(K.cMeta(c0.tag)), undefined, 'no c/ effect (I10)')
+  }
+})
+
+test('HostAdapter returns the autobee grant, so core resumes only once the system records it, on every peer (G40)', async (t) => {
+  // The Bundle hands core apply a HostAdapter over autobee's host
+  // (store/lib/bundle.js), and core awaits host.addWriter for every
+  // AddWriter op it folds (core/lib/apply.js grant). autobee's addWriter
+  // reads the system before it records the grant (lib/system.js:66-92).
+  // autobee flushes the system right after apply returns
+  // (index.js:1447-1462), and the flush writes only the updates it reads
+  // when it starts (lib/system.js:417-470). So the adapter must return the
+  // grant's promise. A grant that core cannot await can land after the
+  // flush read its updates. Then the flush drops it, or a later flush
+  // writes it.
+  //
+  // A pass-through observer sits between core apply and the real
+  // HostAdapter of each peer. It hands every grant to the adapter, and when
+  // the value that core awaits settles, it records whether autobee's
+  // pending system updates hold the key (lib/system.js:321-356).
+  const open = []
+  let unpair = () => {}
+  t.after(async () => {
+    unpair()
+    for (const v of open) await v.close()
+  })
+  const a = await Bundle.init(await tmpDir('grant-a'))
+  open.push(a)
+  const b = await Bundle.join(await tmpDir('grant-b'), a.key)
+  open.push(b)
+  unpair = pair(a, b)
+  const observed = { a: [], b: [] }
+  for (const [name, v] of [['a', a], ['b', b]]) {
+    const pinned = v._coreApply
+    v._coreApply = (nodes, view, adapter) =>
+      pinned(nodes, view, {
+        addWriter(key, opts) {
+          return Promise.resolve(adapter.addWriter(key, opts)).then((value) => {
+            observed[name].push({ key: hex(key), recorded: v.db.system.updates.has(hex(key)) })
+            return value
+          })
+        }
+      })
+  }
+  const bHex = hex(b.localKey)
+
+  await a.writers.add(b.localKey, { indexer: false })
+  assert.ok(await until(async () => (await b.update(), b.writable)), 'b becomes writable')
+  await a.update()
+  for (const name of ['a', 'b']) {
+    assert.deepEqual(
+      observed[name],
+      [{ key: bHex, recorded: true }],
+      `${name}: when the grant that core awaits settles, the system records it`
+    )
+  }
+  for (const v of [a, b]) {
+    assert.deepEqual(await sys(v, b.localKey), { weight: 0, maxWeight: 0, isRemoved: false }, 'the flushed system holds the grant')
   }
 })
