@@ -423,10 +423,6 @@ export class Bundle extends EventEmitter {
     return this._isIndexer
   }
 
-  get encryptionKey() {
-    return this.db ? this.db.encryptionKey : null
-  }
-
   /** Read surface: the ViewAdapter over autobee's read-only view snapshot. */
   get view() {
     return this.db.view
