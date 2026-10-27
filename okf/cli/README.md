@@ -20,7 +20,9 @@ OKF bundle back to disk:
 $ auto-okf init ./vault
 vault key:   6671cacb…
 writer key:  6671cacb…
+storage:     ./vault
 generation:  root
+this peer is the genesis indexer (§8); share the vault key to invite peers
 
 # 2. there is NO content-write command — content enters through ingest (edit
 #    markdown) or the @auto-okf/store API (agents). Hand-author a note:
@@ -64,21 +66,48 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | command | what it does |
 | --- | --- |
 | `init <dir>` | create a new vault at `<dir>`; prints the vault key (share it to invite peers), this peer's writer key, and the generation namespace; refuses a dir already pinned |
-| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry non-default invites; when `<dir>` is already pinned the key is optional (reopen + reprint keys) |
+| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry non-default invites; when `<dir>` is already pinned the key is optional (reopen + reprint keys). A joined peer writes nothing until an indexer admits it: hand the printed writer key to an indexer (`add-writer`), then replicate (`watch --swarm`). See [Joining a vault](#joining-a-vault) |
 | `add-writer <dir> <writer-key> [--indexer]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8) |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
 | `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
 | `ingest <dir> <bundle-dir> [paths…]` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9). Trailing bundle-relative paths restrict the scan to exactly those concept files (ADR-001 — concurrent-writer politeness; the shell expands globs): a named path that does not exist, escapes the bundle root, or is not a `.md` file exits 1 naming the path, with zero ops appended. Zero paths = full scan, unchanged. `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default) |
-| `watch <dir> <bundle-dir> [--swarm]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also joins the vault's hyperswarm topic for replication; `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
+| `watch <dir> <bundle-dir> [--swarm]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also joins the vault's `auto-okf/2` hyperswarm topic for replication (on the public DHT, see [Notes](#notes)); `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
 | `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
-| `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted. The fresh vault is encrypted only with `--encryption-key <hex64>`: compaction never carries a key over. An encrypted vault needs `--encryption-key`: without it, `compact` refuses (`COMPACT_ENCRYPTION_KEY_REQUIRED`, exit 1), and no flag makes an unencrypted copy. The face holds the vault's contents as plaintext, and for an encrypted vault `compact` prints a `warning:` line that names it (see [Encryption and plaintext](#encryption-and-plaintext)) |
+| `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted. `<out-dir>` must be new or empty, and the paths must not overlap (see [Compaction paths](#compaction-paths)). compact checks the fresh vault against the face and the predecessor's live state, and exits 1 on a difference (`COMPACT_FIDELITY`). The fresh vault is encrypted only with `--encryption-key <hex64>`: compaction never carries a key over. An encrypted vault needs `--encryption-key`: without it, `compact` refuses (`COMPACT_ENCRYPTION_KEY_REQUIRED`, exit 1), and no flag makes an unencrypted copy. The face holds the vault's contents as plaintext, and for an encrypted vault `compact` prints a `warning:` line that names it (see [Encryption and plaintext](#encryption-and-plaintext)) |
 | `resolve <dir> <id> --keep <revHash> [--supersede <h>…] [--text <s>]` | resolve open body conflicts on `<id>`: pin the head to `--keep`, clearing the cited `flag/conflict` entries (§5). `--supersede` is repeatable |
 | `undelete <dir> <id>` | restore a tombstoned concept (writes the `flag/undelete` audit, §8) |
 
 There is no content-write command: content flows in through `ingest`/`watch`
 (edit the markdown) or through the `@auto-okf/store` API (agents).
+
+## Joining a vault
+
+`join` prints this peer's own writer key. The peer writes nothing until an
+indexer admits that key:
+
+```sh
+$ auto-okf join ./peer <vault-key>
+vault key:   6671cacb…
+writer key:  0cf03548…
+hand the writer key to an indexer (`auto-okf add-writer`), then replicate
+with `auto-okf watch <dir> <bundle-dir> --swarm`
+
+# on an indexer's replica
+$ auto-okf add-writer ./vault 0cf03548…
+```
+
+Until the peer has replicated its admission, the store refuses every append
+on it (`VAULT_NOT_WRITABLE`), and nothing is appended. `ingest`,
+`add-writer`, `remove-writer`, `resolve` and `undelete` then exit 1 when
+they would append an op. `watch` exits 1 the same way when its first scan
+finds an edit. After that it prints each refusal as a `watch error:` line
+and keeps watching. The CLI names the step:
+
+```
+auto-okf ingest: Not writable: no indexer has admitted this peer yet. Hand its writer key 0cf03548… to an indexer (`auto-okf add-writer`), then replicate and try again
+```
 
 ## Per-file state: `status`
 
@@ -143,7 +172,39 @@ live contents of the vault as plaintext. Keep it as safe as the key, or
 destroy it out-of-band. Compaction also writes two plaintext copies for its
 own work: a staging copy (`<out-dir>.compact-src`) and a verification copy
 beside it. It removes both, on success and on failure. It never removes a
-staging directory that existed before it ran.
+staging directory that existed before it ran: it refuses to start (see
+below).
+
+## Compaction paths
+
+`compact` normalizes a trailing slash on each path argument: `<out-dir>/`
+names the same directory as `<out-dir>`, so the face `<out-dir>.face` and
+the stage `<out-dir>.compact-src` stay siblings of the out-dir. Then it
+checks its paths before it opens the predecessor, so a refusal leaves the
+predecessor's bytes as they were. Each refusal exits 1, names the paths,
+and writes nothing:
+
+- `COMPACT_PATH_OVERLAP`: two of the predecessor, the out-dir, the face,
+  the stage and the verification directory are the same directory, or one
+  is inside another. The check follows symlinks.
+- `COMPACT_OUT_DIR_NOT_EMPTY`: `<out-dir>` exists and is not an empty
+  directory, for example an earlier generation. Give a new out-dir.
+- `COMPACT_STAGE_EXISTS`: `<out-dir>.compact-src` exists, for example
+  from a run that stopped. It can hold plaintext: examine it and remove
+  it, or give another out-dir.
+
+After the ingest, `compact` materializes the fresh vault into the
+verification directory and compares it with the face (`_rev` lines and
+`log.md` excluded), and it compares the live state of the fresh vault with
+the predecessor's. A difference exits 1 with `COMPACT_FIDELITY`, which
+names each difference, and `compact` removes what it wrote to
+`<out-dir>`. On success it prints the note counts
+(`notes: <n> walked, <n> staged, <n> ingested`) and a `fidelity:` line.
+
+Known limitation: these checks run before compaction writes. Another
+process that writes into the out-dir or the stage during a compaction can
+still lose its files. The fix, a private build directory and an atomic
+rename, is [#59](https://github.com/indexzero/hyperdown/issues/59).
 
 ## Exit codes
 
@@ -159,15 +220,24 @@ per command) and exits 0.
 
 ## Notes
 
+- This release opens only vaults with metadata version 2 (`"version": 2`
+  in `okf-vault.json`). Any other version exits 1 with
+  `unsupported vault metadata version: <n>`. Vaults of an earlier release
+  are not carried over.
 - All commands operate on the local replica and return; only `watch` stays in
   the foreground (with `--swarm` it is also the replication process).
+- `watch --swarm` announces the vault on the public hyperswarm DHT, on the
+  `auto-okf/2` topic. Any peer that learns the vault key can connect, and
+  an outsider with the key can still make members open writer cores (G44
+  in [SECURITY_MODEL.md](../SECURITY_MODEL.md)).
 - Governance commands verify their effect in the view after appending: if the
   issuing peer is not a confirmed indexer, apply rejects the op
   (`flag/rejected`, reason `policy-governance`) and the command exits 1 with
   the reason.
 - The encryption key is needed at `init`/`join`, and at `compact` of an
   encrypted vault, for the fresh vault. The store pins the encrypted bit in
-  vault metadata, so a reopen needs no key.
+  vault metadata, and autobee keeps the key in the local core's user data,
+  so a reopen needs no key.
 - A single body may not exceed `maxOpBytes` — 65,536 bytes; `ingest` refuses
   an oversize file by name (exit 1, siblings unaffected) — split the document
   into smaller linked concepts.
@@ -188,8 +258,13 @@ on an open conflict and succeeds after `resolve`; `compact` refuses an
 encrypted vault without `--encryption-key`, and with a key makes an
 encrypted vault whose raw blocks lack the plaintext; `materialize` and
 `compact` warn when they write an encrypted vault as plaintext; `compact`
-leaves no staging or verification copy; `undelete`
+leaves no staging or verification copy; `compact` refuses an existing stage,
+a re-run into an existing generation and overlapping paths before it opens
+the predecessor, and normalizes a trailing slash; an unadmitted peer
+cannot issue `add-writer`; `undelete`
 restores a tombstone; `watch` ingests a foreground edit and exits cleanly on SIGINT.
+`okf/test/i11-roundtrip.test.js` also spawns `auto-okf compact`: it reports
+its counts and its fidelity check, and exits 1 on `COMPACT_FIDELITY`.
 
 ## License
 
