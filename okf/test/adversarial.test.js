@@ -228,7 +228,7 @@ test('§4: hostile strings cannot escape their key family', async () => {
   for (const key of view.sortedKeys()) {
     const family = key.split('/')[0]
     assert.ok(
-      ['c', 'path', 'pcl', 'link', 'bl', 'wanted', 'wantedrank', 'log', 'flag', 'seen', 'gov', 'rate', 'ord', 'hold', 'revbybase'].includes(family),
+      ['c', 'path', 'pcl', 'link', 'bl', 'wanted', 'wantedrank', 'log', 'flag', 'seen', 'gov', 'rate', 'ord', 'revbybase'].includes(family),
       `unexpected family for ${key}`
     )
   }

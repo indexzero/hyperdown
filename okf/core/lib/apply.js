@@ -37,7 +37,6 @@ import {
   normalizeClock,
   makeTag,
   parseTag,
-  opFromJson,
   GOVERNANCE_OPS
 } from './ops.js'
 import { extractLinks, dirOf } from './links.js'
@@ -328,13 +327,11 @@ class Applier {
     const W = keyHex(node.key)
     const raw = Buffer.isBuffer(node.value) ? node.value : Buffer.from(node.value || [])
 
-    // Global apply position: incremented per node AND per folded held op so
-    // every path-claim ord and log/ key is unique and monotone in
-    // linearization (§4 `ord`; resolution where §4 is silent on fold
-    // sub-ordering, see keyspace.js `ord/global`).
+    // Global apply position: incremented once per node, so every
+    // path-claim ord and log/ key is unique and monotone in linearization
+    // (§4 `ord`; see keyspace.js `ord/global`).
     this.pos = ((await this.val(K.ordGlobal())) ?? 0) + 1
     this.put(K.ordGlobal(), this.pos)
-    const nodePos = this.pos
 
     // §3: per-writer seen-count, incremented for EVERY node regardless of
     // disposition. The node's actual seq is the prior count.
@@ -384,7 +381,7 @@ class Applier {
       const res = await this.applyGovernance(type, op, W, seq)
       if (res && res.rejected) return this.reject(W, seq, res.reason)
       await this.accepted(W)
-      return this.writeLog(nodePos)
+      return this.writeLog(this.pos)
     }
 
     // §8: a writer's ops take effect only once an indexer's AddWriter has
@@ -398,7 +395,7 @@ class Applier {
     const res = await this.contentPipeline(type, op, W, seq, writerRec)
     if (res && res.rejected) return this.reject(W, seq, res.reason)
     await this.accepted(W)
-    return this.writeLog(nodePos)
+    return this.writeLog(this.pos)
   }
 
   async reject(W, seq, reason) {
@@ -499,10 +496,6 @@ class Applier {
     // §8: bucket starts full at admission.
     const indexerOps = (await this.val(K.rateIndexerOps())) ?? 0
     this.put(K.rate(target), { tokens: this.capacityFor(rec), seenIndexerOps: indexerOps })
-    // §8: this AddWriter is the ack of the writer's held optimistic ops.
-    // The ack is this fold; the substrate needs no call (autobee@2 records
-    // every optimistic node itself, and its host.ackWriter is a no-op).
-    await this.foldHeld(target, rec)
     return null
   }
 
@@ -526,15 +519,6 @@ class Applier {
     // writer; absent entry → -1 (the remover observed none of the target's
     // ops, so every target seq is post-revocation).
     this.put(K.govRemoved(target), { clock, seqAtRemoval: clock[target] ?? -1 })
-    if (!targetRec) {
-      // §8: RemoveWriter of an unacked writer drops holds unfolded.
-      for (const { key } of await this.scanAll(K.holdPrefix(target))) this.delKey(key)
-      const rrec = await this.val(K.rate(target))
-      if (rrec) {
-        rrec.held = 0
-        this.put(K.rate(target), rrec)
-      }
-    }
     // §8 "causal, in-band, never positional": host.removeWriter is
     // deliberately NOT called — every node must keep linearizing on every
     // peer so the clock rule runs uniformly (vault-ld B1 ancestry).
@@ -553,32 +537,6 @@ class Applier {
       rateCeiling: op.rateCeiling
     })
     return null
-  }
-
-  /** §8: fold the hold buffer at the ack's linearized position, seq order. */
-  async foldHeld(W, writerRec) {
-    for (const { key, value } of await this.scanAll(K.holdPrefix(W))) {
-      this.pos += 1
-      this.put(K.ordGlobal(), this.pos)
-      const heldOp = normalizeOpStrings(opFromJson(value.op))
-      const heldAt = this.at
-      this.at = typeof value.at === 'number' ? value.at : 0
-      const res = await this.contentPipeline(value.type, heldOp, W, value.seq, writerRec)
-      if (res && res.rejected) {
-        // §8: optimistic ops rejected at fold time write flag/optimistic
-        // (permanent audit) rather than flag/rejected.
-        this.put(K.flagOptimistic(W, value.seq), { reason: res.reason })
-      } else {
-        await this.accepted(W)
-      }
-      this.at = heldAt
-      this.delKey(key)
-    }
-    const rrec = await this.val(K.rate(W))
-    if (rrec && rrec.held) {
-      rrec.held = 0
-      this.put(K.rate(W), rrec)
-    }
   }
 
   // ---------- content ops (§5–§7) ----------

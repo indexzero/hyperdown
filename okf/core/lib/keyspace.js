@@ -104,7 +104,6 @@ export const flag = (family, ...comps) => `flag/${family}/` + comps.map(esc).joi
 export const flagPrefix = (family, ...comps) =>
   `flag/${family}/` + comps.map(esc).join('/') + (comps.length ? '/' : '')
 export const flagRejected = (w, seq) => `flag/rejected/${w}/${pad(seq)}`
-export const flagOptimistic = (w, seq) => `flag/optimistic/${w}/${pad(seq)}`
 
 // --- bookkeeping (§4) ---
 export const seen = (w) => `seen/${w}`
@@ -112,8 +111,6 @@ export const seenPrefix = () => 'seen/'
 export const rate = (w) => `rate/${w}`
 export const rateIndexerOps = () => 'rate/indexer-ops'
 export const ordGlobal = () => 'ord/global'
-export const hold = (w, seq) => `hold/${w}/${pad(seq)}`
-export const holdPrefix = (w) => `hold/${w}/`
 
 // --- governance (§4, §8) ---
 export const govWriter = (w) => `gov/writer/${w}`

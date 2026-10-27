@@ -99,32 +99,6 @@ export function decodeOp(buf) {
   return { ok: true, type, op: decoded.value }
 }
 
-// --- JSON-safe (de)hydration of decoded ops for the hold/ buffer (§8).
-// Holds only ever contain CONTENT ops: governance ops from unacked writers
-// reject ('policy-governance') before apply's hold branch, and the
-// governance `key` is the only buffer field on the okf wire — so a held op
-// never carries a buffer, and hydration is a plain null-normalizing copy.
-// (A previous defensive version hex-converted any field named `key`, which
-// corrupted held SetField ops — `key` there is the frontmatter field NAME,
-// a string like 'status' that Buffer.from(…, 'hex') truncates to empty.
-// Found by the T4 store integration suite; see DEVIATIONS.md. View bytes
-// are unchanged by this fix: string fields always serialized as-is.)
-export function opToJson(op) {
-  const out = {}
-  for (const [k, v] of Object.entries(op)) {
-    out[k] = v == null ? null : v
-  }
-  return out
-}
-
-export function opFromJson(json) {
-  const out = {}
-  for (const [k, v] of Object.entries(json)) {
-    out[k] = v == null ? null : v
-  }
-  return out
-}
-
 /**
  * Normalize an op-carried vector clock ([[writerHex, seq], ...] or
  * [{ writerKey, seq }, ...]) into { writerHex: seq }. Returns null for a
