@@ -1,8 +1,12 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.7 (2026-10-27). RFC 2119
+**Status:** Normative build instruction, v1.8 (2026-10-27). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.7 makes the per-writer ordinal the node's position: the
+**Changelog:** v1.8 bounds the clock. An op's clock carries the self
+entry and an entry for each writer with a `gov/writer` record, a revoked
+writer too, and no other key. A key that no indexer admitted is never
+clocked. So its ops cannot push an honest op above `maxOpBytes` (§3, §8).
+v1.7 makes the per-writer ordinal the node's position: the
 actual seq of a node is `node.length - 1`, its position in its writer's
 core, and `seen/<writerKey>` holds the last folded position plus one.
 Every clock entry is a position, and the store builds no clock entry from
@@ -145,10 +149,11 @@ SetWriterPolicy { key, namespacePrefixes, rateCeiling }
 
 - Every op carries `clock` (the writer's observed vector clock, op payload)
   — required for causal revocation (§8; vault-ld §8.3 ancestry). Each
-  entry is a position (below). For another writer, the entry is the last
-  position of that writer in the issuer's folded view, that is its
-  `seen/` value minus one. The self entry is the op's own position. The
-  store builds every entry from okf's view and its own local core. It
+  entry is a position (below). The clock carries the self entry and an
+  entry for each writer that §8 names. For such a writer, the entry is
+  the last position of that writer in the issuer's folded view, that is
+  its `seen/` value minus one. The self entry is the op's own position.
+  The store builds every entry from okf's view and its own local core. It
   reads no substrate head.
 - Every op carries `at`: the writer's wall-clock milliseconds at append
   time, encoded in the op payload. `at` is informational: never an input to
@@ -463,6 +468,37 @@ saga is the cautionary tale). The rules are frozen:
   same unit. Additionally, apply rejects any op whose claimed self-clock
   entry does not equal its actual seq, its position (reason
   `forged-clock`).
+- **The clock carries self and the writers with a `gov/writer` record.**
+  The store puts the self entry into the clock of every op. It also puts
+  an entry for each writer that has a `gov/writer/<key>` record and a
+  folded op in its view, and for no other key. Only an indexer's
+  `AddWriter` writes that record. So the grant rule below can make a key
+  an autobee writer, but that key is not clocked until an indexer admits
+  it. The count of its ops in the view does not change this. The size of
+  a clock is bounded by the writers that indexers admitted, and no member
+  can push an honest op above `maxOpBytes` (§3). Apply accepts a clock
+  with no entry for a writer that has no `gov/writer` record. No rule
+  above needs such an entry:
+  - `forged-clock` reads only the self entry, and every clock carries it,
+    also the clock of a writer with no record.
+  - `seqAtRemoval` reads the entry of the removed writer. If the
+    remover's view has no `gov/writer` record for the target, the entry
+    is absent and `seqAtRemoval` is -1, so that target has no window. The
+    result is the same as with the target's last folded position. Each op
+    of the target that the remover folded is a causal ancestor of the
+    `RemoveWriter` node, so the substrate sorts it before the removal.
+    Each op of the target that sorts after the removal comes later in the
+    target's core, so its seq is above that position, and apply rejects it
+    `revoked`.
+  - The strict-precedence test compares every entry. Apply never deletes
+    a `gov/writer` record, so a revoked writer stays in the clock. If it
+    left, an in-flight op could cite a writer that a later revocation
+    clock omits. The test would then reject that op, although its clock
+    precedes the revocation (I10).
+  - Two views can disagree on an admission, because a reorder can flip
+    the outcome of an `AddWriter`. Then an op's clock can carry an entry
+    that the revocation clock omits, and the test fails. So such a
+    difference can reject an op in the window, and it never admits one.
 - **An autobee grant follows every `AddWriter` op.** Apply MUST call
   `host.addWriter(key, { weight: 0 })` for every `AddWriter` op it folds,
   whether it accepts or rejects the op. The call comes right after a
