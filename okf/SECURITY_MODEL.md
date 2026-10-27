@@ -43,9 +43,13 @@ into ops, so the watched tree is untrusted input by design (§9).
   `forged-clock`.
 - **Admission before effect (§8):** a writer's ops take effect only once an
   indexer-authored `AddWriter` has admitted it, at that op's linearized
-  position. An op from a writer with no `gov/writer` record is rejected
-  `not-a-writer`. It never reaches the content pipeline and changes no `c/`
-  key. There is no hold buffer and no optimistic onboarding. A joiner that
+  position. A content op from a writer with no `gov/writer` record is
+  rejected `not-a-writer` (`core/lib/apply.js:426`). Each earlier check can
+  reject it first (`core/lib/apply.js:361-403`). A governance op from that
+  writer is rejected `policy-governance`, because the indexer-issuer check
+  comes first (`core/lib/apply.js:407-412`). Neither op reaches the content
+  pipeline or changes a `c/` key. There is no hold buffer and no optimistic
+  onboarding. A joiner that
   only holds the vault key writes nothing at all. The store refuses every
   append until autobee reports the local writer writable
   (`VAULT_NOT_WRITABLE`, test `test/store-writers.test.js` "an append from

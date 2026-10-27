@@ -66,7 +66,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | command | what it does |
 | --- | --- |
 | `init <dir>` | create a new vault at `<dir>`; prints the vault key (share it to invite peers), this peer's writer key, and the generation namespace; refuses a dir already pinned |
-| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry non-default invites; when `<dir>` is already pinned the key is optional (reopen + reprint keys). A joined peer writes nothing until an indexer admits it: hand the printed writer key to an indexer (`add-writer`), then replicate (`watch --swarm`). See [Joining a vault](#joining-a-vault) |
+| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry non-default invites; when `<dir>` is already pinned the key is optional (reopen + reprint keys). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:791-799`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key to an indexer (`add-writer`), then replicate (`watch --swarm`). See [Joining a vault](#joining-a-vault) |
 | `add-writer <dir> <writer-key> [--indexer]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8) |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
 | `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
@@ -84,8 +84,11 @@ There is no content-write command: content flows in through `ingest`/`watch`
 
 ## Joining a vault
 
-`join` prints this peer's own writer key. The peer writes nothing until an
-indexer admits that key:
+`join` prints this peer's own writer key. The store refuses every append
+of the peer until autobee adds that key as a writer
+(`okf/store/lib/bundle.js:791-799`). The ops of the peer take effect only
+once an indexer admits the key with `add-writer`
+(`okf/core/lib/apply.js:426`, `:526-534`):
 
 ```sh
 $ auto-okf join ./peer <vault-key>
@@ -98,8 +101,9 @@ with `auto-okf watch <dir> <bundle-dir> --swarm`
 $ auto-okf add-writer ./vault 0cf03548…
 ```
 
-Until the peer has replicated its admission, the store refuses every append
-on it (`VAULT_NOT_WRITABLE`), and nothing is appended. `ingest`,
+Until the peer has replicated an `add-writer` op that names its key, the
+store refuses every append on it (`VAULT_NOT_WRITABLE`,
+`okf/store/lib/bundle.js:791-799`), and nothing is appended. `ingest`,
 `add-writer`, `remove-writer`, `resolve` and `undelete` then exit 1 when
 they would append an op. `watch` exits 1 the same way when its first scan
 finds an edit. After that it prints each refusal as a `watch error:` line
@@ -108,6 +112,13 @@ and keeps watching. The CLI names the step:
 ```
 auto-okf ingest: Not writable: no indexer has admitted this peer yet. Hand its writer key 0cf03548… to an indexer (`auto-okf add-writer`), then replicate and try again
 ```
+
+The store gate reads substrate admission, not okf membership. Core grants
+the key of every `add-writer` op that it folds, a rejected one too
+(`okf/core/lib/apply.js:375`). So a writer that is not an indexer can make
+the peer writable. The appends of the peer then go through, but apply
+rejects each of its ops until an indexer admits it
+(`okf/core/lib/apply.js:407-412`, `:426`).
 
 ## Per-file state: `status`
 
