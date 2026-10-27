@@ -38,26 +38,43 @@ test('restart from disk: reopened view equals the pre-close view (I3)', async (t
 test('an empty block at the tail of the local core takes a position, so the seq after restart skips it (§3, §8 forged-clock)', async (t) => {
   // AD4: the seq of an op is its node's position in the local core,
   // node.length - 1. An empty block takes a position and never reaches
-  // apply (autobee index.js:1444: only non-empty values reach apply). Any
-  // writer can append one with the documented db.append. okf's own
-  // configuration never appends one (store-ordinal.test.js, G13).
+  // apply (autobee index.js:1444: only non-empty values reach apply). So
+  // after a restart, seen/<self> counts the ops that apply saw, and the
+  // next position is past the empty block. The first op after the restart
+  // must take that position, or every peer rejects it forged-clock.
+  //
+  // G13: the test does not imitate an autobee ack. okf's configuration
+  // never makes autobee append one (store-ordinal.test.js, G13). The test
+  // appends the empty block with the documented db.append, which any
+  // client that holds the vault's autobee can call.
   const dir = await tmpDir('restart-empty')
+  const open = new Set()
+  t.after(async () => {
+    for (const v of open) await v.close()
+  })
   const a = await Bundle.init(dir)
+  open.add(a)
+  const self = a.localKey.toString('hex')
   const { tag: id } = await a.createConcept('guides/empty', 'guide')
   await a.setField(id, 'title', ['Before the empty block'])
   await a.db.append(Buffer.alloc(0)) // position 2, the last block before the restart
   await a.update()
-  const self = a.localKey.toString('hex')
   assert.equal(a.db.local.length, 3, 'two ops plus one empty block in the local core')
   assert.equal(await a.val(K.seen(self)), 2, 'apply saw only the two ops')
   await a.close()
+  open.delete(a)
 
   const a2 = await Bundle.open(dir)
-  t.after(() => a2.close())
+  open.add(a2)
+  assert.equal(a2.db.local.length, 3, 'after the restart the next position is 3')
+  assert.equal(await a2.val(K.seen(self)), 2, 'after the restart seen/<self> is still 2')
   const r = await a2.setField(id, 'title', ['After the empty block'])
-  assert.equal(r.seq, 3, 'seq continues from local.length, the position of the next node')
+  assert.equal(r.seq, 3, 'the seq is the position of the node, past the empty block')
+  assert.equal(a2.db.local.length, 4, 'the node is at position 3')
   await a2.update()
-  assert.equal(await a2.val(K.flagRejected(self, r.seq)), undefined, 'not rejected forged-clock')
+  // Core keys a rejection by the node's position, not by the seq that the
+  // op claims (core/lib/apply.js reject). So check every rejection of self.
+  assert.deepEqual(await a2.view.dump(K.flagPrefix('rejected', self)), {}, 'no op of self is rejected')
   assert.equal(await a2.val(K.seen(self)), 4, 'seen/<self> is the last position plus one')
   assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['After the empty block'])
 })
