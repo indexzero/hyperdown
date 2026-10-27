@@ -639,7 +639,7 @@ async function predecessorState(v) {
  * are `leaves` (so no verification directory and no new vault remain), and
  * the predecessor is unchanged. Returns the error.
  */
-async function expectFidelityFailure(old, base, { leaves = ['face', 'out.compact-src'], ...opts } = {}) {
+async function expectFidelityFailure(old, base, { leaves = ['face'], ...opts } = {}) {
   const before = await predecessorState(old)
   let res = null
   let caught = null
@@ -668,8 +668,8 @@ test('T13: the clean buildNonTrivial fixture passes the fidelity check, and comp
   // A, B and C are live. D is tombstoned, so the face does not hold it.
   assert.deepEqual(res.counts, { walked: 3, staged: 3, ingested: 3 })
   assert.deepEqual(res.warnings, [])
-  // The stage stays (T17 owns its lifetime). No verification directory stays.
-  assert.deepEqual(await entries(base), ['face', 'out', 'out.compact-src'])
+  // No stage and no verification directory stay (T17).
+  assert.deepEqual(await entries(base), ['face', 'out'])
   assert.deepEqual(await predecessorState(old), before, 'compaction changed the predecessor')
   await old.close()
   await res.vault.close()
@@ -696,7 +696,7 @@ test('T14: concepts at dot-segment paths survive compaction and pass the T13 che
   assert.deepEqual([...oldPaths.values()].sort(), ['.drafts/idea', 'notes/.hidden', 'notes/visible'])
   assert.deepEqual(await pathById(res.vault), oldPaths)
   assert.equal((await liveConcepts(res.vault)).get(r1.tag).headText, 'dot dir body')
-  assert.deepEqual(await entries(base), ['face', 'out', 'out.compact-src'])
+  assert.deepEqual(await entries(base), ['face', 'out'])
   assert.deepEqual(await predecessorState(old), before, 'compaction changed the predecessor')
   await old.close()
   await res.vault.close()
@@ -774,7 +774,7 @@ test('T14: the stage refuses a manifest path that leads out of the face, and wri
     (err) => err.code === 'UNSAFE_PATH'
   )
   assert.equal(await readFile(join(up, 'outside.md'), 'utf8'), outside, 'the stage wrote outside the stage')
-  assert.deepEqual(await entries(up), ['face', 'out.compact-src', 'outside.md'])
+  assert.deepEqual(await entries(up), ['face', 'outside.md'])
 
   // A listed path that is a symlink to a file outside the face. The link
   // makes the face dirty, so only --force reaches the stage.
@@ -786,8 +786,7 @@ test('T14: the stage refuses a manifest path that leads out of the face, and wri
     () => compact(old, { toDir: join(link, 'face'), vaultDir: join(link, 'out'), initBundle: Bundle.init, force: true }),
     (err) => err.code === 'UNSAFE_PATH'
   )
-  assert.deepEqual(await listFiles(join(link, 'out.compact-src')), [], 'the stage copied a file from outside the face')
-  assert.deepEqual(await entries(link), ['face', 'out.compact-src', 'outside.md'])
+  assert.deepEqual(await entries(link), ['face', 'outside.md'])
   await old.close()
 })
 
@@ -867,8 +866,6 @@ test('T15: a body of "text\\n\\n" round-trips byte for byte and passes the T13 c
   assert.equal((await liveConcepts(res.vault)).get(tag).headText, 'text\n\n')
   const face = await readFile(join(base, 'face', 'notes', 'blank.md'), 'utf8')
   assert.ok(face.endsWith('\ntype: note\n---\n\ntext\n\n\n'), JSON.stringify(face))
-  const staged = await readFile(join(base, 'out.compact-src', 'notes', 'blank.md'), 'utf8')
-  assert.equal(staged, face.replace(/^_rev: .*\n/m, ''), 'the stage changed the bytes of the note')
   await old.close()
   await res.vault.close()
 })
@@ -1005,7 +1002,7 @@ test('T13: a failed compaction keeps an out-dir that it did not create, and remo
   const base = await tmpDir('fid-own')
   await mkdir(join(base, 'out'))
   await writeTree(join(base, 'face'), new Map([['notes/hand.md', '---\ntype: note\n---\n\nby hand\n']]))
-  await expectFidelityFailure(old, base, { leaves: ['face', 'out', 'out.compact-src'], force: true })
+  await expectFidelityFailure(old, base, { leaves: ['face', 'out'], force: true })
   assert.deepEqual(await entries(join(base, 'out')), [], 'the failed compaction left its files in the out-dir')
   await old.close()
 })
@@ -1035,7 +1032,7 @@ test('T13: auto-okf compact reports the counts and the fidelity check on success
   assert.match(r.stdout, /^notes: +2 walked, 2 staged, 2 ingested$/m)
   assert.match(r.stdout, /^fidelity: +the new vault matches the face/m)
   assert.equal(r.stderr, '', 'a clean compaction prints no warning')
-  assert.deepEqual(await entries(base), ['out', 'out.compact-src', 'out.face', 'vault'])
+  assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
 })
 
 test('T13: auto-okf compact prints every difference and every warning, and exits 1 on COMPACT_FIDELITY', async () => {
@@ -1062,6 +1059,6 @@ test('T13: auto-okf compact prints every difference and every warning, and exits
   assert.ok(!r.stderr.includes('.drafts'), r.stderr)
   assert.match(r.stderr, /^warning: notes\/\.okf-state\.md: a reserved \.okf- dot-file name; not staged$/m)
   assert.match(r.stderr, /^notes: +3 walked, 2 staged, 2 ingested$/m)
-  // No new vault and no verification directory remain. The face and the stage stay.
-  assert.deepEqual(await entries(base), ['out.compact-src', 'out.face', 'vault'])
+  // No new vault, no stage and no verification directory remain. The face stays.
+  assert.deepEqual(await entries(base), ['out.face', 'vault'])
 })

@@ -75,7 +75,10 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *                (the operator's archival OKF bundle — keeps _id/_rev).
  *   vaultDir     (REQUIRED) storage directory for the fresh vault.
  *   stageDir     staging dir for the manifest-free, _rev-stripped bundle that
- *                is actually ingested (default `<vaultDir>.compact-src`).
+ *                is actually ingested (default `<vaultDir>.compact-src`). It
+ *                holds plaintext. When this run creates it, compact removes
+ *                it on success and on failure. compact never removes a
+ *                stage directory that existed before the run.
  *   force        proceed even though `flag/conflict` or `flag/pathcollision`
  *                is non-empty (SPEC §10 guardrail). Without it, compact
  *                REFUSES (throws COMPACT_REFUSED) so live conflicts are never
@@ -100,8 +103,8 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *
  * Returns { ok, predecessorKey, predecessorPath, predecessorCheckpoint,
  *   vault (the fresh OPEN vault — the CALLER closes it), vaultDir, generation,
- *   bundleDir, stageDir, conflictCopies, logEntry, logPath, ingestOps,
- *   counts, warnings }.
+ *   bundleDir, conflictCopies, logEntry, logPath, ingestOps, counts,
+ *   warnings }.
  *
  *   counts    { walked, staged, ingested }: the concept notes that the face's
  *             emission manifest lists (index.md and log.md excluded), the
@@ -186,30 +189,38 @@ export async function compact(vault, opts = {}) {
   // is encrypted, the first warning names the face, and every way out from
   // here on carries the warnings, so the caller can announce it.
   const warnings = vault.metadata.encrypted === true ? [plaintextWarning(report.root)] : []
+  let ownStage = false
   try {
-    return await generateFromFace(vault, report, warnings, { stageDir, vaultDir, force, encryptionKey, sign, initBundle })
+    if (!report.ok && !force) {
+      throw compactError(
+        'COMPACT_DIRTY_TARGET',
+        `toDir is not clean (pending-ingest: ${report.pendingIngest.join(', ')}) — ` +
+          `use a fresh directory or pass { force: true }`
+      )
+    }
+
+    // ---- 3. stage a manifest-free, _rev-stripped copy for ingest ----
+    // The stage holds plaintext. compact creates it for this run, and the
+    // finally below removes it on success and on failure. It removes the
+    // stage only when this run created it: compact never removes a
+    // directory that it did not create. (mkdir returns undefined when the
+    // directory existed. It removes stageDir only, never a parent that
+    // mkdir created, because the out-dir can be in that parent.)
+    ownStage = (await mkdir(stageDir, { recursive: true })) !== undefined
+    return await generateFromFace(vault, report, warnings, { stageDir, vaultDir, encryptionKey, sign, initBundle })
   } catch (err) {
     if (err !== null && typeof err === 'object' && err.warnings === undefined) err.warnings = warnings
     throw err
+  } finally {
+    if (ownStage) await rm(stageDir, { recursive: true, force: true })
   }
 }
 
-/** Everything after the face step: the dirty-face refusal, the stage, the fresh vault, its ingest, its check and its generation entry. */
-async function generateFromFace(vault, report, warnings, { stageDir, vaultDir, force, encryptionKey, sign, initBundle }) {
-  if (!report.ok && !force) {
-    throw compactError(
-      'COMPACT_DIRTY_TARGET',
-      `toDir is not clean (pending-ingest: ${report.pendingIngest.join(', ')}) — ` +
-        `use a fresh directory or pass { force: true }`
-    )
-  }
-
-  // ---- 3. stage a manifest-free, _rev-stripped copy for ingest ----
+/** Everything after the stage is created: the staged copy, the fresh vault, its ingest, its check and its generation entry. */
+async function generateFromFace(vault, report, warnings, { stageDir, vaultDir, encryptionKey, sign, initBundle }) {
   // The stage walks the face's emission manifest, not the directory: a
   // directory walk (walkNotes) skips every dot name, and a concept at a
   // dot-segment path such as `.drafts/idea` is a note that materialize wrote.
-  await rm(stageDir, { recursive: true, force: true })
-  await mkdir(stageDir, { recursive: true })
   const emitted = Object.keys((await loadManifest(report.root)).files)
   const staged = []
   const claimOrd = new Map() // conflicted copy -> the predecessor's claim ord of its _id (§4 c/<id>/path)
@@ -358,7 +369,6 @@ async function generateFromFace(vault, report, warnings, { stageDir, vaultDir, f
       vaultDir,
       generation: newVault.generation,
       bundleDir: report.root,
-      stageDir,
       conflictCopies,
       logEntry,
       logPath,

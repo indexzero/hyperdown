@@ -138,9 +138,12 @@ sure that its contents never become plaintext without a word:
   `--face <dir>`). It prints it also when the compaction fails after it
   wrote the face.
 
-The face is the plaintext artifact that compaction leaves on purpose: it
-holds the live contents of the vault as plaintext. Keep it as safe as the
-key, or destroy it out-of-band.
+The face is the plaintext artifact that compaction leaves: it holds the
+live contents of the vault as plaintext. Keep it as safe as the key, or
+destroy it out-of-band. Compaction also writes two plaintext copies for its
+own work: a staging copy (`<out-dir>.compact-src`) and a verification copy
+beside it. It removes both, on success and on failure. It never removes a
+staging directory that existed before it ran.
 
 ## Exit codes
 
@@ -184,7 +187,8 @@ lists an unresolved link; `flags` lists a seeded conflict; `compact` refuses
 on an open conflict and succeeds after `resolve`; `compact` refuses an
 encrypted vault without `--encryption-key`, and with a key makes an
 encrypted vault whose raw blocks lack the plaintext; `materialize` and
-`compact` warn when they write an encrypted vault as plaintext; `undelete`
+`compact` warn when they write an encrypted vault as plaintext; `compact`
+leaves no staging or verification copy; `undelete`
 restores a tombstone; `watch` ingests a foreground edit and exits cleanly on SIGINT.
 
 ## License

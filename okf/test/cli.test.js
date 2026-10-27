@@ -509,6 +509,11 @@ async function entries(dir) {
   return (await readdir(dir)).sort()
 }
 
+/** The plaintext copies that compaction left in `dir`: a stage (`*.compact-src`) or a verification directory (`*.verify-*`). */
+async function plaintextCopies(dir) {
+  return (await entries(dir)).filter((e) => e.endsWith('.compact-src') || e.includes('.verify-'))
+}
+
 /** The metadata that a vault directory pins. */
 async function pinned(dir) {
   return JSON.parse(await readFile(join(dir, 'okf-vault.json'), 'utf8'))
@@ -617,6 +622,7 @@ test('T17: auto-okf compact --encryption-key makes an encrypted vault whose raw 
   } finally {
     await nu.close()
   }
+  assert.deepEqual(await plaintextCopies(base), [], 'compaction left a stage or a verification directory')
 
   // The control: the same content in an unencrypted vault. Its compacted
   // vault holds SECRET in its raw blocks, so the check above can see it.
@@ -634,6 +640,7 @@ test('T17: auto-okf compact --encryption-key makes an encrypted vault whose raw 
   } finally {
     await cv.close()
   }
+  assert.deepEqual(await plaintextCopies(base), [], 'compaction left a stage or a verification directory')
 })
 
 test('T17: the in-process compact with a key makes an encrypted vault whose raw blocks lack the plaintext; an unencrypted control holds it', async () => {
@@ -649,6 +656,7 @@ test('T17: the in-process compact with a key makes an encrypted vault whose raw 
   try {
     assert.equal(res.ok, true)
     assert.deepEqual(await inspectSecret(res.vault, id), { encrypted: true, text: SECRET, rawHits: false })
+    assert.deepEqual(await plaintextCopies(base), [], 'compaction left a stage or a verification directory')
   } finally {
     await res.vault.close()
     await old.close()
@@ -663,6 +671,7 @@ test('T17: the in-process compact with a key makes an encrypted vault whose raw 
     await ctlRes.vault.close()
     await ctl.close()
   }
+  assert.deepEqual(await plaintextCopies(base), [], 'compaction left a stage or a verification directory')
 })
 
 test('T17: materialize and compact warn when they write an encrypted vault as plaintext, and keep their exit codes; an unencrypted vault gets no warning', async () => {
@@ -682,7 +691,7 @@ test('T17: materialize and compact warn when they write an encrypted vault as pl
   const ok = await cli(['compact', storage, join(base, 'out'), '--face', face, '--encryption-key', NEW_KEY])
   assert.equal(ok.code, 0, ok.stderr)
   assert.equal(ok.stderr, plaintextLine(face))
-  assert.ok(!(await entries(base)).some((e) => e.includes('.verify-')), 'a verification directory remains')
+  assert.deepEqual(await plaintextCopies(base), [], 'a successful compaction left a stage or a verification directory')
 
   // compact, failure after the face step: exit 1 (COMPACT_FIDELITY, a
   // reserved .okf- name is not staged), and the warning still names the face.
@@ -696,7 +705,7 @@ test('T17: materialize and compact warn when they write an encrypted vault as pl
   assert.equal(failed.code, 1, failed.stdout + failed.stderr)
   assert.match(failed.stderr, /COMPACT_FIDELITY/)
   assert.ok(failed.stderr.startsWith(plaintextLine(failFace)), failed.stderr)
-  assert.ok(!(await entries(base)).some((e) => e.includes('.verify-')), 'a verification directory remains')
+  assert.deepEqual(await plaintextCopies(base), [], 'a failed compaction left a stage or a verification directory')
 
   // An unencrypted vault: no warning from either command.
   const plain = join(base, 'plain')
@@ -721,6 +730,7 @@ test('T17: the in-process compact reports the plaintext face as a warning, on su
   const res = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'face'), vaultDir: join(base, 'out'), encryptionKey: key })
   assert.deepEqual(res.warnings, [warning(join(base, 'face'))])
   await res.vault.close()
+  assert.deepEqual(await plaintextCopies(base), [], 'a successful compaction left a stage or a verification directory')
 
   // A hand-authored note makes the face dirty. compact refuses it with
   // COMPACT_DIRTY_TARGET after the face step, and the error carries the warning.
@@ -735,6 +745,7 @@ test('T17: the in-process compact reports the plaintext face as a warning, on su
       return true
     }
   )
+  assert.deepEqual(await plaintextCopies(base), [], 'a failed compaction left a stage or a verification directory')
   await old.close()
 
   // An unencrypted vault: no plaintext warning.
@@ -744,6 +755,32 @@ test('T17: the in-process compact reports the plaintext face as a warning, on su
   assert.deepEqual(ctlRes.warnings, [])
   await ctlRes.vault.close()
   await ctl.close()
+})
+
+test('T17: compact keeps a stage directory that it did not create, on success and on failure (G15)', async () => {
+  // compact removes only the stage that it created (the tests above). A
+  // stage directory that existed before is not compact's to remove.
+  const old = await Bundle.init(await tmpDir('stage-own-vault'))
+  await seedSecret(old)
+  /** Compact `old` into `<base>/out` with a stage directory that already holds keep.txt. */
+  const attempt = async (name) => {
+    const base = await tmpDir(name)
+    await mkdir(join(base, 'out.compact-src'), { recursive: true })
+    await writeFile(join(base, 'out.compact-src', 'keep.txt'), 'kept\n')
+    let code = 'ok'
+    try {
+      const res = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'face'), vaultDir: join(base, 'out') })
+      await res.vault.close()
+    } catch (err) {
+      code = err.code
+    }
+    return { code, kept: await readFile(join(base, 'out.compact-src', 'keep.txt'), 'utf8').catch((e) => e.code) }
+  }
+  assert.deepEqual(await attempt('stage-own-ok'), { code: 'ok', kept: 'kept\n' })
+  // A concept at a reserved .okf- name fails the T13 check (COMPACT_FIDELITY).
+  await old.createConcept('notes/.okf-state', 'note')
+  assert.deepEqual(await attempt('stage-own-fail'), { code: 'COMPACT_FIDELITY', kept: 'kept\n' })
+  await old.close()
 })
 
 test('undelete restores a tombstoned concept', async () => {
