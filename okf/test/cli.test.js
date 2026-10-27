@@ -915,6 +915,54 @@ test('F03: the in-process materialize and compact announce the plaintext directo
   await plain.close()
 })
 
+test('F03: auto-okf materialize and compact print the plaintext warning before the first plaintext write, so a failure partway or a crash finds it printed', async () => {
+  const base = await tmpDir('enc-announce-cli')
+  const storage = join(base, 'vault')
+  await initEncryptedAZ(storage)
+
+  // A failure after a.md: stderr starts with the warning, then the error.
+  for (const [name, args] of [
+    ['materialize', (face) => ['materialize', storage, face]],
+    ['compact', (face) => ['compact', storage, join(base, 'partial-out'), '--face', face, '--encryption-key', NEW_KEY]]
+  ]) {
+    const face = await faceWithDirAtZ(join(base, `partial-${name}`))
+    const r = await cli(args(face))
+    assert.equal(r.code, 1, r.stdout + r.stderr)
+    assert.ok(r.stderr.startsWith(plaintextLine(face)), `${name}: ${r.stderr}`)
+    assert.match(r.stderr, new RegExp(`^auto-okf ${name}: EISDIR`, 'm'))
+    assert.equal(r.stderr.split(plaintextLine(face)).length, 2, `${name}: the warning is printed once`)
+    assert.equal(await secretIn(face), true, `${name}: setup: a.md must hold the plaintext`)
+  }
+
+  // A crash after a.md. z.md is a named pipe, so the read of z.md blocks
+  // after a.md holds the plaintext. SIGKILL then stops the process: no
+  // handler runs. The warning must be on stderr already.
+  for (const [name, args] of [
+    ['materialize', (face) => ['materialize', storage, face]],
+    ['compact', (face) => ['compact', storage, join(base, 'crash-out'), '--face', face, '--encryption-key', NEW_KEY]]
+  ]) {
+    const face = join(base, `crash-${name}`)
+    await mkdir(face, { recursive: true })
+    await new Promise((resolve, reject) => execFile('mkfifo', [join(face, 'z.md')], (err) => (err ? reject(err) : resolve())))
+    const child = spawn('node', [BIN, ...args(face)], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr.on('data', (d) => (stderr += d))
+    child.stdout.resume()
+    const closed = new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal })))
+    const t0 = Date.now()
+    while (!(await secretIn(face))) {
+      if (Date.now() - t0 > 60000) {
+        child.kill('SIGKILL')
+        throw new Error(`${name}: a.md never held the plaintext; stderr: ${stderr}`)
+      }
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    child.kill('SIGKILL')
+    assert.deepEqual(await closed, { code: null, signal: 'SIGKILL' }, name)
+    assert.equal(stderr, plaintextLine(face), `${name}: the crash found no warning on stderr`)
+  }
+})
+
 test('T17, T18: compact refuses a stage directory that it did not create, keeps its contents and writes nothing (G15)', async () => {
   // compact removes only the stage that it created (the tests above). A
   // stage directory that existed before is not compact's to remove. compact

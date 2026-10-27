@@ -473,19 +473,17 @@ async function cmdRemoveWriter({ args }) {
 async function cmdMaterialize({ args, flags }) {
   const { dir, bundleDir } = args
   return withVault(dir, {}, async (vault) => {
+    // materialize is the plaintext export. For an encrypted vault, it names
+    // the directory that holds its contents as plaintext before its first
+    // write (announcePlaintext). The exit code does not change.
     const report = await materialize(vault, bundleDir, {
-      forceMirror: flags.forceMirror === true
+      forceMirror: flags.forceMirror === true,
+      onPlaintext: announcePlaintext
     })
     console.log(
       `materialized ${bundleDir}: ${report.written.length} written, ` +
         `${report.unchanged.length} unchanged, ${report.removed.length} removed`
     )
-    // materialize is the plaintext export. For an encrypted vault, name the
-    // directory that now holds its contents as plaintext. The exit code
-    // does not change.
-    if (vault.metadata.encrypted === true) {
-      process.stderr.write(`warning: ${report.root}: now holds the contents of an encrypted vault as plaintext\n`)
-    }
     for (const rel of report.pendingIngest) {
       process.stderr.write(`notice: pending ingest (unsaved external edit, left in place): ${rel}\n`)
     }
@@ -709,27 +707,30 @@ async function cmdCompact({ args, flags }) {
   return withVault(dir, {}, async (vault) => {
     let res
     try {
+      // For an encrypted predecessor, compact names the face before its
+      // first write to it (announcePlaintext).
       res = await compact(vault, {
         initBundle: Bundle.init,
         toDir: faceDir,
         vaultDir: outDir,
         force: flags.force === true,
+        onPlaintext: announcePlaintext,
         ...encryptionOpt(flags)
       })
     } catch (err) {
       // run() prints the message and exits 1. Every failure after the face
-      // step carries the warnings, so print them first: the plaintext face
-      // of an encrypted vault, and why a note did not survive.
+      // step carries the warnings, so print them first: why a note did not
+      // survive. The plaintext warning of the face is out already.
       // COMPACT_FIDELITY names every difference in its message, and the
       // counts follow the warnings.
-      for (const w of err.warnings || []) process.stderr.write(compactWarningLine(w))
+      for (const w of laterWarnings(err.warnings)) process.stderr.write(compactWarningLine(w))
       if (err.code === 'COMPACT_FIDELITY') {
         process.stderr.write(`notes:            ${compactCountsLine(err.counts)}\n`)
       }
       throw err
     }
     try {
-      for (const w of res.warnings) process.stderr.write(compactWarningLine(w))
+      for (const w of laterWarnings(res.warnings)) process.stderr.write(compactWarningLine(w))
       console.log(`compacted ${dir} -> ${outDir} (generation ${res.generation})`)
       console.log(`hydrated face:    ${faceDir}`)
       console.log(`predecessor:      ${res.predecessorPath} (NOT deleted — archive out-of-band)`)
@@ -756,6 +757,24 @@ function compactCountsLine({ walked, staged, ingested }) {
 /** `warning: notes/a.md: no parseable frontmatter; not staged` */
 function compactWarningLine({ path, message }) {
   return `warning: ${path}: ${message}\n`
+}
+
+/**
+ * Print a plaintext warning on stderr (decision 8), and resolve when the
+ * line is written: `warning: <dir>: now holds the contents of an encrypted
+ * vault as plaintext`. materialize and compact await it before their first
+ * plaintext write, so a failure or a crash after that write finds the
+ * warning already printed.
+ */
+function announcePlaintext(warning) {
+  return new Promise((resolve, reject) => {
+    process.stderr.write(compactWarningLine(warning), (err) => (err ? reject(err) : resolve()))
+  })
+}
+
+/** The compact warnings that announcePlaintext did not print already. */
+function laterWarnings(warnings) {
+  return (warnings || []).filter((w) => w.kind !== 'plaintext')
 }
 
 /**
