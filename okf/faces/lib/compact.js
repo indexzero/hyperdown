@@ -16,9 +16,10 @@
 //      create, so identity lineage survives the generation). Primary paths
 //      import before conflicted copies, so each path keeps its owner (§7);
 //   4. check its own output: materialize the fresh vault into a verification
-//      directory and byte-compare it with the face (verify.js). A difference
-//      fails the cycle with COMPACT_FIDELITY, and compaction removes what it
-//      wrote to the new out-dir;
+//      directory and byte-compare it with the face, and compare the live
+//      state of the fresh vault with the live state of the predecessor
+//      (verify.js). A difference fails the cycle with COMPACT_FIDELITY, and
+//      compaction removes what it wrote to the new out-dir;
 //   5. record the generation chain in the fresh vault's metadata
 //      ({ predecessorKey, predecessorCheckpoint }) and a generation entry in the
 //      fresh vault's `log/`.
@@ -60,7 +61,7 @@ import { materialize } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
 import { parseNote, renderNote } from './yaml.js'
 import { containedRealPath, loadManifest, isReservedDotFile, isReservedFile } from './fsatomic.js'
-import { compareTrees } from './verify.js'
+import { compareTrees, compareStates, liveState } from './verify.js'
 
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}\.md$/
 const GENERATION_LOG_REL = 'log/generation.json'
@@ -133,10 +134,20 @@ const GENERATION_LOG_REL = 'log/generation.json'
  * After the ingest, compact materializes the fresh vault into a verification
  * directory (a uniquely named sibling of stageDir, removed on success and on
  * failure) and byte-compares it with the face (verify.js: `_rev` lines and
- * log.md excluded, §14). On any difference it throws COMPACT_FIDELITY. The
- * error carries `differences` ([{ path, kind }], every one also in the
- * message), `warnings`, `counts` and `conflictCopies`. A note that the face
- * holds and the stage or the ingest dropped is such a difference. On
+ * log.md excluded, §14). The face is a lossy projection: it omits a scalar
+ * null, emits only the first `type` value, and writes a reference or an
+ * object as a string. So compact also compares the live state of the fresh
+ * vault with the live state that the predecessor had at the face step
+ * (verify.js liveState: each live concept's _id, path, body, field values
+ * and tag values, read through okf's view keys; revisions, attribution and
+ * clocks excluded, §10). On any difference it throws COMPACT_FIDELITY. The
+ * error carries `differences` (every one also in the message), `warnings`,
+ * `counts` and `conflictCopies`. A difference is { path, kind } for a file
+ * (kind 'missing', 'extra' or 'differs'), or { path, kind: 'state', id, key }
+ * for the live state of a concept (key '_id', 'path', 'body' or
+ * 'f/<field>'). A note that the face holds and the stage or the ingest
+ * dropped is such a difference. A vault that holds a value that the face
+ * cannot hold fails loudly: compaction never changes a value in silence. On
  * COMPACT_FIDELITY, and on any other failure after it claims vaultDir,
  * compact closes the fresh vault and removes what it created there: vaultDir
  * itself when compact created it, else only the entries that it added.
@@ -215,6 +226,9 @@ export async function compact(vault, opts = {}) {
           `use a fresh directory or pass { force: true }`
       )
     }
+    // The live state that the fresh vault must hold (step 6): the
+    // predecessor's, read just after the face step.
+    const expected = await liveState(vault)
 
     // ---- 3. stage a manifest-free, _rev-stripped copy for ingest ----
     // The stage holds plaintext. compact creates it for this run, and the
@@ -228,7 +242,7 @@ export async function compact(vault, opts = {}) {
       throw err.code === 'EEXIST' ? stageExistsError(stageDir) : err
     })
     ownStage = true
-    return await generateFromFace(vault, report, warnings, { stageDir, vaultDir, encryptionKey, sign, initBundle })
+    return await generateFromFace(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, sign, initBundle })
   } catch (err) {
     if (err !== null && typeof err === 'object' && err.warnings === undefined) err.warnings = warnings
     throw err
@@ -277,7 +291,7 @@ export async function guardCompactPaths({ predecessorDir = null, toDir, vaultDir
 }
 
 /** Everything after the stage is created: the staged copy, the fresh vault, its ingest, its check and its generation entry. */
-async function generateFromFace(vault, report, warnings, { stageDir, vaultDir, encryptionKey, sign, initBundle }) {
+async function generateFromFace(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, sign, initBundle }) {
   // The stage walks the face's emission manifest, not the directory: a
   // directory walk (walkNotes) skips every dot name, and a concept at a
   // dot-segment path such as `.drafts/idea` is a note that materialize wrote.
@@ -390,7 +404,7 @@ async function generateFromFace(vault, report, warnings, { stageDir, vaultDir, e
 
     // ---- 6. check its own output (§10, §14) ----
     const ids = new Set(imported.map(({ id }) => id).filter((id) => id !== null))
-    const { differences, notes } = await verifyGeneration(newVault, report.root, stageDir, ids)
+    const { differences, notes } = await verifyGeneration(newVault, report.root, stageDir, ids, expected)
     // §10 --force: the carry-across mapping comes from what the import did.
     // For each conflicted copy: its path in the face, the _id that the
     // import gave it, and the path at which the new vault holds that _id
@@ -470,17 +484,19 @@ async function claimDir(dir) {
 
 /**
  * Materialize the fresh vault into a verification directory and compare it
- * with the face (§14: `_rev` lines and log.md excluded). The directory is a
- * sibling of the stage. mkdtemp creates it exclusively under a new unique
- * name, so no existing path is ever reused, and it is removed on every way
- * out. Returns { differences, notes }: `notes` maps each _id in `ids` to the
- * note that materialize wrote for it.
+ * with the face (§14: `_rev` lines and log.md excluded). Then compare the
+ * live state of the fresh vault with `expected`, the predecessor's (§10).
+ * The directory is a sibling of the stage. mkdtemp creates it exclusively
+ * under a new unique name, so no existing path is ever reused, and it is
+ * removed on every way out. Returns { differences, notes }: the file
+ * differences, then the state differences, and `notes` maps each _id in
+ * `ids` to the note that materialize wrote for it.
  */
-async function verifyGeneration(newVault, faceDir, stageDir, ids) {
+async function verifyGeneration(newVault, faceDir, stageDir, ids, expected) {
   const verifyDir = await mkdtemp(verifyPrefix(stageDir))
   try {
     const report = await materialize(newVault, verifyDir)
-    const differences = await compareTrees(faceDir, verifyDir)
+    const differences = [...(await compareTrees(faceDir, verifyDir)), ...compareStates(expected, await liveState(newVault))]
     return { differences, notes: await notesOf(report, ids) }
   } finally {
     await rm(verifyDir, { recursive: true, force: true })
@@ -623,16 +639,24 @@ function plaintextWarning(dir) {
 function fidelityError(faceDir, differences, warnings, counts, conflictCopies) {
   const err = compactError(
     'COMPACT_FIDELITY',
-    `the new vault does not match the face ${faceDir} (_rev lines and log.md excluded, SPEC §14): ` +
+    `the new vault does not match the face ${faceDir} (_rev lines and log.md excluded, SPEC §14), ` +
+      `or the live state of the predecessor (revisions, attribution and clocks excluded, SPEC §10): ` +
       `${differences.length} difference(s). missing: only the face has the file. ` +
-      `extra: only the new vault has the file. differs: the bytes differ.\n` +
-      differences.map((d) => `  ${d.kind} ${d.path}`).join('\n')
+      `extra: only the new vault has the file. differs: the bytes differ. ` +
+      `state: the live state of the concept differs at the key named ` +
+      `(_id: the concept is live in one vault only, path, body, or f/<field>).\n` +
+      differences.map(differenceLine).join('\n')
   )
   err.differences = differences
   err.warnings = warnings
   err.counts = counts
   err.conflictCopies = conflictCopies
   return err
+}
+
+/** One line of the COMPACT_FIDELITY message: `  differs index.md`, `  state notes/a (_id <id>): f/type`. */
+function differenceLine(d) {
+  return d.kind === 'state' ? `  state ${d.path} (_id ${d.id}): ${d.key}` : `  ${d.kind} ${d.path}`
 }
 
 /** Count (and sample up to 4) keys under a view prefix. */

@@ -735,7 +735,7 @@ async function cmdCompact({ args, flags }) {
       console.log(`predecessor:      ${res.predecessorPath} (NOT deleted — archive out-of-band)`)
       console.log(`new vault key:    ${res.vault.keyHex}`)
       console.log(`notes:            ${compactCountsLine(res.counts)}`)
-      console.log(`fidelity:         the new vault matches the face (_rev lines and log.md excluded)`)
+      console.log(`fidelity:         the new vault matches the face (_rev lines and log.md excluded) and the live state of the predecessor`)
       if (res.conflictCopies && res.conflictCopies.length) {
         console.log(`conflicted copies carried across (--force): ${res.conflictCopies.length}`)
         for (const c of res.conflictCopies) console.log(`  ${c.from} -> ${c.to}`)

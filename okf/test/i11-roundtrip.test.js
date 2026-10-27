@@ -706,13 +706,16 @@ test('T14: the stage excludes a reserved .okf- name with a warning, and the T13 
   // Core accepts the path notes/.okf-state, but the faces reserve the .okf-
   // dot-file names for their own state. The stage walks the note, warns,
   // and does not stage it. The face still holds it, so the check fails.
+  // The new vault does not hold the concept, so the live state compare
+  // (F01) names its _id too.
   const old = await Bundle.init(await tmpDir('fid-okf-vault'))
-  await old.createConcept('notes/.okf-state', 'note')
+  const { tag } = await old.createConcept('notes/.okf-state', 'note')
   await old.createConcept('notes/visible', 'note')
   const err = await expectFidelityFailure(old, await tmpDir('fid-okf'))
   assert.deepEqual(err.differences, [
     { path: 'notes/.okf-state.md', kind: 'missing' },
-    { path: 'notes/index.md', kind: 'differs' }
+    { path: 'notes/index.md', kind: 'differs' },
+    { path: 'notes/.okf-state', kind: 'state', id: tag, key: '_id' }
   ])
   assert.deepEqual(err.counts, { walked: 2, staged: 1, ingested: 1 })
   assert.deepEqual(err.warnings, [
@@ -1004,6 +1007,61 @@ test('T13: a failed compaction keeps an out-dir that it did not create, and remo
   await writeTree(join(base, 'face'), new Map([['notes/hand.md', '---\ntype: note\n---\n\nby hand\n']]))
   await expectFidelityFailure(old, base, { leaves: ['face', 'out'], force: true })
   assert.deepEqual(await entries(join(base, 'out')), [], 'the failed compaction left its files in the out-dir')
+  await old.close()
+})
+
+// ---------- G3-P5 F01: compaction compares live state, not only face bytes ----------
+
+test('F01: a field value that the face cannot hold fails compaction with COMPACT_FIDELITY, which names the concept and the key', async () => {
+  // D-029 F01. Core accepts each of these values. The face drops a scalar
+  // null and every type value after the first, and writes a reference and
+  // an object as strings. The new vault then materializes the same bytes, so
+  // the byte compare passed, and compaction returned ok:true with the value
+  // lost or changed. compact also compares the live state of the
+  // predecessor and the new vault, so each value fails loudly instead.
+  const cases = [
+    ['nullable', null],
+    ['reference', { ref: 'target' }],
+    ['object', { hello: 'world' }],
+    ['type', ['note', 'other']]
+  ]
+  for (const [key, value] of cases) {
+    const old = await Bundle.init(await tmpDir(`fid-val-${key}-vault`))
+    const { tag } = await old.createConcept('notes/f', 'note')
+    await old.setField(tag, key, value)
+    await old.setBody(tag, null, 'body f')
+    await old.update()
+    const err = await expectFidelityFailure(old, await tmpDir(`fid-val-${key}`))
+    // The face bytes match. Only the live state differs, at the one key.
+    assert.deepEqual(err.differences, [{ path: 'notes/f', kind: 'state', id: tag, key: `f/${key}` }], key)
+    assert.ok(err.message.includes(`state notes/f (_id ${tag}): f/${key}`), err.message)
+    await old.close()
+  }
+})
+
+test('F01: --force no longer carries a hand edit of the face into the new vault: COMPACT_FIDELITY names the body and the tags', async () => {
+  // A hand edit of a note in an existing face makes the face dirty, and
+  // --force keeps the edit in the face. The stage then took the edit, and
+  // the new vault materialized the same bytes as the face, so the byte
+  // compare passed with the predecessor's body and tags changed. The live
+  // state compare names each changed key.
+  const old = await Bundle.init(await tmpDir('fid-edit-vault'))
+  const { tag } = await old.createConcept('notes/a', 'note')
+  await old.addTag(tag, 'one')
+  await old.setBody(tag, null, 'predecessor body')
+  await old.update()
+  const base = await tmpDir('fid-edit')
+  assert.equal((await materialize(old, join(base, 'face'))).ok, true)
+  const notePath = join(base, 'face', 'notes', 'a.md')
+  const text = await readFile(notePath, 'utf8')
+  assert.match(text, /^tags: \[one\]$/m)
+  await writeFile(notePath, text.replace('tags: [one]', 'tags: [one, two]').replace('predecessor body', 'hand edit'))
+
+  const err = await expectFidelityFailure(old, base, { force: true })
+  assert.deepEqual(err.differences, [
+    { path: 'notes/a', kind: 'state', id: tag, key: 'body' },
+    { path: 'notes/a', kind: 'state', id: tag, key: 'f/tags' }
+  ])
   await old.close()
 })
 
