@@ -442,9 +442,17 @@ export class Bundle extends EventEmitter {
     return this.db.flush()
   }
 
+  /**
+   * No append starts once close() begins: append() refuses with
+   * VAULT_CLOSED. Every append that started before close() settles first
+   * (G11). autobee's close interrupts the drain before it writes local nodes
+   * to the core (index.js _close, :797-831), so an append still in flight
+   * would resolve with its node only in memory.
+   */
   async close() {
     this._closing = true
     this._wakeAckWaiters() // release any append blocked in the ack gate
+    await this._appendChain // settles, it never rejects (see append())
     if (this.swarmInstance && this._onConnection) {
       this.swarmInstance.off('connection', this._onConnection)
       this._onConnection = null
@@ -552,8 +560,12 @@ export class Bundle extends EventEmitter {
    *    throughput to ~maxInflight per ackTimeout rather than deadlocking
    *    the writer. Disable per-op (`backpressure: false`) for deliberate
    *    offline/bulk writing.
+   *
+   * Close (G11): an append that starts after close() begins fails with
+   * VAULT_CLOSED. close() waits for every append that started before it.
    */
   append(type, payload = {}, opts = {}) {
+    if (this._closing) return Promise.reject(closedError())
     const run = this._appendChain.then(() => this._append(type, payload, opts))
     this._appendChain = run.then(
       () => {},
@@ -770,6 +782,7 @@ export class Bundle extends EventEmitter {
    * set — RemTag removes by observed tokens, never by value alone).
    */
   async remTag(id, value, opts = {}) {
+    if (this._closing) throw closedError() // before the reads, as append() does
     await this.update()
     const v = canonical.nfc(String(value))
     const rec = await this.val(K.cField(id, 'tags'))
@@ -922,6 +935,10 @@ function swarmTopic(discoveryKey) {
 
 function toKeyBuffer(key) {
   return b4a.from(keyHex(key), 'hex')
+}
+
+function closedError() {
+  return vaultError('VAULT_CLOSED', 'the vault is closing or closed, so no new append starts')
 }
 
 function vaultError(code, message) {
