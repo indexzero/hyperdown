@@ -62,32 +62,40 @@ differ (the squat-fallback mint gives a genuine concept an `_id` that is not
 its creating op's tag).
 
 ### seq
-A [writer](#writer)'s own monotonic index for an op within that writer's core.
-One half of a [tag](#tag).
+The position of an op's node in its [writer](#writer)'s core,
+`node.length - 1`. Unforgeable and the same on every peer. A writer's seqs
+increase, and can have gaps: a node that never reaches [apply](#apply), such
+as an empty block, still takes a position. One half of a [tag](#tag).
 **Not this:** not the global order across all writers; not the view-kept
-[seen-count](#ordinal--seen-count).
+[`seen/` entry](#ordinal--seen).
 
-### ordinal / seen-count
-A view-maintained per-writer count under `seen/<writerKey>`, incremented for
-every node from that writer regardless of disposition. The deterministic
-fallback used to key hold and rejection families when [autobee](#autobee)
-exposes no per-node sequence. Separate usage: **`ord`** in `c/<id>/path` is the
-*global* apply ordinal at which a path was set.
-**Not this:** not [seq](#seq) (seq is per-writer and payload-derived; the
-seen-count is view-derived). Not a wall clock.
+### ordinal / `seen/`
+`seen/<writerKey>` holds the last folded position of that writer plus one,
+written for every node from that writer regardless of disposition. The
+store builds an op's clock from it: the entry for another writer is that
+writer's last folded position. Separate usage: **`ord`** in
+`c/<id>/path` is the *global* apply ordinal at which a path was set.
+**Not this:** not [seq](#seq) (seq is the position of one node; `seen/` is
+view state that apply writes as it folds). Not a wall clock.
 
 ### writer
 An append-authorized participant — a human or an agent — identified by a public
-key, owning one input core.
+key, owning one input core. An [indexer](#indexer)'s `AddWriter` admits it
+(`gov/writer/<key>`); until then none of its ops takes effect.
 **Not this:** not the *author* of prose. Not merely "the key" or "the core";
-those belong to the writer. Not an [indexer](#indexer) unless granted.
+those belong to the writer. Not an [indexer](#indexer) unless granted. Not
+merely an autobee writer: autobee also adds a key that a rejected
+`AddWriter` names, and [apply](#apply) rejects every op of a key with no
+`gov/writer` record.
 
 ### indexer
 A [writer](#writer) with governance authority: it may emit `AddWriter`,
 `RemoveWriter`, `SetWriterPolicy`. Recorded `indexer: true` in
 `gov/writer/<key>`.
 **Not this:** not every writer. A non-indexer agent writes concepts but cannot
-admit or revoke writers.
+admit or revoke writers. Not autobee's `isIndexer`, which is always false in
+this store (every writer stands at weight 0); `Bundle.isIndexer` reads
+`gov/`.
 
 ### path
 A concept's location: a flat, absolute, [bundle](#bundle)-relative string, held
@@ -160,8 +168,9 @@ never an error.
 
 ### generation / compact
 Operator-only byte reclamation: materialize the live bundle, optionally delete
-files on disk, init a fresh vault, ingest with `_id` adoption, record the
-predecessor in the new vault's metadata. The CouchDB-compaction homage.
+files on disk, init a fresh vault whose metadata records the predecessor,
+ingest with `_id` adoption, and check that the fresh vault matches the face
+and the predecessor's live state. The CouchDB-compaction homage.
 **Not this:** not an op — no in-log operation reclaims bytes. Not lossless of
 history: old revisions and per-op attribution are shed by design.
 
@@ -170,9 +179,11 @@ history: old revisions and per-op attribution are shed by design.
 ## Substrate and guarantees
 
 ### autobee
-The standalone multi-writer Hyperbee substrate the store is built on (hyperbee2
-+ hypercore 11 in the delivered version). Provides the apply/view pattern,
-replication, and optimistic writes.
+The standalone multi-writer Hyperbee substrate the store is built on:
+autobee@2.12.1, on hyperbee2 + hypercore 11. Provides the apply/view pattern,
+one core per writer, linearization, and replication. The store configures it
+so that a node reaches [apply](#apply) only from a writer that autobee has
+added, and every writer stands at weight 0.
 **Not this:** **not autobase.** Autobase is a forbidden dependency, import, and
 docs framing.
 
