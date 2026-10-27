@@ -67,7 +67,9 @@ export function forgeNext(v, over = {}) {
  * (VAULT_NOT_WRITABLE) and never asks for an optimistic node, so the
  * outsider calls autobee's documented `db.append(buf, { optimistic: true
  * })` (autobee README.md:131-134) itself. `over` forges node fields
- * through forgeNext. Returns the outsider's core length.
+ * through forgeNext. It waits until the outsider's own core holds the
+ * node, and returns that core length: the attack length that a positive
+ * control checks.
  *
  * The outsider's own autobee runs with optimistic: false, so it never
  * applies its own node (autobee index.js:1357-1364). A writer that a peer
@@ -75,17 +77,29 @@ export function forgeNext(v, over = {}) {
  * core to the wakeup protocol (lib/writers.js:504-516), and no other peer
  * hears of it. A test therefore sends the core with announce(), as a
  * modified client can.
+ *
+ * Thus an outsider writes one node to its core, and no more. Its autobee
+ * reads that node from the core again on each pass and drops it, so it
+ * never gets to a second local node (lib/writers.js:560-621, :624-664).
+ * A node whose witness or links cite a writer that the outsider's own
+ * system does not hold never gets written either (lib/writers.js:673-722,
+ * lib/system.js:32-36). In these cases this helper throws, so no test
+ * can count a node that no core holds.
  */
 export async function outsiderAppend(v, path, over = {}) {
   const self = hex(v.db.local.key)
+  const before = v.db.local.length
   const op = encodeOp('create-concept', {
     path,
     type: 'note',
-    clock: [[self, v.db.local.length]],
+    clock: [[self, before]],
     at: Date.now()
   })
   forgeNext(v, over)
   await v.db.append(op, { optimistic: true })
+  if (!(await until(async () => v.db.local.length > before, 5000, 20))) {
+    throw new Error(`OUTSIDER_NODE_UNWRITTEN: the outsider core stays at length ${before}`)
+  }
   return v.db.local.length
 }
 

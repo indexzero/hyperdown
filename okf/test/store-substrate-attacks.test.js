@@ -378,13 +378,19 @@ test('A3 G1: no livelock driven by a member (s4)', { timeout: 2 * TIMEOUT }, asy
 // claimant's node N cites j as a witness, and the carrier's node k follows.
 // With optimistic: true, j reached apply and admitted both keys, which set
 // up the livelock. Now no node of either key reaches apply.
+//
+// A Bundle outsider can write j only. N and k never get to a core: no
+// peer applies j, so N's witness link to j is in no system, and the
+// carrier's autobee never gets past j to k (attack-helpers.js
+// outsiderAppend). Thus the test sends j, proves that every peer holds it,
+// and asserts no effect on every peer.
 test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a4-a'))) // genesis
   const c1 = quiet(await Bundle.join(await tmpDir('a4-c1'), a.key)) // the carrier, never admitted
   const c2 = quiet(await Bundle.join(await tmpDir('a4-c2'), a.key)) // the claimant, never admitted
   const applied = { a: watchApply(a), c1: watchApply(c1), c2: watchApply(c2) }
   const unpairAC = pair(a, c1)
-  let unpairCC = pair(c1, c2)
+  const unpairCC = pair(c1, c2)
   t.after(async () => {
     unpairAC()
     unpairCC()
@@ -398,70 +404,37 @@ test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', 
   await a.createConcept('seed', 'note')
   await a.createConcept('g', 'note')
   const hash0 = await converged([a, c1, c2], 20000)
+  const peers = [
+    ['a', a, applied.a],
+    ['c1', c1, applied.c1],
+    ['c2', c2, applied.c2]
+  ]
 
   // j: the carrier's node, whose approvals name both keys
+  const before = coreStats(a)
+  let jLen = 0
   const j = await timed(async () => {
-    const length = await outsiderAppend(c1, 'carrier-j', {
+    jLen = await outsiderAppend(c1, 'carrier-j', {
       approvals: [
         { key: c1.localKey, weight: TIER },
         { key: c2.localKey, weight: TIER }
       ]
     })
-    await announce(c1, [{ key: c1.localKey, length }])
-    return length
+    return announce(c1, [{ key: c1.localKey, length: jLen }])
   }, 20000)
-  out.carrierAppend = j.status
-  const jLen = j.value
+  out.carrierAppend = j.status === 'ok' && j.value === true ? 'ok' : j.status
+  out.delivered = await deliveredTo(peers, [{ key: c1.localKey, length: jLen }])
   out.claimantAdmitted = await until(async () => (await c2.update(), c2.writable), 3000)
-
-  unpairCC() // cut the claimant off, as s5 does
-  // N: the claimant's node, with a forged witness citing (carrier, j)
-  const n = await timed(
-    () => outsiderAppend(c2, 'N', { witness: { weight: TIER, link: { key: c1.localKey, length: jLen } } }),
-    20000
-  )
-  out.claimantAppend = n.status
-  await sleep(150) // tN < tk
-  // k: the carrier's next node
-  const k = await timed(() => outsiderAppend(c1, 'k'), 20000)
-  out.carrierSecondAppend = k.status
-
-  // heal: the claimant announces N to the carrier, and the carrier, a
-  // modified client, relays both cores to genesis
-  unpairCC = pair(c1, c2)
-  const before = coreStats(a)
-  out.relayed = await timed(async () => {
-    await announce(c2, [{ key: c2.localKey, length: n.value }])
-    await until(async () => (await c1.update(), await holds(c1, c2.localKey, n.value)), 20000)
-    return announce(c1, [
-      { key: c1.localKey, length: k.value },
-      { key: c2.localKey, length: n.value }
-    ])
-  }, 30000)
-  out.delivered = await until(
-    async () => (await a.update(), (await holds(a, c1.localKey, k.value)) && (await holds(a, c2.localKey, n.value))),
-    20000
-  )
   await sleep(1000)
-  out.peers = await outsiderRows(
-    [
-      ['a', a, applied.a],
-      ['c1', c1, applied.c1],
-      ['c2', c2, applied.c2]
-    ],
-    [c1.localKey, c2.localKey],
-    hash0
-  )
+  out.peers = await outsiderRows(peers, [c1.localKey, c2.localKey], hash0)
   out.undoDelta = coreStats(a).undos - before.undos
   out.errors = { victim: errorsOf(a), carrier: errorsOf(c1), claimant: errorsOf(c2) }
   await record(t, 'A4-G1-livelock-outsider', out)
 
   assert.ok(hash0, 'the peers converge before the attack')
   assert.equal(out.carrierAppend, 'ok')
+  assert.deepEqual(out.delivered, { a: true, c1: true, c2: true }, 'every peer holds j (positive control)')
   assert.equal(out.claimantAdmitted, false, 'j admits nobody, not even on the claimant')
-  assert.equal(out.claimantAppend, 'ok')
-  assert.equal(out.carrierSecondAppend, 'ok')
-  assert.equal(out.delivered, true, 'genesis holds j, k and N (positive control)')
   assertOutsiderShut(out.peers)
   assert.equal(out.undoDelta, 0, 'genesis undoes nothing: no outsider node sorts into its order')
   assert.deepEqual(out.errors, { victim: [], carrier: [], claimant: [] }, 'no autobee closes')
