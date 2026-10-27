@@ -386,11 +386,16 @@ class Applier {
 
     // §8: every op carries its writer's observed clock; the claimed
     // self-entry must equal the actual seq, the node's unforgeable
-    // position (§3).
+    // position (§3). A clock carries self and the writers with a
+    // gov/writer record in its issuer's view (§8, T12). No rule here needs
+    // an entry for any other writer.
     const clock = normalizeClock(op.clock)
     if (!clock || (clock[W] ?? -1) !== seq) return this.reject(W, seq, 'forged-clock')
 
-    // §8 causal revocation, never positional.
+    // §8 causal revocation, never positional. The strict-precedence test
+    // compares every entry. A writer that the op's clock cites and the
+    // revocation clock omits fails it, so two views that disagree on an
+    // admission can reject an op in the window, never admit one.
     const removed = await this.val(K.govRemoved(W))
     if (removed !== undefined) {
       if (seq > removed.seqAtRemoval) return this.reject(W, seq, 'revoked')
@@ -559,8 +564,13 @@ class Applier {
     const clock = normalizeClock(op.clock) ?? {}
     // §8: seqAtRemoval = the revocation clock's entry for the removed
     // writer, the last position of it that the remover had folded (§3);
-    // absent entry → -1 (the remover folded none of the target's ops, so
-    // every target seq is post-revocation).
+    // absent entry → -1, so every target seq is post-revocation. The entry
+    // is absent when the remover folded none of the target's ops, or when
+    // the target had no gov/writer record in the remover's view (§8, T12).
+    // In the second case -1 rejects the same ops as the last folded
+    // position: each op of the target that the remover folded is a causal
+    // ancestor of this node and sorts before it, and each op of the target
+    // that sorts after it has a higher position.
     this.put(K.govRemoved(target), { clock, seqAtRemoval: clock[target] ?? -1 })
     // §8 "causal, in-band, never positional": host.removeWriter is
     // deliberately NOT called — every node must keep linearizing on every
