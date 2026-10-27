@@ -1,8 +1,14 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.8 (2026-10-27). RFC 2119
+**Status:** Normative build instruction, v1.9 (2026-10-27). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.8 bounds the clock. An op's clock carries the self
+**Changelog:** v1.9 states the transport contract for autobee@2.12.1
+only (§1): the constructor options that the store passes, the apply, host
+and instance surfaces that okf uses, and the corestore floor 7.12.6 under
+the pin `^7.16.1`. Every statement about autobee cites the installed
+source as `file:line`. `DEVIATIONS.md` records each substrate behaviour
+that okf relies on (§0, §1, §2, §3, §7, §8, §12).
+v1.8 bounds the clock. An op's clock carries the self
 entry and an entry for each writer with a `gov/writer` record, a revoked
 writer too, and no other key. A key that no indexer admitted is never
 clocked. So its ops cannot push an honest op above `maxOpBytes` (§3, §8).
@@ -33,18 +39,18 @@ the corresponding Known-limitations entry is removed. v1.3 upstreams the
 auto-okf delivery + deviation learnings
 (sources: `DELIVERY.md`, `DEVIATIONS.md`) so the spec matches delivered
 reality: revHash length prefix corrected to u64 BE (§5); uniform writer
-weight corrected to 2 (§8); optimistic onboarding resolved for
-autobee@1.0.10 (§8; v1.5 deletes it); the per-writer seen-count
-ordinal resolution settled against autobee@1.0.10 (§3); `flag/copydetect`
+weight pinned (§8; v1.6 sets it to 0); optimistic onboarding resolved
+(§8; v1.5 deletes it); the per-writer seen-count ordinal resolution
+settled (§3; v1.7 replaces it); `flag/copydetect`
 corrected to an ingest watcher event, not a view row (no core op writes it —
 §4, §9); conflicted-copy face deletion skip and deferred `_id` write-back
 documented (§9); the generation `log/` entry clarified as a filesystem artifact
 and the compaction `_rev`-stripped staging step documented (§10); a "Known
 limitations (v1)" note added (C1 soak scale limit, P7 double-conflict-suffix
 ingest, P4 empty-`type` ingest, plus the live-watcher directory-move
-data-preservation gap, issue #30); node:test mandate and autobee@1.0.10
-verification pin confirmed. A source-driven review pass also corrected §7's
-directory-move deferral rationale — a category error citing the TPDS-2021
+data-preservation gap, issue #30); node:test mandate confirmed. A
+source-driven review pass also corrected §7's directory-move deferral
+rationale — a category error citing the TPDS-2021
 tree-move CRDT (which solves cycles in explicit parent-pointer trees OKF does
 not have); the real v2 path is an atomic multi-concept path rewrite
 (`MoveSubtree` batch via `view.write()`) with read-atomic/RAMP transactions
@@ -78,7 +84,8 @@ Precedence rules:
    tree; everything internal is this document's to define.
 2. Where this document conflicts with the autobee README/source on **API
    signatures**, autobee wins. Fetch and verify before use; autobee is
-   experimental ("expect breaking changes").
+   experimental ("Expect breaking changes", autobee@2.12.1
+   `README.md:5`).
 3. **Autobase is forbidden**: no dependency, no import, no docs framing.
 4. Every deviation from this document goes to `DEVIATIONS.md` (terse: one
    paragraph per genuine deviation; implementation resolutions where this
@@ -98,26 +105,61 @@ paths.
   bundle structure, concept documents, frontmatter, cross-linking, index/log
   files, conformance. Normative for everything materialize emits.
 - autobee README **and source** (`https://github.com/holepunchto/autobee`,
-  read `index.js`) — the delivered stack verified the contract below against
-  **autobee@1.0.10** (standalone multiwriter Hyperbee on hyperbee2 +
-  hypercore 11, no autobase dependency), and the port mappings recorded in
-  `DEVIATIONS.md` are pinned to that version: constructor
-  `new Autobee(store, key, { apply, open,
-  close, update, encryptionKey, encrypted, keyPair, optimistic })`; apply
-  receives `(nodes, view, host)`, node = `{key, value, length, optimistic}`;
-  host: `addWriter/removeWriter/ackWriter/interrupt/createAnchor/genesis`;
-  view is hyperbee2-flavored (`view.get`, `view.write()` batches with
-  `tryPut`/`flush`); instance: `update()/updated()/flush()`,
-  `replicate(isInitiator)`, `db.view`, `db.key`, `db.discoveryKey`.
-- hyperbee2 source (range iteration surface — verify, do not assume classic
-  hyperbee's `createReadStream` signature).
-- corestore, hyperswarm READMEs.
-- Reference integration: `~/Git/indexzero/uppr2-worktrees/attempt-opus-1/lib/registry.js`
-  (working autobee 1.0.x apply/view/write patterns).
+  read `index.js`). The contract below is verified against the installed
+  **autobee@2.12.1**, pinned `^2.12.1` in `okf/store/package.json`: a
+  standalone multiwriter Hyperbee on hyperbee2 and hypercore 11, with no
+  autobase dependency (autobee `package.json`). A citation such as
+  `index.js:95` is relative to the autobee package root. `DEVIATIONS.md`
+  ("Substrate behaviour that okf relies on") records each behaviour that
+  okf relies on, with its source, and the parts of it that the README does
+  not document.
+  - Constructor: `new Autobee(store, key, handlers)`
+    (`README.md:66-87`). The store passes `apply`, `open`, `update`,
+    `encryptionKey`, `encrypted`, `keyPair`, `optimistic: false`,
+    `bootstrapWeight: 0` and `fastForward: false`. The README does not
+    list `bootstrapWeight` (`index.js:49`) or the value `false` of
+    `fastForward` (`index.js:105-108`).
+  - apply receives `(nodes, view, host)` (`README.md:74`,
+    `lib/apply-view.js:17-19`), and only the nodes with a non-empty value
+    (`index.js:1444`). A node carries `{ key, value, length, ... }`
+    (`README.md:192-194`, `lib/writers.js:808-829`). `node.length` is the
+    length of the writer's core after the node (`lib/writers.js:332`,
+    `:571-579`, `:748`), so `node.length - 1` is its position (§3).
+  - `view` is what the `open` handler returns (`README.md:75`,
+    `lib/apply-view.js:8-10`). The store returns an adapter over the
+    hyperbee2 bee, with `get`, `write()` batches of
+    `tryPut`/`tryDelete`/`flush`, and `createReadStream` (below).
+  - host (`lib/apply-calls.js:3-69`): core calls only
+    `host.addWriter(key, { weight: 0 })` (§8). The README lists only
+    `isIndexer` for it (`README.md:210-218`). The `weight` option is at
+    `lib/apply-calls.js:33`. `host.removeWriter` is never called (§8).
+    `host.ackWriter` is a deprecated no-op (`README.md:224-227`,
+    `lib/apply-calls.js:44-47`). okf uses no other host call.
+  - instance: `db.key`, `db.discoveryKey`, `db.id`, `db.local`,
+    `db.view`, `db.writable` (`README.md:90-116`), `append(value)`
+    (`README.md:122-124`), `update()`, `updated()`, `flush()`
+    (`README.md:143-153`), `replicate(isInitiator | stream)`
+    (`README.md:155-163`, `index.js:454-458`), `ready()` and `close()`
+    from ready-resource (`index.js:35`, `:391-452`), and the `error`
+    event (`index.js:669-690`). okf reads no undocumented autobee
+    property.
+- hyperbee2@2.20.1 source (range iteration surface — verify, do not
+  assume classic hyperbee's `createReadStream` signature): `get`
+  (`index.js:346`), `write()` (`index.js:151`) with `tryPut`, `tryDelete`
+  and `flush` (`lib/write.js:46`, `:51`, `:84`), and `createReadStream`
+  (`index.js:211`).
+- corestore, hyperswarm READMEs. The corestore pin is `^7.16.1`
+  (`okf/store/package.json`). The floor is 7.12.6, the first release that
+  honours a per-core `manifestVersion` (corestore@7.16.1 `index.js:714`).
+  autobee asks for its system and view cores at manifest version 3
+  (`index.js:213-221`), and its view encryption refuses a view core below
+  version 3 (`lib/encryption.js:83-86`). `DEVIATIONS.md` records the
+  evidence.
 
 ## 2. Architecture: the log is the source of truth
 
-- **Source of truth:** the autobee op log (one input core per writer).
+- **Source of truth:** the autobee op log (one input core per writer:
+  autobee@2.12.1 `README.md:11`).
 - **Generated faces:** (a) the OKF bundle on disk (markdown + frontmatter,
   `index.md`, `log.md`), (b) the queryable view (concepts, links, `wanted/`,
   flags).
@@ -170,21 +212,28 @@ SetWriterPolicy { key, namespacePrefixes, rateCeiling }
 - **The per-writer ordinal is the node's position.** The actual seq of a
   node is its 0-based position in its writer's core: `node.length - 1`.
   The transport documents `node.length` as the position in the writer's
-  core (autobee@2.12.1 `README.md`, Apply). The position is unforgeable,
-  the same on every peer, and stable under reorders. Apply MUST take the
+  core (autobee@2.12.1 `README.md:194`), and sets it to the length of the
+  core after the node (`lib/writers.js:332`, `:571-579`, `:748`). The
+  position is unforgeable, the same on every peer, and stable under
+  reorders. Apply MUST take the
   seq from the position for every node, whatever its disposition: for the
   `tag`, for `flag/rejected/<writerKey>/<seq>`, for the §6 mint, and for
   the §8 position rules (`seqAtRemoval`, `forged-clock`). Apply records
   the last position plus one in `seen/<writerKey>` (§4). A node that never
-  reaches apply, such as an empty block, still takes a position. So the
-  seqs of one writer's ops can have gaps, and `seen/<writerKey>` can skip.
-  A node without a positive integer `length` breaks the transport
-  contract: apply throws, and the node is never an op rejection.
+  reaches apply, such as an empty block, still takes a position: every
+  node enters the substrate's system, and only a node with a non-empty
+  value reaches apply (`index.js:1430`, `:1444`). So the seqs of one
+  writer's ops can have gaps, and `seen/<writerKey>` can skip. A node
+  without a positive integer `length` breaks the transport contract: apply
+  throws, and the node is never an op rejection. The substrate then closes
+  (`README.md:140-141`, `index.js:669-690`).
 - The writer's store takes the seq of a new op right before it encodes
   the op: the length of its local core, or one past the seq of its
-  previous append when that node is not in the core yet. Its appends are
-  serialized. The seq never depends on how far apply has folded the local
-  core.
+  previous append when that node is not in the core yet. A local node
+  waits in memory until the substrate writes it to the core
+  (`lib/writers.js:729-754`, `:768-789`). Its appends are serialized. The
+  seq never depends on how far apply has folded the local core.
+  `DEVIATIONS.md` records why the length gives the next position.
 - Strings are NFC-normalized before keying, hashing, or comparison (§3.1 of
   the vault-ld spec is copied semantics; `canonical.js` is the copied code).
 - Limits, fixed check order, single recorded reason. Pre-decode: op ≤
@@ -427,8 +476,9 @@ saga is the cautionary tale). The rules are frozen:
   observe a half-moved directory. The v2 path is an atomic multi-concept
   path rewrite — a single batch op (`MoveSubtree { fromPrefix, toPrefix }`)
   expanded deterministically within one apply step (autobee `view.write()`
-  batch); the relevant prior art is multi-key / read-atomic transactions,
-  not replicated-tree move CRDTs.
+  batch: autobee@2.12.1 `README.md:203-205`, hyperbee2@2.20.1
+  `index.js:151`); the relevant prior art is multi-key / read-atomic
+  transactions, not replicated-tree move CRDTs.
 
 ## 8. Governance and the append-only guarantee
 
@@ -454,9 +504,11 @@ saga is the cautionary tale). The rules are frozen:
   RemoveWriter's clock; a subsequent op from that writer whose clock does
   not strictly precede it is rejected (reason `revoked`).
   `host.removeWriter` is NEVER called — every node must keep linearizing on
-  every peer so the clock rule can run uniformly. The revoked writer's own
-  store refuses further local appends. The claimed clock is cross-checked
-  against unforgeable position: `gov/removed/<key>` also records
+  every peer so the clock rule can run uniformly. A substrate removal
+  would stop the writer's nodes before apply (autobee@2.12.1
+  `lib/system.js:108-114`, `:242-251`, `index.js:1447`). The revoked
+  writer's own store refuses further local appends. The claimed clock is
+  cross-checked against unforgeable position: `gov/removed/<key>` also records
   `seqAtRemoval` = the revocation clock's entry for the removed writer,
   which is the last position of that writer that the remover had folded
   (§3). Any node from that writer whose actual seq, its position
@@ -486,7 +538,10 @@ saga is the cautionary tale). The rules are frozen:
     is absent and `seqAtRemoval` is -1, so that target has no window. The
     result is the same as with the target's last folded position. Each op
     of the target that the remover folded is a causal ancestor of the
-    `RemoveWriter` node, so the substrate sorts it before the removal.
+    `RemoveWriter` node, so the substrate sorts it before the removal. The
+    substrate processes a node only once every node that it links is in
+    the system, and sorts it after them (autobee@2.12.1
+    `lib/writers.js:603-606`, `lib/topo.js:109-150`).
     Each op of the target that sorts after the removal comes later in the
     target's core, so its seq is above that position, and apply rejects it
     `revoked`.
@@ -510,12 +565,16 @@ saga is the cautionary tale). The rules are frozen:
   reorder undoes it. Only a 32-byte key is granted: autobee@2.12.1 copies
   the key into a fixed 34-byte system key (`lib/encoding.js:64-69`). The
   weight is explicit and uniform, 0 for every writer, never autobee's
-  default `isIndexer ? 2 : 1` (`lib/apply-calls.js:33`). The store constructs
-  autobee with `bootstrapWeight: 0`, so genesis stands at 0 too. The grant
-  makes the key an autobee writer, so its nodes reach apply on every peer.
-  It confers no okf membership: **okf membership comes only from `gov/`**,
-  which apply decides. A granted key with no `gov/writer/<key>` record has
-  each of its ops rejected `not-a-writer` (below), with a flag (I4).
+  default `isIndexer ? 2 : 1` (`lib/apply-calls.js:33`). A grant at 0
+  changes no weight and opens no promotion (`lib/system.js:75-88`,
+  `lib/promotions.js:111-113`). The store constructs autobee with
+  `bootstrapWeight: 0`, so genesis stands at 0 too (`index.js:49`,
+  `:1411-1413`). The grant makes the key an autobee writer, so its nodes
+  reach apply on every peer (`index.js:1359`, `:1474-1477`,
+  `lib/system.js:242-251`). It confers no okf membership: **okf
+  membership comes only from `gov/`**, which apply decides. A granted key
+  with no `gov/writer/<key>` record has each of its ops rejected
+  `not-a-writer` (below), with a flag (I4).
 - **Admission comes before effect.** A writer's ops take effect only once
   an indexer-authored `AddWriter` naming its key has admitted it, at that
   op's linearized position. The genesis indexer is the one writer admitted
@@ -532,15 +591,22 @@ saga is the cautionary tale). The rules are frozen:
   bind every op. It runs after the indexer-issuer rule above, so a
   governance op from such a writer is rejected `policy-governance` (it is
   not an indexer). It runs before the rate check. The store constructs
-  autobee with `optimistic: false`, so an honest joiner appends nothing
-  before its admission.
+  autobee with `optimistic: false`, so autobee drops every node of a
+  writer that it has not added before apply (autobee@2.12.1
+  `index.js:95`, `:1357-1364`). The store refuses an append until
+  `db.writable` is true, that is until autobee has added the writer
+  (`README.md:114-116`, `index.js:196-198`). So an honest joiner appends
+  nothing before its admission.
 - Rate limiting is a writer-local token bucket (vault-ld §8.5 ancestry —
   never a global window): each writer's bucket gains 1 token per accepted
   op *authored by any indexer*, capped at that writer's `rateCeiling`.
   Buckets start full (at ceiling) at admission, and the genesis indexer's
   bucket starts full at its first op — the accept/reject partition is
   pinned, not implementation-chosen.
-- `encryptionKey` (+ `encrypted: true`) supported end to end.
+- `encryptionKey` (+ `encrypted: true`) supported end to end: autobee
+  encrypts the writer cores, the system and the view (autobee@2.12.1
+  `README.md:308-320`, `index.js:52`, `:219`, `:263`). The view needs
+  corestore 7.12.6 or later (§1).
 
 ## 9. Faces
 
@@ -816,10 +882,12 @@ are honest scale/edge caveats recorded by the delivery (`DELIVERY.md`,
   backpressure on, RSS grew without plateau (~3.1 GB) and a lagging peer
   failed to converge inside a 5-min heal window. Liveness/throughput is the
   affected axis — caught-up peers stay byte-identical, no divergent view
-  hash, FDs flat, no crash. It is substrate-entangled (autobee under flood);
-  the okf-attributable lead is uncoalesced OR-set add-tokens (§5 `tags`). A
-  fix is architectural and risks determinism on green code, so it is
-  deliberately deferred; sign-off pending.
+  hash, FDs flat, no crash. It is substrate-entangled (autobee under
+  flood; UNVERIFIED against the autobee@2.12.1 source, which states
+  nothing about memory under load); the okf-attributable lead is
+  uncoalesced OR-set add-tokens (§5 `tags`). A fix is architectural and
+  risks determinism on green code, so it is deliberately deferred;
+  sign-off pending.
 - **P7 — double `.conflict-<hex>` suffix ingest.** A file carrying two
   stacked `.conflict-<hex>` suffixes lands in a permanent pending-ingest
   state (GitHub issue #28).
