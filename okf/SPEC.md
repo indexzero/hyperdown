@@ -1,8 +1,13 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.4 (2026-07-26). RFC 2119
+**Status:** Normative build instruction, v1.5 (2026-10-27). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.4 closes the live-watcher directory-move
+**Changelog:** v1.5 deletes optimistic onboarding: a writer's ops take
+effect only once an indexer's `AddWriter` has admitted it, and an op from
+any other writer is rejected `not-a-writer` (§8). The hold buffer, the
+`optimistic` flag family, the `hold-overflow` rejection and the unacked
+rate ceiling are gone (§3, §4, §8, §11).
+v1.4 closes the live-watcher directory-move
 data-preservation gap (issue #30) with three §9 ingest-watcher rules — a
 disk file bearing a known-but-tombstoned `_id` is intent-to-keep
 (`UndeleteConcept` first), vanished-path deletion defers to a quiet-window
@@ -13,9 +18,8 @@ the corresponding Known-limitations entry is removed. v1.3 upstreams the
 auto-okf delivery + deviation learnings
 (sources: `DELIVERY.md`, `DEVIATIONS.md`) so the spec matches delivered
 reality: revHash length prefix corrected to u64 BE (§5); uniform writer
-weight corrected to 2 (§8); optimistic onboarding resolved as store-side
-DAG-level `host.ackWriter` with `hold/` full-payload folding — acked nodes
-are NOT re-delivered, so no seq-dedup branch (§8); the per-writer seen-count
+weight corrected to 2 (§8); optimistic onboarding resolved for
+autobee@1.0.10 (§8; v1.5 deletes it); the per-writer seen-count
 ordinal resolution settled against autobee@1.0.10 (§3); `flag/copydetect`
 corrected to an ingest watcher event, not a view row (no core op writes it —
 §4, §9); conflicted-copy face deletion skip and deferred `_id` write-back
@@ -148,7 +152,7 @@ SetWriterPolicy { key, namespacePrefixes, rateCeiling }
   apply derives position from the view-kept `seen/` count rather than any
   transport-exposed seq — core is transport-agnostic, and §8's unforgeable-
   position rule (`seqAtRemoval`, `forged-clock`) MUST bind to the same
-  ordinal apply uses for `flag/rejected`/`hold/` keys. Under autobee's
+  ordinal apply uses for `flag/rejected` keys. Under autobee's
   per-writer FIFO delivery the seen-count equals the node seq; a future
   substrate exposing a stable per-writer index would be a new DEVIATIONS.md
   entry.
@@ -186,17 +190,16 @@ wantedrank/<inv-count>/<path>   derived rank index, rewritten on referrer-count
                                 zero-padded decimal, MAX = 10^16 − 1, so an
                                 ascending scan yields most-wanted first)
 log/<ordinal>                   append-only narration records -> log.md (§9)
-flag/conflict|clobber|staletag|pathcollision|writeafterdelete|undelete|rejected|optimistic|squat/...
+flag/conflict|clobber|staletag|pathcollision|writeafterdelete|undelete|rejected|squat/...
                                 (no `copydetect` family: no op writes one —
                                 copy-splits surface as an ingest event, §9)
 seen/<writerKey>                per-writer ordinal (bookkeeping)
 gov/writer/<key>                { indexer, namespacePrefixes, rateCeiling }
 gov/removed/<key>               revocation clock + seqAtRemoval (§8)
-hold/<writerKey>/<seq>          full decoded payloads of unacked optimistic ops
 rate/<writerKey>                token-bucket state
 ```
 
-Bookkeeping families (`seen/`, `rate/`, `hold/`, `revbybase/`,
+Bookkeeping families (`seen/`, `rate/`, `revbybase/`,
 `wantedrank/`) are included in the I2 view hash and excluded from
 materialize.
 
@@ -205,7 +208,7 @@ Flag lifecycle: `conflict` clears only via `ResolveConflict` (§5);
 own subsequent `SetPath`, or the competing holder vacating by rename,
 deletion, or its own collision loss (§7; apply recomputes this on the same
 events as §9's late-binding link resolution); `clobber`, `staletag`,
-`writeafterdelete`, `undelete`, `rejected`, `optimistic`, and `squat` are
+`writeafterdelete`, `undelete`, `rejected`, and `squat` are
 permanent audit records — no op or rule clears them.
 
 ## 5. Merge semantics: fixed defaults
@@ -442,37 +445,30 @@ saga is the cautionary tale). The rules are frozen:
   autobee's cosmetic `isIndexer` getter (`weight === 2`) then reads true
   for all writers — immaterial, because §8 governance authority is decided
   from `gov/` by core, never from autobee writer state.
-- Optimistic onboarding: construct with explicit `optimistic: true`.
-  Unacked optimistic ops are held (`hold/`, full decoded payload). **The
-  view-effect ack is the linearization of an indexer-authored `AddWriter`
-  op naming the held writer's key**; at that position apply folds
-  `hold/<key>/*` in seq order at the ack's linearized position, then
-  deletes the holds. **Resolved (delivery):** acknowledged optimistic nodes
-  are NOT re-delivered to apply — autobee@1.0.10 applies an unacked
-  writer's optimistic batch exactly once at its linearized position, and a
-  later `host.ackWriter()` flips writer state without replaying prior nodes
-  — so `hold/` stores the **full decoded payload** and the fold (never a
-  seq-dedup guard) is the mechanism. Two-level ack: autobee additionally
-  requires the optimistic batch to anchor in its system during apply or it
-  is rolled back and the writer dropped, so the **store's apply wrapper
-  calls `host.ackWriter(node.key)` at the DAG level for every
-  optimistic-flagged node** (deterministic — the flag is oplog-encoded, so
-  every peer makes the same call). That DAG-level ack only keeps the node
-  in the substrate; core's `hold/` buffer remains the sole VIEW-effect gate,
-  so effects still land at the in-log `AddWriter`'s linearized position and
-  peers converge to identical views even when the raw optimistic node
-  linearized at different positions. `H_max = 512` held ops per writer;
-  op 513+ from an unacked writer
-  is rejected (`flag/rejected`, reason `hold-overflow`). Held ops are
-  rate-checked at hold time; optimistic ops rejected at fold time write
-  `flag/optimistic/<writerKey>/<seq>`. `RemoveWriter` of an unacked writer
-  drops holds unfolded. Rate limiting is a writer-local token bucket
-  (vault-ld §8.5 ancestry — never a global window): each writer's bucket
-  gains 1 token per accepted op *authored by any indexer*, capped at that
-  writer's `rateCeiling`; unacked writers use a fixed default ceiling (64)
-  until admitted. Buckets start full (at ceiling) at admission and at
-  first hold — the accept/reject partition is pinned, not
-  implementation-chosen.
+- **Admission comes before effect.** A writer's ops take effect only once
+  an indexer-authored `AddWriter` naming its key has admitted it, at that
+  op's linearized position. The genesis indexer is the one writer admitted
+  without an `AddWriter` (seeded, above). An op from any other writer, that
+  is a writer with no `gov/writer/<key>` record at the op's linearized
+  position, is rejected (`flag/rejected/<writerKey>/<seq>`, reason
+  `not-a-writer`). It never reaches the content pipeline, takes no rate
+  token, and mutates no `c/` key (I10). `seen/<writerKey>` still counts it
+  (§3), so the §6 `mint-collision-risk` rule protects that key's future
+  mints. Admission is not retroactive: the `AddWriter` revives none of the
+  writer's earlier rejected ops, and only its later ops take effect. The
+  check has a fixed place in apply's single-reason order. It runs after
+  the §3 limits, the `forged-clock` check and the revocation check, which
+  bind every op. It runs after the indexer-issuer rule above, so a
+  governance op from such a writer is rejected `policy-governance` (it is
+  not an indexer). It runs before the rate check. The store constructs
+  autobee with `optimistic: false`, so an honest joiner appends nothing
+  before its admission.
+- Rate limiting is a writer-local token bucket (vault-ld §8.5 ancestry —
+  never a global window): each writer's bucket gains 1 token per accepted
+  op *authored by any indexer*, capped at that writer's `rateCeiling`.
+  Buckets start full (at ceiling) at admission, and the genesis indexer's
+  bucket starts full at its first op — the accept/reject partition is
+  pinned, not implementation-chosen.
 - `encryptionKey` (+ `encrypted: true`) supported end to end.
 
 ## 9. Faces
@@ -713,8 +709,8 @@ a cycle is an acceptance criterion (§14).
   (full range-scan hash).
 - **I3 Rebuild equivalence:** from-scratch rebuild equals incremental view.
 - **I4 No silent loss:** no op's effect disappears without a flag
-  (clobber/staletag/conflict/pathcollision/writeafterdelete/rejected/
-  optimistic). `wanted/` entries are NOT loss (they are demand).
+  (clobber/staletag/conflict/pathcollision/writeafterdelete/rejected).
+  `wanted/` entries are NOT loss (they are demand).
 - **I5 OR-set law** (tags): concurrent add + remove-of-unobserved → present.
 - **I6 LWW law:** register outcome depends only on linearized order.
 - **I7 Conflict lifecycle:** same-non-null-base siblings persist until
@@ -726,9 +722,10 @@ a cycle is an acceptance criterion (§14).
   `c/<id>/path`, so derivability requires no information outside `c/`.
 - **I9 Face determinism:** converged peers emit byte-identical bundles
   (including `index.md`, `log.md`, conflicted copies).
-- **I10 Governance:** revoked-writer ops after the causal revocation point,
-  unauthorized governance ops, and policy-violating ops never mutate `c/`;
-  the applied/rejected partition is replay-stable.
+- **I10 Governance:** ops from a writer with no `gov/writer/<key>` record,
+  revoked-writer ops after the causal revocation point, unauthorized
+  governance ops, and policy-violating ops never mutate `c/`; the
+  applied/rejected partition is replay-stable.
 - **I11 Roundtrip:** materialize → ingest into a fresh vault (generation cycle)
   preserves every live concept's `_id`, `type`, fields, tags, path, and
   head body byte-for-byte.
