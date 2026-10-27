@@ -1,8 +1,15 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.6 (2026-10-27). RFC 2119
+**Status:** Normative build instruction, v1.7 (2026-10-27). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.6 makes an autobee grant follow every `AddWriter` op:
+**Changelog:** v1.7 makes the per-writer ordinal the node's position: the
+actual seq of a node is `node.length - 1`, its position in its writer's
+core, and `seen/<writerKey>` holds the last folded position plus one.
+Every clock entry is a position, and the store builds no clock entry from
+substrate heads. A node that never reaches apply, such as an empty block,
+still takes a position, so the seqs of a writer's ops can have gaps (§3,
+§4, §6, §8).
+v1.6 makes an autobee grant follow every `AddWriter` op:
 apply calls `host.addWriter(key, { weight: 0 })` for every `AddWriter` op
 it folds, accepted or rejected, before any check that can reject it. okf
 membership comes only from `gov/`. The uniform weight is 0 (§8).
@@ -137,7 +144,12 @@ SetWriterPolicy { key, namespacePrefixes, rateCeiling }
 ```
 
 - Every op carries `clock` (the writer's observed vector clock, op payload)
-  — required for causal revocation (§8; vault-ld §8.3 ancestry).
+  — required for causal revocation (§8; vault-ld §8.3 ancestry). Each
+  entry is a position (below). For another writer, the entry is the last
+  position of that writer in the issuer's folded view, that is its
+  `seen/` value minus one. The self entry is the op's own position. The
+  store builds every entry from okf's view and its own local core. It
+  reads no substrate head.
 - Every op carries `at`: the writer's wall-clock milliseconds at append
   time, encoded in the op payload. `at` is informational: never an input to
   merge, ordering, or conflict detection (I1); it is the sole source for
@@ -149,17 +161,25 @@ SetWriterPolicy { key, namespacePrefixes, rateCeiling }
   seq), never read from the payload; no op encodes its own tag. Only
   `RemTag.tags` and `ResolveConflict.keep`/`supersede` carry *references to
   other ops'* tags/hashes, and those are citations, not
-  self-identifications. The per-writer ordinal fallback is the view-kept
-  seen-count (top-level `seen/` family, incremented for every node
-  regardless of disposition — vault-ld §8.2/§8.4 ancestry). **Resolved
-  (delivery):** although autobee@1.0.10 does expose a per-node `length`,
-  apply derives position from the view-kept `seen/` count rather than any
-  transport-exposed seq — core is transport-agnostic, and §8's unforgeable-
-  position rule (`seqAtRemoval`, `forged-clock`) MUST bind to the same
-  ordinal apply uses for `flag/rejected` keys. Under autobee's
-  per-writer FIFO delivery the seen-count equals the node seq; a future
-  substrate exposing a stable per-writer index would be a new DEVIATIONS.md
-  entry.
+  self-identifications.
+- **The per-writer ordinal is the node's position.** The actual seq of a
+  node is its 0-based position in its writer's core: `node.length - 1`.
+  The transport documents `node.length` as the position in the writer's
+  core (autobee@2.12.1 `README.md`, Apply). The position is unforgeable,
+  the same on every peer, and stable under reorders. Apply MUST take the
+  seq from the position for every node, whatever its disposition: for the
+  `tag`, for `flag/rejected/<writerKey>/<seq>`, for the §6 mint, and for
+  the §8 position rules (`seqAtRemoval`, `forged-clock`). Apply records
+  the last position plus one in `seen/<writerKey>` (§4). A node that never
+  reaches apply, such as an empty block, still takes a position. So the
+  seqs of one writer's ops can have gaps, and `seen/<writerKey>` can skip.
+  A node without a positive integer `length` breaks the transport
+  contract: apply throws, and the node is never an op rejection.
+- The writer's store takes the seq of a new op right before it encodes
+  the op: the length of its local core, or one past the seq of its
+  previous append when that node is not in the core yet. Its appends are
+  serialized. The seq never depends on how far apply has folded the local
+  core.
 - Strings are NFC-normalized before keying, hashing, or comparison (§3.1 of
   the vault-ld spec is copied semantics; `canonical.js` is the copied code).
 - Limits, fixed check order, single recorded reason. Pre-decode: op ≤
@@ -197,7 +217,7 @@ log/<ordinal>                   append-only narration records -> log.md (§9)
 flag/conflict|clobber|staletag|pathcollision|writeafterdelete|undelete|rejected|squat/...
                                 (no `copydetect` family: no op writes one —
                                 copy-splits surface as an ingest event, §9)
-seen/<writerKey>                per-writer ordinal (bookkeeping)
+seen/<writerKey>                last folded position + 1 (bookkeeping, §3)
 gov/writer/<key>                { indexer, namespacePrefixes, rateCeiling }
 gov/removed/<key>               revocation clock + seqAtRemoval (§8)
 rate/<writerKey>                token-bucket state
@@ -316,7 +336,8 @@ saga is the cautionary tale). The rules are frozen:
   `^[0-9a-f]{2,128}$` after NFC. Because mint ids are `writerKey || seq`
   (both public, hence predictable), adoption of an id whose writerKey
   prefix equals any current or former writer's key with `seq >=` that
-  writer's seen-count is rejected (`flag/rejected`, reason
+  writer's `seen/` value (its last folded position plus one, §3) is
+  rejected (`flag/rejected`, reason
   `mint-collision-risk`), and an adopted id exactly equal to a 64-hex
   writer key is likewise rejected `mint-collision-risk` (empty seq
   suffix). Generation-cycle adoption never trips this rule because writer
@@ -431,13 +452,17 @@ saga is the cautionary tale). The rules are frozen:
   every peer so the clock rule can run uniformly. The revoked writer's own
   store refuses further local appends. The claimed clock is cross-checked
   against unforgeable position: `gov/removed/<key>` also records
-  `seqAtRemoval` = the revocation clock's entry for the removed writer.
-  Any node from that writer whose actual node position has
-  `seq > seqAtRemoval` is rejected (reason `revoked`) **regardless of its
-  claimed clock**; the claimed-clock strict-precedence test applies only
-  to the (bounded) window of ops at `seq <= seqAtRemoval` still in flight.
-  Additionally, apply rejects any op whose claimed self-clock entry does
-  not equal its actual seq (reason `forged-clock`).
+  `seqAtRemoval` = the revocation clock's entry for the removed writer,
+  which is the last position of that writer that the remover had folded
+  (§3). Any node from that writer whose actual seq, its position
+  `node.length - 1`, is above `seqAtRemoval` is rejected (reason
+  `revoked`) **regardless of its claimed clock**. The claimed-clock
+  strict-precedence test applies only to the window of ops at
+  `seq <= seqAtRemoval` that sort after the removal. Every entry of every
+  clock is a position, so `seqAtRemoval` and the seq of an op have the
+  same unit. Additionally, apply rejects any op whose claimed self-clock
+  entry does not equal its actual seq, its position (reason
+  `forged-clock`).
 - **An autobee grant follows every `AddWriter` op.** Apply MUST call
   `host.addWriter(key, { weight: 0 })` for every `AddWriter` op it folds,
   whether it accepts or rejects the op. The call comes right after a
@@ -462,7 +487,7 @@ saga is the cautionary tale). The rules are frozen:
   is a writer with no `gov/writer/<key>` record at the op's linearized
   position, is rejected (`flag/rejected/<writerKey>/<seq>`, reason
   `not-a-writer`). It never reaches the content pipeline, takes no rate
-  token, and mutates no `c/` key (I10). `seen/<writerKey>` still counts it
+  token, and mutates no `c/` key (I10). `seen/<writerKey>` moves past it
   (§3), so the §6 `mint-collision-risk` rule protects that key's future
   mints. Admission is not retroactive: the `AddWriter` revives none of the
   writer's earlier rejected ops, and only its later ops take effect. The
