@@ -21,12 +21,16 @@
 // replication state (I1). `at` is copied from op payloads verbatim and
 // never compared or ordered on.
 //
-// Per-writer ordinal (SPEC §3): the view-kept seen-count `seen/<W>` —
-// incremented for every node from W regardless of disposition — is the
-// single ordinal source; the actual seq of a node is its prior seen-count.
-// autobee's node does expose `length` (lib/writers.js createNode), but core
-// stays transport-agnostic and derives position from the stream itself;
-// recorded in DEVIATIONS.md.
+// Per-writer ordinal (SPEC §3, AD4): the actual seq of a node is its
+// position in its writer's core, node.length - 1. The transport documents
+// node.length as the "position in the writer's core" (autobee@2.12.1
+// README, Apply). autobee sets it to the core length after the node
+// (lib/writers.js:571-579 for a replicated node, :332 and :748 for a local
+// one). The position is unforgeable, the same on every peer and stable
+// under reorders. seen/<W> holds the last folded position plus one. A node
+// that never reaches apply still takes a position: autobee passes only the
+// nodes with a non-empty value to apply (index.js:1444). So the seqs of a
+// writer's ops can have gaps.
 import { createHash } from 'node:crypto'
 import * as K from './keyspace.js'
 import { nfc, canonicalArray, valuesEqual, stableStringify } from './canonical.js'
@@ -76,6 +80,21 @@ function keyHex(key) {
 function keyBuf(key) {
   if (key instanceof Uint8Array) return Buffer.from(key.buffer, key.byteOffset, key.byteLength)
   return Buffer.from(String(key), 'hex')
+}
+
+/**
+ * §3 (AD4): the 0-based position of a node in its writer's core. The
+ * transport sets node.length to the core length after the node, so a node
+ * without a positive integer length breaks the transport contract. That
+ * throws, also out of containThrow, and autobee closes on a throw from
+ * apply (README, append; index.js:669-690). It is never an op rejection.
+ */
+function positionOf(node) {
+  const len = node.length
+  if (!Number.isSafeInteger(len) || len < 1) {
+    throw new TypeError(`node.length must be a positive integer, got ${len}`)
+  }
+  return len - 1
 }
 
 function u64le(n) {
@@ -332,9 +351,10 @@ class Applier {
     this.pos = ((await this.val(K.ordGlobal())) ?? 0) + 1
     this.put(K.ordGlobal(), this.pos)
 
-    // §3: per-writer seen-count, incremented for EVERY node regardless of
-    // disposition. The node's actual seq is the prior count.
-    const seq = (await this.val(K.seen(W))) ?? 0
+    // §3 (AD4): the node's actual seq is its position in its writer's
+    // core. seen/<W> becomes the last position plus one, for EVERY node
+    // regardless of disposition.
+    const seq = positionOf(node)
     this.put(K.seen(W), seq + 1)
 
     // §3 fixed-order checks; the FIRST violated records the single reason.
@@ -365,8 +385,8 @@ class Applier {
     }
 
     // §8: every op carries its writer's observed clock; the claimed
-    // self-entry must equal the actual seq (cross-check against
-    // unforgeable position).
+    // self-entry must equal the actual seq, the node's unforgeable
+    // position (§3).
     const clock = normalizeClock(op.clock)
     if (!clock || (clock[W] ?? -1) !== seq) return this.reject(W, seq, 'forged-clock')
 
@@ -430,16 +450,17 @@ class Applier {
 
   /**
    * §3 last-resort containment: an op whose handling threw is reduced to a
-   * deterministic rejection. Re-derives the per-node ord and seq from the
+   * deterministic rejection. Re-derives the per-node ord from the
    * (unmutated, because the throwing tx was discarded) view so ordinals stay
-   * monotone and identical on every peer, then records flag/rejected. Pure
-   * over the linearized prefix — no clock, no randomness (I1).
+   * monotone and identical on every peer, takes the seq from the node's
+   * position (AD4), then records flag/rejected. Pure over the linearized
+   * prefix — no clock, no randomness (I1).
    */
   async containThrow(node) {
     const W = keyHex(node.key)
     const pos = ((await this.val(K.ordGlobal())) ?? 0) + 1
     this.put(K.ordGlobal(), pos)
-    const seq = (await this.val(K.seen(W))) ?? 0
+    const seq = positionOf(node)
     this.put(K.seen(W), seq + 1)
     this.put(K.flagRejected(W, seq), { reason: 'apply-error' })
   }
@@ -537,8 +558,9 @@ class Applier {
     }
     const clock = normalizeClock(op.clock) ?? {}
     // §8: seqAtRemoval = the revocation clock's entry for the removed
-    // writer; absent entry → -1 (the remover observed none of the target's
-    // ops, so every target seq is post-revocation).
+    // writer, the last position of it that the remover had folded (§3);
+    // absent entry → -1 (the remover folded none of the target's ops, so
+    // every target seq is post-revocation).
     this.put(K.govRemoved(target), { clock, seqAtRemoval: clock[target] ?? -1 })
     // §8 "causal, in-band, never positional": host.removeWriter is
     // deliberately NOT called — every node must keep linearizing on every
@@ -677,7 +699,9 @@ class Applier {
   /**
    * §6: mint ids are `writerKey || seq` (both public, hence predictable),
    * so adopting an id shaped like a current/former/seen writer's future
-   * mint — or exactly equal to a 64-hex writer key — is rejected.
+   * mint — or exactly equal to a 64-hex writer key — is rejected. seen/<W>
+   * is W's last folded position plus one (§3), so every future op of W, and
+   * so every future mint, has a seq at or above it.
    */
   async mintCollisionRisk(id) {
     if (id.length === 64) return this.writerKnown(id)
@@ -689,8 +713,8 @@ class Applier {
     // non-minimal suffix can never be produced by a mint.
     if (!/^(0|[1-9a-f][0-9a-f]*)$/.test(suffix)) return false
     const seqVal = BigInt('0x' + suffix)
-    const seenCount = BigInt((await this.val(K.seen(prefix))) ?? 0)
-    return seqVal >= seenCount
+    const nextPosition = BigInt((await this.val(K.seen(prefix))) ?? 0)
+    return seqVal >= nextPosition
   }
 
   async writerKnown(k) {

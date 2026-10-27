@@ -151,13 +151,13 @@ export class Bundle extends EventEmitter {
     this._applyBarrier = new Promise((resolve) => {
       this._applyBarrierResolve = resolve
     })
-    this._nextSeq = 0
+    this._nextSeq = 0 // §3 (AD4): the position of the next local node, see _nextPosition()
     this._foldedSeq = 0
     this._appendChain = Promise.resolve()
     this._backpressure = normalizeBackpressure(opts.backpressure)
     this._trackAcks = !!this._backpressure
     this._ackSeen = false // ever folded another writer's op (multiwriter)
-    this._bestAck = 0 // max count of OUR ops any peer op's clock has cited
+    this._bestAck = 0 // 1 + the highest position of ours that a peer op's clock has cited
     this._ackWaiters = new Set()
     this._closing = false
     this._readying = null
@@ -275,8 +275,9 @@ export class Bundle extends EventEmitter {
       // (lib/trusted.js), and skip apply for the whole prefix.
       fastForward: false,
       // No empty "ack" nodes while trusted and 32 flushes behind
-      // (index.js _appendAck). This does not stop the one ack autobee
-      // appends after a reindex, so _nextSeq is seeded from seen/ below.
+      // (index.js _appendAck). An ack takes a position in the local core,
+      // and the seq of an op is its position (§3, AD4), so an ack shifts
+      // no seq.
       ackThreshold: Infinity
     })
     this.db.on('error', (err) => this.emit('error', err))
@@ -314,14 +315,13 @@ export class Bundle extends EventEmitter {
 
     this.metadata = meta
     if (!this._coreApply) this._setApply(meta)
-    // §8 forged-clock: the next op's seq is the count apply keeps in
-    // seen/<self>, the same ordinal apply checks the self clock entry
-    // against. local.length is not that count on autobee@2: empty ack
-    // nodes land in the local core but never reach apply (index.js
-    // _applyBatch passes only non-empty values). update() first, so every
-    // local node already in the core has been folded.
+    // Fold what the cores already hold, so the view is current when open
+    // resolves.
     await this.db.update()
-    this._nextSeq = (await this.val(K.seen(b4a.toString(this.db.local.key, 'hex')))) ?? 0
+    // §3, §8 forged-clock (AD4): the next op's seq is the position its node
+    // takes in the local core, which starts at the core's length. It does
+    // not depend on how far apply has folded the local core (G10).
+    this._nextSeq = this.db.local.length
     this._foldedSeq = this._nextSeq
     // A reopen applies nothing, so the update handler has not run yet.
     await this._refreshIndexer()
@@ -378,7 +378,7 @@ export class Bundle extends EventEmitter {
     const clock = normalizeClock(dec.op.clock)
     if (!clock) return
     const seq = clock[b4a.toString(this.db.local.key, 'hex')]
-    // okf clocks carry 0-based seqs; the watermark is in op-count units.
+    // okf clocks carry 0-based positions (§3); the watermark is the next one.
     if (typeof seq === 'number' && seq + 1 > this._bestAck) this._bestAck = seq + 1
   }
 
@@ -501,7 +501,8 @@ export class Bundle extends EventEmitter {
   /**
    * §10 checkpoint material for the NEXT generation's metadata:
    * `{ viewHash, writerLengths }` — writerLengths from the view's seen/
-   * family (the §3 per-writer ordinal source), sorted by writer key.
+   * family (each writer's last folded position plus one, §3), sorted by
+   * writer key.
    */
   async checkpoint() {
     const vh = await this.snapshotHash()
@@ -517,12 +518,13 @@ export class Bundle extends EventEmitter {
 
   /**
    * Encode and append one §3 op. Fills the common fields when absent:
-   * `clock` (the writer's observed vector clock — the folded seen/ counts
-   * merged with the autobee DAG heads, self entry pinned to this op's own
-   * seq per the §8 forged-clock rule) and `at` (informational wall-clock
-   * ms, §3). Returns `{ seq, tag }` — `tag` is the §3 opId apply will
-   * derive (`writerKey || seq`), which for a minting `create-concept` is
-   * the concept's `_id`.
+   * `clock` (the writer's observed vector clock — the last folded position
+   * of each writer in okf's view, self entry pinned to this op's own seq
+   * per the §8 forged-clock rule, see clock()) and `at` (informational
+   * wall-clock ms, §3). Returns `{ seq, tag }` — `seq` is the position of
+   * the op's node in the local core (§3), and `tag` is the §3 opId apply
+   * will derive (`writerKey || seq`), which for a minting `create-concept`
+   * is the concept's `_id`.
    *
    * Appends are internally serialized (one at a time): the §8 forged-clock
    * rule pins each op's self-clock entry to its actual local position, so
@@ -562,11 +564,12 @@ export class Bundle extends EventEmitter {
     await this.ready()
     this._assertWritable() // fail fast, before any gate waits
     const bp = backpressure === undefined ? this._backpressure : normalizeBackpressure(backpressure)
+    this._nextSeq = this._nextPosition() // the gates count positions
     if (bp) {
       this._trackAcks = true
       await this._admit(bp)
     }
-    const seq = this._nextSeq
+    const seq = this._nextPosition()
     // §8 app-level containment: once this peer's own revocation record is
     // in the view, any new local op is uniformly rejected 'revoked' by
     // every peer's apply — refuse the append instead of growing the log
@@ -579,11 +582,39 @@ export class Bundle extends EventEmitter {
     const buf = encodeOp(type, op) // may throw on a bad payload: seq not yet burned
     // Again after the awaits above: a fold can take the grant away.
     this._assertWritable()
-    // Appends are serialized (append()), so the seq moves only once the
-    // node is in. A plain append: autobee runs with optimistic: false.
+    // Appends are serialized (append()), so the seq moves only once
+    // autobee holds the node. A plain append: autobee runs with
+    // optimistic: false.
     await this.db.append(buf)
     this._nextSeq = seq + 1
     return { seq, tag: makeTag(this.db.local.key, seq) }
+  }
+
+  /**
+   * §3, §8 forged-clock (AD4): the position that the next local node takes
+   * in the local core (db.local, documented). autobee gives a new local
+   * node the core length plus the count of local nodes it has not yet
+   * written to the core (lib/writers.js:332, :748). The Bundle is the only
+   * writer of the local core, and its appends are serialized (append()):
+   * - A plain db.append resolves with the drain that applies its node and
+   *   writes it to the core (index.js:1575, :633-645, :766-831, :824;
+   *   lib/writers.js:137-147, :768-789). So the core length counts every
+   *   earlier node.
+   * - The drain cannot write a node that waits behind an earlier local
+   *   node, such as a node of the local core that a reopen cannot fold yet
+   *   because it links a node that is not in the system (lib/writers.js:
+   *   602-605, :673-723). Then the core length is behind, and _nextSeq,
+   *   one past the seq of the last append, holds the position.
+   * - autobee's only other local append is the empty ack
+   *   (index.js:1297-1314, :1312). okf's configuration never triggers it.
+   *   A threshold ack needs a head that is not trusted (index.js:1305,
+   *   :1316-1330), and with no trust hook every key is trusted
+   *   (lib/trusted.js:30-32). The ack after a reindex needs a system or
+   *   view core below manifest version 3 (index.js:693, :707, :738-751),
+   *   and this release creates both at version 3 (index.js:213-221).
+   */
+  _nextPosition() {
+    return Math.max(this.db.local.length, this._nextSeq)
   }
 
   /**
@@ -644,13 +675,13 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * The §3 clock payload: [[writerKeyHex, seq], ...] (0-based seqs),
-   * sorted by key. Entries merge two observation sources:
-   * - the view's seen/ family — the complete per-writer fold counts, so a
-   *   remove-writer's clock always cites the target's observed position
-   *   (§8: `seqAtRemoval` derives from exactly this entry);
-   * - the autobee DAG heads (db.system.heads), which can run ahead of the
-   *   committed view snapshot between drains.
+   * The §3 clock payload: [[writerKeyHex, seq], ...] (0-based positions),
+   * sorted by key. Every entry comes from okf's view: seen/<W> is W's last
+   * folded position plus one (§3, AD4), so the entry is that position. A
+   * remove-writer's clock cites the target's last folded position (§8:
+   * `seqAtRemoval` derives from exactly this entry), in the same unit as
+   * the seq of every op (G8). No entry comes from substrate state that the
+   * view has not folded.
    * The self entry is pinned to `seq`, the op's own 0-based position: §8's
    * forged-clock rule rejects any op whose claimed self entry differs from
    * its actual seq.
@@ -662,13 +693,6 @@ export class Bundle extends EventEmitter {
         const w = K.parseKey(key)[1]
         if (Number.isInteger(value) && value > 0) entries.set(w, value - 1)
       }
-    }
-    const heads = (this.db && this.db.system && this.db.system.heads) || []
-    for (const h of heads) {
-      if (!h.length) continue
-      const w = b4a.toString(h.key, 'hex')
-      const s = h.length - 1
-      if ((entries.get(w) ?? -1) < s) entries.set(w, s)
     }
     if (this.db && this.db.local) {
       const self = b4a.toString(this.db.local.key, 'hex')

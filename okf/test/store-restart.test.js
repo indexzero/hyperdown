@@ -34,33 +34,31 @@ test('restart from disk: reopened view equals the pre-close view (I3)', async (t
   assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['Back again'])
 })
 
-test('an empty block in the local core does not shift the seq after restart (§8 forged-clock)', async (t) => {
-  // autobee@2 can append empty "ack" nodes to the local writer core
-  // (index.js _appendAck: when acking, and once after a reindex). apply
-  // never sees them (index.js _applyBatch: only non-empty values reach
-  // apply), so they never count in seen/<self>, but they do count in
-  // local.length. Append one exactly as _appendAck does.
-  const dir = await tmpDir('restart-ack')
+test('an empty block at the tail of the local core takes a position, so the seq after restart skips it (§3, §8 forged-clock)', async (t) => {
+  // AD4: the seq of an op is its node's position in the local core,
+  // node.length - 1. An empty block takes a position and never reaches
+  // apply (autobee index.js:1444: only non-empty values reach apply). Any
+  // writer can append one with the documented db.append. okf's own
+  // configuration never appends one (store-ordinal.test.js, G13).
+  const dir = await tmpDir('restart-empty')
   const a = await Bundle.init(dir)
-  const { tag: id } = await a.createConcept('guides/ack', 'guide')
-  await a.setField(id, 'title', ['Before the ack'])
-  const db = a.db
-  const links = db.system.getLinks(db.local.key)
-  const ts = Math.max(Date.now(), db.system.timestamp)
-  db.writers.appendLocal(null, ts, { start: 0, end: 0 }, links, false, null, null, null, 0)
+  const { tag: id } = await a.createConcept('guides/empty', 'guide')
+  await a.setField(id, 'title', ['Before the empty block'])
+  await a.db.append(Buffer.alloc(0)) // position 2, the last block before the restart
   await a.update()
   const self = a.localKey.toString('hex')
-  assert.equal(db.local.length, 3, 'two ops plus one empty block in the local core')
-  assert.equal(await a.val(K.seen(self)), 2, 'apply counted only the two ops')
+  assert.equal(a.db.local.length, 3, 'two ops plus one empty block in the local core')
+  assert.equal(await a.val(K.seen(self)), 2, 'apply saw only the two ops')
   await a.close()
 
   const a2 = await Bundle.open(dir)
   t.after(() => a2.close())
-  const r = await a2.setField(id, 'title', ['After the ack'])
-  assert.equal(r.seq, 2, 'seq continues from what apply counted, not from local.length')
+  const r = await a2.setField(id, 'title', ['After the empty block'])
+  assert.equal(r.seq, 3, 'seq continues from local.length, the position of the next node')
   await a2.update()
   assert.equal(await a2.val(K.flagRejected(self, r.seq)), undefined, 'not rejected forged-clock')
-  assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['After the ack'])
+  assert.equal(await a2.val(K.seen(self)), 4, 'seen/<self> is the last position plus one')
+  assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['After the empty block'])
 })
 
 test('fresh peer rebuild from the log equals the restarted view (I3)', async (t) => {
