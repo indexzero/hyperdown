@@ -25,10 +25,11 @@ shared multi-writer log; the bundle on disk and the queryable view are
 generated faces of that log, never authoritative
 ([SPEC §2](./SPEC.md)).
 
-auto-okf is the lighter sibling of [Vault-LD](../vault-ld/README.md): same
-substrate, no RDF. Its vocabulary (`concept`, `bundle`, `vault`, `writer`,
-`ingest`) is pinned in [GLOSSARY.md](./GLOSSARY.md); when a term feels
-overloaded, the glossary is the one place it is fixed.
+auto-okf is the lighter sibling of [Vault-LD](../vault-ld/README.md): no
+RDF, and its own store on autobee@2.12.1 ([`@auto-okf/store`](./store)).
+Its vocabulary (`concept`, `bundle`, `vault`, `writer`, `ingest`) is
+pinned in [GLOSSARY.md](./GLOSSARY.md); when a term feels overloaded, the
+glossary is the one place it is fixed.
 
 ## Install
 
@@ -37,7 +38,17 @@ pnpm add @auto-okf/store @auto-okf/faces   # and @auto-okf/cli for the auto-okf 
 ```
 
 Node.js ≥ 20. Inside this repository: `pnpm install` at the root sets up
-the whole workspace.
+the whole workspace. A consumer must make `hypercore-crypto` and `b4a`
+resolvable for the store's dependencies (see
+[`@auto-okf/store`](./store/README.md#install)).
+
+This release writes vault metadata version 2 and opens only vaults with
+metadata version 2: vaults of an earlier release are not carried over. Its
+peers find each other on the `auto-okf/2` hyperswarm topic. A joining
+peer's ops take effect only after an indexer has admitted it with
+`add-writer`, and until autobee has added it, its store refuses every
+append (`VAULT_NOT_WRITABLE`). See
+[`@auto-okf/store`](./store/README.md#vaults-this-release-opens).
 
 ## The flagship example: four agents write a session bundle
 
@@ -92,9 +103,10 @@ a fresh vault with `_id` adoption — an operator act, never an op (§10).
 | [`@auto-okf/core`](./core) | the op wire codec, the pure deterministic `apply`, the view keyspace, canonical forms |
 | [`@auto-okf/store`](./store) | vault lifecycle on autobee: op emission, §8 governance, metadata pinning (the append-only constant + generation chain), swarm replication |
 | [`@auto-okf/faces`](./faces) | materialize (bundle + `index.md`/`log.md`), the ingest watcher, the `wanted/` demand index, generation-cycle compact |
-| [`@auto-okf/cli`](./cli) | `auto-okf init/join/add-writer/remove-writer/materialize/ingest/watch/wanted/flags/resolve/undelete/compact` |
+| [`@auto-okf/cli`](./cli) | `auto-okf init/join/add-writer/remove-writer/materialize/ingest/watch/status/wanted/flags/resolve/undelete/compact` |
 
-Each package README is usage-first with the full API surface.
+Each package README is usage-first, with a table of its API (for the CLI,
+its commands).
 
 ## Security model
 
@@ -102,7 +114,12 @@ There are two adversaries, because okf has two doors: a writer appending
 arbitrary bytes to its own core, and anyone who can write files into the
 watched bundle directory. Every log-side defense lives in `apply`; the
 disk side is bounded by the emission manifest and the ingest rules. The
-full trust story, including what is guaranteed versus best-effort, is
+substrate still decides which nodes reach `apply`, and in which order. The
+store configures autobee so that an outsider's nodes reach no `apply`.
+A vault trusts its members with liveness: a malicious member key can kill
+each peer that folds its node (G2) or reorder concurrent writes (G5), and
+okf cannot stop that without changing autobee. The full trust story,
+including what is guaranteed versus best-effort and each residual, is
 [SECURITY_MODEL.md](./SECURITY_MODEL.md).
 
 ## Running the tests
