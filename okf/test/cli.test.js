@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
 import { keyspace as K } from '../core/index.js'
+import { compact } from '../faces/index.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(ROOT, 'okf', 'cli', 'bin', 'auto-okf.js')
@@ -495,6 +496,168 @@ test('flags lists a seeded conflict; compact refuses until resolved; resolve cle
   assert.equal(compacted.code, 0, compacted.stderr)
   assert.match(compacted.stdout, /compacted .* -> .* \(generation [0-9a-f]{64}\)/)
   await access(join(base, 'generation2', 'okf-vault.json')) // fresh vault is pinned
+})
+
+// ---------- T17: compaction never drops encryption (decision 8) ----------
+
+const ENC_KEY = 'cd'.repeat(32) // the predecessor's key
+const NEW_KEY = 'ef'.repeat(32) // the fresh vault's key: compaction never carries a key over
+const SECRET = 'TOP-SECRET-PAYLOAD'
+
+/** The entries of a directory, sorted. */
+async function entries(dir) {
+  return (await readdir(dir)).sort()
+}
+
+/** The metadata that a vault directory pins. */
+async function pinned(dir) {
+  return JSON.parse(await readFile(join(dir, 'okf-vault.json'), 'utf8'))
+}
+
+/** Seed one concept whose body is SECRET. Returns its _id. */
+async function seedSecret(v) {
+  const { tag } = await v.createConcept('secret/plan', 'note')
+  await v.setBody(tag, null, SECRET)
+  await v.update()
+  return tag
+}
+
+/** An encrypted vault made by `auto-okf init --encryption-key`, with SECRET seeded. Returns its _id. */
+async function initEncrypted(storage) {
+  const init = await cli(['init', storage, '--encryption-key', ENC_KEY])
+  assert.equal(init.code, 0, init.stderr)
+  const v = await Bundle.open(storage)
+  try {
+    assert.equal(v.metadata.encrypted, true, 'setup: the vault must be encrypted')
+    return await seedSecret(v)
+  } finally {
+    await v.close()
+  }
+}
+
+/** The head body text of concept `id`. */
+async function headText(v, id) {
+  await v.update()
+  const head = await v.val(K.cBody(id))
+  const rev = head === undefined ? undefined : await v.val(K.cRev(id, head))
+  return rev ? rev.text : undefined
+}
+
+/**
+ * The stored blocks of the writer, system and view cores that hold
+ * `plain`. get({ raw: true }) returns the bytes at rest, not decrypted, as
+ * in store-encryption.test.js.
+ */
+async function rawHits(v, plain) {
+  const hits = []
+  const cores = { writer: v.db.local, system: v.db.system.bee.core, view: v.db.bee.core }
+  for (const [name, core] of Object.entries(cores)) {
+    for (let i = 0; i < core.length; i++) {
+      if ((await core.get(i, { raw: true })).includes(plain)) hits.push(`${name}/${i}`)
+    }
+  }
+  return hits
+}
+
+/** The read-back of a compacted vault: is it encrypted, can it read SECRET, and which raw blocks hold SECRET. */
+async function inspectSecret(v, id) {
+  return { encrypted: v.metadata.encrypted, text: await headText(v, id), rawHits: (await rawHits(v, Buffer.from(SECRET))).length > 0 }
+}
+
+test('T17: compact refuses an encrypted vault without --encryption-key by name, and creates nothing (s1.mjs A, G14)', async () => {
+  // scratch-D/s1.mjs scenario A: an encrypted vault compacted without a key
+  // gave an unencrypted vault and exit 0. No flag makes an unencrypted copy.
+  const base = await tmpDir('enc-refuse')
+  const storage = join(base, 'vault')
+  await initEncrypted(storage)
+  const before = await snapshotHash(storage)
+
+  const refused = await cli(['compact', storage, join(base, 'out')])
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr)
+  assert.match(refused.stderr, /^auto-okf compact: COMPACT_ENCRYPTION_KEY_REQUIRED: .*--encryption-key/m)
+  assert.doesNotMatch(refused.stderr, /plaintext\n/, 'no face was written, so no plaintext warning')
+  // An empty key is no key.
+  const empty = await cli(['compact', storage, join(base, 'out'), '--encryption-key', ''])
+  assert.notEqual(empty.code, 0, empty.stdout + empty.stderr)
+  assert.deepEqual(await entries(base), ['vault'], 'the refusal created no out-dir, face or stage')
+  assert.equal(await snapshotHash(storage), before, 'the refusal changed the predecessor')
+
+  // The in-process compact refuses by the same name, before it creates or writes anything.
+  const v = await Bundle.open(storage)
+  try {
+    for (const encryptionKey of [undefined, null]) {
+      await assert.rejects(
+        () => compact(v, { initBundle: Bundle.init, toDir: join(base, 'face'), vaultDir: join(base, 'out'), encryptionKey }),
+        (err) => err.code === 'COMPACT_ENCRYPTION_KEY_REQUIRED'
+      )
+    }
+  } finally {
+    await v.close()
+  }
+  assert.deepEqual(await entries(base), ['vault'], 'the in-process refusal created something')
+  assert.equal(await snapshotHash(storage), before)
+})
+
+test('T17: auto-okf compact --encryption-key makes an encrypted vault whose raw blocks lack the plaintext; an unencrypted control holds it', async () => {
+  const base = await tmpDir('enc-cli')
+  const storage = join(base, 'vault')
+  const id = await initEncrypted(storage)
+  const out = join(base, 'out')
+  const r = await cli(['compact', storage, out, '--encryption-key', NEW_KEY])
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal((await pinned(out)).encrypted, true)
+  const nu = await Bundle.open(out)
+  try {
+    assert.deepEqual(await inspectSecret(nu, id), { encrypted: true, text: SECRET, rawHits: false })
+  } finally {
+    await nu.close()
+  }
+
+  // The control: the same content in an unencrypted vault. Its compacted
+  // vault holds SECRET in its raw blocks, so the check above can see it.
+  const ctlStorage = join(base, 'control')
+  const ctl = await Bundle.init(ctlStorage)
+  const ctlId = await seedSecret(ctl)
+  await ctl.close()
+  const ctlOut = join(base, 'control-out')
+  const c = await cli(['compact', ctlStorage, ctlOut])
+  assert.equal(c.code, 0, c.stderr)
+  assert.equal((await pinned(ctlOut)).encrypted, false)
+  const cv = await Bundle.open(ctlOut)
+  try {
+    assert.deepEqual(await inspectSecret(cv, ctlId), { encrypted: false, text: SECRET, rawHits: true })
+  } finally {
+    await cv.close()
+  }
+})
+
+test('T17: the in-process compact with a key makes an encrypted vault whose raw blocks lack the plaintext; an unencrypted control holds it', async () => {
+  const base = await tmpDir('enc-lib')
+  const old = await Bundle.init(join(base, 'vault'), { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
+  const id = await seedSecret(old)
+  const res = await compact(old, {
+    initBundle: Bundle.init,
+    toDir: join(base, 'face'),
+    vaultDir: join(base, 'out'),
+    encryptionKey: Buffer.from(NEW_KEY, 'hex')
+  })
+  try {
+    assert.equal(res.ok, true)
+    assert.deepEqual(await inspectSecret(res.vault, id), { encrypted: true, text: SECRET, rawHits: false })
+  } finally {
+    await res.vault.close()
+    await old.close()
+  }
+
+  const ctl = await Bundle.init(join(base, 'control'))
+  const ctlId = await seedSecret(ctl)
+  const ctlRes = await compact(ctl, { initBundle: Bundle.init, toDir: join(base, 'control-face'), vaultDir: join(base, 'control-out') })
+  try {
+    assert.deepEqual(await inspectSecret(ctlRes.vault, ctlId), { encrypted: false, text: SECRET, rawHits: true })
+  } finally {
+    await ctlRes.vault.close()
+    await ctl.close()
+  }
 })
 
 test('undelete restores a tombstoned concept', async () => {

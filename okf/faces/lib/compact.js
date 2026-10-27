@@ -81,6 +81,12 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *                REFUSES (throws COMPACT_REFUSED) so live conflicts are never
  *                silently frozen into a new generation.
  *   encryptionKey  32-byte key for a private fresh vault (end to end).
+ *                REQUIRED when the predecessor is encrypted (its pinned
+ *                `metadata.encrypted`). Without it, compact refuses with
+ *                COMPACT_ENCRYPTION_KEY_REQUIRED, before it reads, creates
+ *                or writes anything. No option makes an unencrypted copy of an
+ *                encrypted vault. The key is never carried over from the
+ *                predecessor: the caller names the fresh vault's key.
  *   sign         async (checkpoint) => { signer, signature } (hex) — signs the
  *                predecessor checkpoint that anchors the generation chain (§10:
  *                operator-signed provenance, never verified here).
@@ -140,6 +146,16 @@ export async function compact(vault, opts = {}) {
   }
   if (!toDir) throw compactError('COMPACT_NO_TODIR', 'opts.toDir is required')
   if (!vaultDir) throw compactError('COMPACT_NO_VAULTDIR', 'opts.vaultDir is required')
+  // A key is never carried over, and no option makes an unencrypted copy of
+  // an encrypted vault. materialize is the plaintext export.
+  if (vault.metadata.encrypted === true && (encryptionKey === undefined || encryptionKey === null)) {
+    throw compactError(
+      'COMPACT_ENCRYPTION_KEY_REQUIRED',
+      'the predecessor vault is encrypted, and compaction never makes an unencrypted copy: ' +
+        'give the fresh vault an encryption key (opts.encryptionKey, auto-okf compact --encryption-key <hex64>). ' +
+        'materialize is the plaintext export'
+    )
+  }
   // Staging MUST live OUTSIDE vaultDir: `new Corestore(vaultDir)` clears the
   // vault directory on init, so a nested staging dir would be wiped before
   // ingest ever reads it (proven under sslop/033).

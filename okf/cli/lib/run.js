@@ -220,7 +220,7 @@ function buildCli() {
       arg('<out-dir>', 'directory for the fresh generation vault'),
       flag('--force', 'compact despite open conflict/pathcollision flags'),
       flag('--face <dir>', 'hydrated face directory (default: <out-dir>.face)'),
-      flag('--encryption-key <hex64>', 'encrypt the fresh vault with this key (64 hex chars)'),
+      flag('--encryption-key <hex64>', 'encrypt the fresh vault with this key (64 hex chars; required for an encrypted vault)'),
       requiredArgs('<dir>', '<out-dir>')
     ),
     sub(
@@ -740,7 +740,12 @@ function compactWarningLine({ path, message }) {
   return `warning: ${path}: ${message}\n`
 }
 
-/** compact's fresh vault is encrypted only when asked: a key is never inherited. */
+/**
+ * compact's fresh vault is encrypted only when asked: a key is never
+ * inherited. compact refuses an encrypted predecessor without a key
+ * (COMPACT_ENCRYPTION_KEY_REQUIRED, exit 1), and no flag makes an unencrypted
+ * copy. The refusal sits in compact itself, so a library caller gets it too.
+ */
 function encryptionOpt(flags) {
   return flags.encryptionKey ? { encryptionKey: hexKey(flags.encryptionKey, '--encryption-key') } : {}
 }
