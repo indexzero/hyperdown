@@ -149,6 +149,7 @@ export class Bundle extends EventEmitter {
     this._ackWaiters = new Set()
     this._closing = false
     this._readying = null
+    this._isIndexer = false // okf authority from gov/ (see isIndexer)
 
     // §13 Vault API: writer governance namespace (thin over the §8 ops).
     this.writers = {
@@ -238,6 +239,10 @@ export class Bundle extends EventEmitter {
       // Both the read snapshot (db.view) and apply's working view go
       // through the adapter, so reads and apply share one surface.
       open: (bee) => new ViewAdapter(bee),
+      // Called after apply once db.view holds the new state (README
+      // `update (view, changes)`; index.js:1051-1058), so isIndexer
+      // follows gov/ as closely as db.writable follows autobee.
+      update: () => this._refreshIndexer(),
       encryptionKey: this._opts.encryptionKey || null,
       encrypted,
       keyPair: this._opts.keyPair,
@@ -299,7 +304,24 @@ export class Bundle extends EventEmitter {
     await this.db.update()
     this._nextSeq = (await this.val(K.seen(b4a.toString(this.db.local.key, 'hex')))) ?? 0
     this._foldedSeq = this._nextSeq
+    // A reopen applies nothing, so the update handler has not run yet.
+    await this._refreshIndexer()
     return this
+  }
+
+  /**
+   * isIndexer from okf authority: gov/writer/<self> with indexer: true and
+   * no gov/removed/<self> in db.view. That is core apply's live-indexer
+   * rule (core/lib/apply.js:442). Only then does a new governance op from
+   * this writer pass the revocation and issuer checks of core apply
+   * (core/lib/apply.js:370-383).
+   */
+  async _refreshIndexer() {
+    if (this._closing || !this.db || !this.db.local) return
+    const self = b4a.toString(this.db.local.key, 'hex')
+    const rec = await this.val(K.govWriter(self))
+    const removed = await this.val(K.govRemoved(self))
+    this._isIndexer = !!rec && rec.indexer === true && removed === undefined
   }
 
   _setApply(meta) {
@@ -374,8 +396,12 @@ export class Bundle extends EventEmitter {
     return !!this.db && this.db.writable
   }
 
+  /**
+   * okf authority (§8), never autobee's isIndexer: refreshed from gov/
+   * after every view update and at open (_refreshIndexer).
+   */
   get isIndexer() {
-    return !!this.db && this.db.isIndexer
+    return this._isIndexer
   }
 
   get encryptionKey() {

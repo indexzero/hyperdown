@@ -137,6 +137,66 @@ test('setWriterPolicy round trip: namespace prefixes enforced at apply', async (
   assert.ok(await converged([a, b]), 'policy decisions are uniform across peers')
 })
 
+test('isIndexer answers from gov/: a live gov/writer record with indexer true', async (t) => {
+  // okf authority, never autobee's weight: a writer is an indexer while
+  // gov/writer/<self> says indexer: true and no gov/removed/<self> exists
+  // (the live-indexer rule of core apply).
+  const aDir = await tmpDir('idx-a')
+  const a = await Bundle.init(aDir)
+  const b = await Bundle.join(await tmpDir('idx-b'), a.key)
+  const c = await Bundle.join(await tmpDir('idx-c'), a.key)
+  const open = new Set([a, b, c])
+  const unpairAB = pair(a, b)
+  const unpairAC = pair(a, c)
+  t.after(async () => {
+    unpairAB()
+    unpairAC()
+    for (const v of open) await v.close()
+  })
+  const bHex = b.localKey.toString('hex')
+  const cHex = c.localKey.toString('hex')
+
+  await a.createConcept('idx/seed', 'note') // the first op seeds gov/writer/<genesis>
+  await a.update()
+  assert.equal(a.isIndexer, true, 'genesis is the first indexer')
+
+  await a.writers.add(b.localKey, { indexer: true })
+  await a.writers.add(c.localKey, { indexer: false })
+  assert.ok(
+    await until(async () => {
+      await b.update()
+      await c.update()
+      return (await b.val(K.govWriter(bHex))) !== undefined && (await c.val(K.govWriter(cHex))) !== undefined
+    }),
+    'b and c fold their admissions'
+  )
+  assert.equal(b.isIndexer, true, 'b: admitted as an indexer')
+  assert.equal(c.isIndexer, false, 'c: admitted as a plain writer')
+
+  // revocation: gov/removed/<b> ends b's authority, and gov/writer/<b> stays
+  await a.writers.remove(b.localKey)
+  assert.ok(
+    await until(async () => {
+      await b.update()
+      return (await b.val(K.govRemoved(bHex))) !== undefined
+    }),
+    'b folds its revocation'
+  )
+  assert.equal((await b.val(K.govWriter(bHex))).indexer, true, 'the gov/writer record stays')
+  assert.equal(b.isIndexer, false, 'a revoked indexer is no longer an indexer')
+  await a.update()
+  assert.equal(a.isIndexer, true, 'genesis stays an indexer')
+
+  // a reopen answers from the view on disk, before any new apply
+  unpairAB()
+  unpairAC()
+  await a.close()
+  open.delete(a)
+  const a2 = await Bundle.open(aDir)
+  open.add(a2)
+  assert.equal(a2.isIndexer, true, 'genesis reopens as an indexer')
+})
+
 test('a writer added while genesis is offline sorts at 0 until genesis approves it', async (t) => {
   // autobee@2: a grant's ceiling is capped at the resolved weight of the
   // node that carries it (lib/system.js addWriter), and a writer's nodes
