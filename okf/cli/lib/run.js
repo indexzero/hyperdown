@@ -102,14 +102,16 @@ export async function run(argv) {
 
 /**
  * The text for an operational error. The store refuses every append until
- * an indexer has admitted this peer (VAULT_NOT_WRITABLE, §8), so that error
- * names the writer key and the step that admits it.
+ * autobee has added this peer's key as a writer (VAULT_NOT_WRITABLE, §8).
+ * That is substrate admission, not okf membership (store/lib/bundle.js
+ * _assertWritable). So the error names the writer key and the step that
+ * grants it: an indexer's add-writer.
  */
 function errorText(err) {
   if (err && err.code === 'VAULT_NOT_WRITABLE') {
     const key = err.writerKey ? ` ${err.writerKey}` : ''
     return (
-      'Not writable: no indexer has admitted this peer yet. ' +
+      'Not writable: autobee has not added this peer as a writer yet. ' +
       `Hand its writer key${key} to an indexer (\`auto-okf add-writer\`), ` +
       'then replicate and try again'
     )

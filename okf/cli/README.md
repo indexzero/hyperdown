@@ -110,7 +110,7 @@ finds an edit. After that it prints each refusal as a `watch error:` line
 and keeps watching. The CLI names the step:
 
 ```
-auto-okf ingest: Not writable: no indexer has admitted this peer yet. Hand its writer key 0cf03548… to an indexer (`auto-okf add-writer`), then replicate and try again
+auto-okf ingest: Not writable: autobee has not added this peer as a writer yet. Hand its writer key 0cf03548… to an indexer (`auto-okf add-writer`), then replicate and try again
 ```
 
 The store gate reads substrate admission, not okf membership. Core grants

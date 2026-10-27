@@ -54,7 +54,7 @@ into ops, so the watched tree is untrusted input by design (§9).
   append until autobee reports the local writer writable
   (`VAULT_NOT_WRITABLE`, test `test/store-writers.test.js` "an append from
   a writer that is not writable fails fast"). That gate reads `db.writable`
-  (`store/lib/bundle.js:734-747`), which is substrate state. So a key that
+  (`store/lib/bundle.js:791-799`), which is substrate state. So a key that
   a member admitted at the substrate alone passes it and does append. okf
   membership is a separate thing, and it is not retroactive. apply rejects
   every op of such a key and flags it ("What the substrate decides" points
@@ -300,7 +300,7 @@ system when apply starts, and nothing apply returns puts it back.
 apply does SEE those fields. autobee hands the original node objects of the
 batch to the application, every node that carries a value
 (`index.js:1444`), and it projects nothing away. The store forwards them
-unwrapped (`store/lib/bundle.js:357-366`). So an approval, a witness and a
+unwrapped (`store/lib/bundle.js:362-371`). So an approval, a witness and a
 timestamp are visible and inert, which is a lack of control and not a lack
 of visibility. A wakeup hint reaches apply in no form at all, as the last
 bullet above states.
