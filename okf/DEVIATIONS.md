@@ -10,16 +10,16 @@ the copied code wins and DEVIATIONS.md records it." The copied
 byte-identical between the two stacks, which is exactly what the copy rule
 exists to preserve; the u32-LE prose in §5 is the deviation being recorded.
 
-**okf §10 epoch namespace derivation (spec-silent detail).** §10 requires
-writer cores namespaced per epoch and "recorded in vault metadata" but not
-HOW the id is minted. The store derives it purely:
-`epoch = 'genesis'` when the chain fields are null, else
+**okf §10 generation namespace derivation (spec-silent detail).** §10
+requires writer cores namespaced per generation and "recorded in vault
+metadata" but not HOW the id is minted. The store derives it purely:
+`generation = 'root'` when the chain fields are null, else
 `sha256(predecessorKey bytes || stableStringify(predecessorCheckpoint))`
 — so every peer of one vault computes the same namespace from the same
 pinned metadata, a joiner reconstructs it from the invite's chain fields
 alone, and a reused corestore directory still yields fresh writer keypairs
-across epochs. Recorded as `metadata.epoch` and validated against the
-chain fields at every load.
+across generations. Recorded as `metadata.generation` and validated
+against the chain fields at every load.
 
 ---
 
@@ -81,18 +81,19 @@ guard.
 
 ---
 
-## okf §10 — epoch-cycle compaction (T6)
+## okf §10 — generation-cycle compaction (T6)
 
-**okf §10 epoch `log/` entry is a filesystem artifact, not a view `log/`
-record.** §10 requires compact to "record an epoch entry in the new vault's
-`log/`." The view's `log/<ordinal>` family is written only by `apply` from
-ops, and §3's wire contract is append-only with NO epoch op (and none may be
-added — core is a fixed built interface here). compact therefore writes the
-epoch entry as a durable JSON artifact at `<vaultDir>/log/epoch.json`
-(`{ kind:'epoch', epoch, predecessorKey, predecessorCheckpoint, conflictCopies,
-at, note }`). This satisfies "an entry in the new vault's `log/`" literally;
-the entry does NOT appear in the regenerated `log.md` (which re-derives from
-the view — §14 excludes `log.md` from I11 fidelity anyway).
+**okf §10 generation `log/` entry is a filesystem artifact, not a view
+`log/` record.** §10 requires compact to "record a generation entry in the
+new vault's `log/`." The view's `log/<ordinal>` family is written only by
+`apply` from ops, and §3's wire contract is append-only with NO generation
+op (and none may be added — core is a fixed built interface here). compact
+therefore writes the generation entry as a durable JSON artifact at
+`<vaultDir>/log/generation.json` (`{ kind:'generation', generation,
+predecessorKey, predecessorCheckpoint, conflictCopies, at, note }`). This
+satisfies "an entry in the new vault's `log/`" literally; the entry does
+NOT appear in the regenerated `log.md` (which re-derives from the view —
+§14 excludes `log.md` from I11 fidelity anyway).
 
 **okf §10 compaction stages a manifest-free, `_rev`-stripped copy for ingest.**
 Two facts about the built faces make a naive "materialize `toDir`, then ingest
@@ -122,7 +123,7 @@ returned for the operator to archive/destroy out-of-band (§10 step 5).
 **okf §10 `--force` conflict-copy enumeration lists `from === to`.** Because
 `_id` and path both survive the cycle and the conflict suffix is
 `first-8-hex(SHA-256(_id))` (§7), a carried-across conflicted copy re-manifests
-at the SAME path in the new vault. The enumeration in `log/epoch.json`
+at the SAME path in the new vault. The enumeration in `log/generation.json`
 therefore records `{ from, to }` with `from === to` (deterministic
 identity-preserving carry-across, §9 conflict-copy awareness); it is truthful
 (the `from` list is the actual on-disk conflict files of the materialized
