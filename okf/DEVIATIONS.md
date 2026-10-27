@@ -236,7 +236,11 @@ residual. Tests: "every writer stands at weight 0 on every peer" in
 - The nodes of a granted key pass the filter at `index.js:1359`. That
   filter reads `isAdded` from the system record (`lib/writers.js:526-533`).
   They also pass `canApply` (`lib/system.js:242-251`). So they reach apply
-  on every peer, and core rejects each one `not-a-writer`.
+  on every peer. Core rejects each op of a key with no `gov/writer`
+  record. A content op that passes the earlier checks is rejected
+  `not-a-writer` (`okf/core/lib/apply.js:426`). A governance op is
+  rejected `policy-governance`, because the indexer-issuer check comes
+  first (`okf/core/lib/apply.js:407-412`).
 - After an undo, autobee applies the batches again (`index.js:1386-1392`,
   `:1405-1408`), so core grants again. A repeated grant changes no weight.
   It only records the writer as added again (`lib/system.js:80-88`).
@@ -339,15 +343,19 @@ on five behaviours:
 An append that the close stops fails `VAULT_CLOSED_BEFORE_DURABLE`, and it
 wrote nothing. Tests: `okf/test/store-append.test.js`.
 
-**`db.writable` is the admission signal.** `db.writable` is `true` once
-autobee has added this writer (`README.md:114-116`). autobee sets it from
-the system record of the local writer: added and not removed
+**`db.writable` is the substrate admission signal.** `db.writable` is
+`true` once autobee has added this writer (`README.md:114-116`). autobee
+sets it from the system record of the local writer: added and not removed
 (`index.js:196-198`, `lib/writers.js:208-216`). Its own `append` refuses
 only a removed writer (`index.js:1531-1533`). A writer that autobee has not
 added fails the local flush with `Not writable` (`lib/writers.js:633-638`),
 and then autobee closes (`index.js:669-690`). So the store checks
 `db.writable` before every append, and refuses with `VAULT_NOT_WRITABLE`.
-Test: the `G12` test in `okf/test/store-writers.test.js`.
+`db.writable` is not okf membership. Core grants the key of every
+`AddWriter` op that it folds, a rejected one too (AD7 above,
+`okf/core/lib/apply.js:375`). So a key can be writable with no
+`gov/writer` record, and apply then rejects each of its ops. Test: the
+`G12` test in `okf/test/store-writers.test.js`.
 
 **`host.removeWriter` is never called.** SPEC §8 revocation is causal, in
 okf's apply. A removal at the substrate records the writer as removed

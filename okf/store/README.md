@@ -150,24 +150,40 @@ a reopen needs no key), `keyPair`, `swarm`, `backpressure`.
 | `swarm([hyperswarm])`, `leaveSwarm()` | DHT replication on the vault's `auto-okf/2` topic |
 | `close()` | closes autobee, settles every append that started before it, then closes the owned corestore |
 
-### Admission comes before the first write
+### Substrate admission comes before the first write
 
 The store constructs autobee with `optimistic: false`, `bootstrapWeight: 0`
 and `fastForward: false`, and grants every writer at weight 0 (SPEC §8,
 [DEVIATIONS.md](../DEVIATIONS.md)). So:
 
-- A joiner writes nothing until an indexer has run `writers.add` for its
-  `localKey` and the joiner has folded that op. Until then `writable` is
-  false, and `append` fails `VAULT_NOT_WRITABLE` (`err.writerKey` names
-  the key) before the op takes a seq.
+- `writable` signals substrate admission: autobee has added this writer
+  (autobee@2.12.1 `index.js:196-198`). Until then `writable` is false, and
+  `append` fails `VAULT_NOT_WRITABLE` (`err.writerKey` names the key)
+  before the op takes a seq (`okf/store/lib/bundle.js:791-799`).
+- `writable` is not okf membership. Core grants the key of every
+  `add-writer` op that it folds at the substrate, a rejected one too
+  (`okf/core/lib/apply.js:375`). So a writer that is not an indexer can
+  make a joiner writable. Apply rejects its `writers.add` op
+  `policy-governance` (`okf/core/lib/apply.js:411-412`), but the grant
+  still adds the key. The appends of that joiner then resolve, and apply
+  rejects each of its ops.
+- okf membership comes only from `gov/`. Only an `add-writer` op that
+  apply accepts writes the `gov/writer` record that admits a key
+  (`okf/core/lib/apply.js:526-534`). Apply accepts that op only from an
+  issuer that is an indexer at the op's linearized position
+  (`okf/core/lib/apply.js:407-418`). Only the content ops of an admitted
+  key take effect.
+- A content op of a key with no `gov/writer` record is rejected
+  `not-a-writer` (`okf/core/lib/apply.js:426`). The §3 limits, the
+  `forged-clock` check and the revocation check come first, and each of
+  them can reject it (`okf/core/lib/apply.js:361-403`). A governance op
+  of such a key is rejected `policy-governance`, because the issuer is
+  not an indexer, and that check comes first
+  (`okf/core/lib/apply.js:407-412`).
 - A node of a writer that autobee has not added reaches no apply on any
   peer.
 - Every writer stands at weight 0, so nodes order by timestamp, then
   writer key.
-- okf membership comes only from `gov/`. Core grants the key of every
-  `add-writer` op that it folds at the substrate, a rejected one too, and
-  it rejects every op of a key with no `gov/writer` record
-  (`not-a-writer`).
 
 ### Appends and close
 

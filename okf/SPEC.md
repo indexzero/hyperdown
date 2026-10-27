@@ -24,10 +24,11 @@ apply calls `host.addWriter(key, { weight: 0 })` for every `AddWriter` op
 it folds, accepted or rejected, before any check that can reject it. okf
 membership comes only from `gov/`. The uniform weight is 0 (§8).
 v1.5 deletes optimistic onboarding: a writer's ops take
-effect only once an indexer's `AddWriter` has admitted it, and an op from
-any other writer is rejected `not-a-writer` (§8). The hold buffer, the
-`optimistic` flag family, the `hold-overflow` rejection and the unacked
-rate ceiling are gone (§3, §4, §8, §11).
+effect only once an indexer's `AddWriter` has admitted it. A content op
+from any other writer is rejected `not-a-writer`, and a governance op from
+it is rejected `policy-governance` (§8, `okf/core/lib/apply.js:407-426`).
+The hold buffer, the `optimistic` flag family, the `hold-overflow`
+rejection and the unacked rate ceiling are gone (§3, §4, §8, §11).
 v1.4 closes the live-watcher directory-move
 data-preservation gap (issue #30) with three §9 ingest-watcher rules — a
 disk file bearing a known-but-tombstoned `_id` is intent-to-keep
@@ -573,16 +574,19 @@ saga is the cautionary tale). The rules are frozen:
   reach apply on every peer (`index.js:1359`, `:1474-1477`,
   `lib/system.js:242-251`). It confers no okf membership: **okf
   membership comes only from `gov/`**, which apply decides. A granted key
-  with no `gov/writer/<key>` record has each of its ops rejected
-  `not-a-writer` (below), with a flag (I4).
+  with no `gov/writer/<key>` record has each of its ops rejected, with a
+  flag (I4). A content op that passes the earlier checks is rejected
+  `not-a-writer`, and a governance op is rejected `policy-governance`
+  (below, `okf/core/lib/apply.js:407-426`).
 - **Admission comes before effect.** A writer's ops take effect only once
   an indexer-authored `AddWriter` naming its key has admitted it, at that
   op's linearized position. The genesis indexer is the one writer admitted
-  without an `AddWriter` (seeded, above). An op from any other writer, that
-  is a writer with no `gov/writer/<key>` record at the op's linearized
-  position, is rejected (`flag/rejected/<writerKey>/<seq>`, reason
-  `not-a-writer`). It never reaches the content pipeline, takes no rate
-  token, and mutates no `c/` key (I10). `seen/<writerKey>` moves past it
+  without an `AddWriter` (seeded, above). A content op from a writer with
+  no `gov/writer/<key>` record at the op's linearized position is
+  rejected (`flag/rejected/<writerKey>/<seq>`, reason `not-a-writer`,
+  `okf/core/lib/apply.js:426`). Each earlier check below can reject it
+  first. It never reaches the content pipeline,
+  takes no rate token, and mutates no `c/` key (I10). `seen/<writerKey>` moves past it
   (§3), so the §6 `mint-collision-risk` rule protects that key's future
   mints. Admission is not retroactive: the `AddWriter` revives none of the
   writer's earlier rejected ops, and only its later ops take effect. The
@@ -590,13 +594,20 @@ saga is the cautionary tale). The rules are frozen:
   the §3 limits, the `forged-clock` check and the revocation check, which
   bind every op. It runs after the indexer-issuer rule above, so a
   governance op from such a writer is rejected `policy-governance` (it is
-  not an indexer). It runs before the rate check. The store constructs
-  autobee with `optimistic: false`, so autobee drops every node of a
-  writer that it has not added before apply (autobee@2.12.1
-  `index.js:95`, `:1357-1364`). The store refuses an append until
+  not an indexer, `okf/core/lib/apply.js:407-412`). It runs before the
+  rate check. The store constructs autobee with `optimistic: false`, so
+  autobee drops every node of a writer that it has not added before apply
+  (autobee@2.12.1 `index.js:95`, `:1357-1364`). The store refuses an append until
   `db.writable` is true, that is until autobee has added the writer
-  (`README.md:114-116`, `index.js:196-198`). So an honest joiner appends
-  nothing before its admission.
+  (`README.md:114-116`, `index.js:196-198`). `db.writable` signals this
+  substrate admission only. It is not okf membership. Every folded
+  `AddWriter` grants its key, a rejected one too (the grant rule above,
+  `okf/core/lib/apply.js:375`). So a writer that is not an indexer can
+  make a key writable with an `AddWriter` that apply rejects
+  `policy-governance`. The appends of that key then resolve, and apply
+  rejects each of its ops. Only an `AddWriter` that apply accepts writes
+  the `gov/writer/<key>` record (`okf/core/lib/apply.js:526-534`), so only
+  it grants okf membership and lets the key's content ops take effect.
 - Rate limiting is a writer-local token bucket (vault-ld §8.5 ancestry —
   never a global window): each writer's bucket gains 1 token per accepted
   op *authored by any indexer*, capped at that writer's `rateCeiling`.

@@ -89,8 +89,11 @@ loser is renamed or the winner vacates. `index`/`log` terminals and
 
 Genesis key is the first indexer. Governance ops require an indexer
 issuer (else `policy-governance`). A writer's ops take effect only once an
-indexer's `add-writer` has admitted it: an op from a key with no
-`gov/writer` record is rejected `not-a-writer`, and admission revives no
+indexer's `add-writer` has admitted it. A content op from a key with no
+`gov/writer` record that passes the earlier checks is rejected
+`not-a-writer` (`okf/core/lib/apply.js:426`). A governance op from that
+key is rejected `policy-governance`, because the indexer-issuer check
+comes first (`okf/core/lib/apply.js:407-412`). Admission revives no
 earlier op. apply calls `host.addWriter(key, { weight: 0 })` for every
 `add-writer` op it folds, accepted or rejected, so a reorder never undoes
 a substrate grant; okf membership comes only from `gov/`. Revocation is
