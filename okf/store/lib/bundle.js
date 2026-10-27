@@ -7,10 +7,10 @@
 // Pattern ancestor: vault-ld/store/lib/vault.js (patterns only, no code
 // path shared — SPEC §0 copy-don't-depend).
 //
-// autobee contract, verified against the source of autobee@2.12.1 (index.js,
-// lib/*; first verified against 1.0.10 on 2026-07-13, re-verified for 2.12.1
-// on 2026-10-23 — a STANDALONE multiwriter Hyperbee on hyperbee2 2.20 +
-// hypercore 11; NO autobase), on corestore 7.16:
+// autobee contract, verified against the installed source of autobee@2.12.1
+// (index.js, lib/*) — a STANDALONE multiwriter Hyperbee on hyperbee2 2.20.1
+// and hypercore 11, with NO autobase dependency (package.json:25-40) — on
+// corestore 7.16.1 (the floor is 7.12.6, okf/DEVIATIONS.md):
 // - `new Autobee(store, key, { apply, open, close, update, encryptionKey,
 //   encrypted, keyPair, optimistic, fastForward, ackThreshold,
 //   bootstrapWeight, ... })`. `optimistic` defaults to true (index.js:95,
@@ -26,26 +26,27 @@
 // - `view` is what the `open` handler returned: we return a ViewAdapter, so
 //   core's apply sees the hyperbee2-flavored string-key surface it expects.
 // - host (lib/apply-calls.js): `addWriter(key, { isIndexer = true, weight =
-//   isIndexer ? 2 : 1 })` / `removeWriter(key)` / `ackWriter()` (a no-op
-//   in v2) / `removeable(key)` / `interrupt(reason)` /
-//   `createAnchor(key, length)` / `genesis` — adapted below (HostAdapter),
-//   which exposes only addWriter, and always at weight 0.
+//   isIndexer ? 2 : 1 })` / `removeWriter(key)` / `ackWriter()` (a
+//   deprecated no-op, README.md:224-227) / `removeable(key)` /
+//   `interrupt(reason)` / `createAnchor(key, length)` / `genesis` — adapted
+//   below (HostAdapter), which exposes only addWriter, and always at
+//   weight 0.
 // - instance: db.key, db.id, db.discoveryKey, db.local, db.view (read-only
 //   snapshot), db.writable, db.isIndexer, append(buf|[bufs]) (the Bundle
 //   never asks for an optimistic node), update()/updated()/flush(),
 //   replicate(isInitiator|stream). db.isIndexer means a ceiling (maxWeight)
 //   of 2 or more (lib/writers.js:352-354, :532), so it is always false
 //   here: Bundle.isIndexer reads gov/ instead.
-// - db.close() closes the corestore it was handed (index.js _close): we
+// - db.close() closes the corestore it was handed (index.js:442): we
 //   hand it the per-generation namespace SESSION; the root corestore is closed
 //   by Bundle.close() (corestore index.js _close: closing a session never
 //   closes the root; closing the root closes every session).
 // - genesis: autobee adds the bootstrap writer on its first node at
 //   `bootstrapWeight` (index.js:1411-1413). The Bundle passes 0, so genesis
 //   stands at weight 0 like every other writer (see HostAdapter). For a
-//   creator the vault key IS the creator's local writer key (lib/boot.js),
-//   so metadata.genesisKey === db.key on every peer and core's §8 genesis
-//   indexer seeding agrees with autobee's.
+//   creator the vault key IS the creator's local writer key
+//   (lib/boot.js:65-89, :86), so metadata.genesisKey === db.key on every
+//   peer and core's §8 genesis indexer seeding agrees with autobee's.
 //
 // Admission comes before the first write. With `optimistic: false`,
 // autobee applies a node only from a writer it has added, or from a removed
@@ -60,9 +61,13 @@
 // So a joiner writes only after an indexer's AddWriter op has linearized
 // and core has granted its key (HostAdapter). Until then db.writable is
 // false (index.js:196-198, lib/writers.js:208-216), and append() refuses
-// with VAULT_NOT_WRITABLE (see _assertWritable). core still has its hold/
-// buffer. Only a key that autobee added without an okf grant (a member
-// forged an approval that names it) can put an op there now.
+// with VAULT_NOT_WRITABLE (see _assertWritable). A key that autobee has
+// added can still have no gov/writer record: core grants the key of every
+// AddWriter op that it folds, one that it rejects too (AD7), and a member
+// can forge an approval that names a key (index.js:1432-1441). The nodes
+// of such a key reach apply, and core accepts none of its ops: the gov/
+// check rejects a content op 'not-a-writer' and a governance op
+// 'policy-governance' (core lib/apply.js).
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
