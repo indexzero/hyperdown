@@ -29,7 +29,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Corestore from '../store/node_modules/corestore/index.js'
 import { Bundle, K, makeTag, tmpDir, pair, until, sleep } from './store-helpers.js'
-import { Env, hostStub, rejectedReasons } from './helpers.js'
+import { Env, hostStub, rejectedReasons, writerKey } from './helpers.js'
 import { holds, outsiderAppend } from './attack-helpers.js'
 import { decodeOp, normalizeClock } from '../core/index.js'
 
@@ -122,6 +122,50 @@ test('core: mint-collision-risk compares an adopted suffix with the last positio
   const B = env.hex('B')
   assert.equal(rej[rk(B, 0)], undefined, 'A||2 names a passed position, so B can adopt it')
   assert.equal(rej[rk(B, 1)], 'mint-collision-risk', 'A||4 is the next mint of A')
+})
+
+test('core: a revoked writer stays in the clock, because the §8 window compares every entry (I10)', async () => {
+  // The store clocks each writer with a gov/writer record (T12). J has none,
+  // so no clock below cites it, and core accepts every such clock. Z is
+  // revoked after C cites it and before A revokes C. C's in-flight op c1
+  // sorts after the removal of C, as in the I10 revocation race. c1 is in
+  // the window (seq <= seqAtRemoval), so it lands only if its clock strictly
+  // precedes the revocation clock. That needs every writer that c1 cites in
+  // the revocation clock, the revoked Z too.
+  const run = async (removalCitesZ) => {
+    const env = new Env({ genesis: 'A' })
+    const [A, C, J, Z] = ['A', 'C', 'J', 'Z'].map((w) => env.hex(w))
+    const clocked = () => ({ clock: env.observedAll().filter(([k]) => k !== J) })
+    env.op('A', 'add-writer', { key: writerKey('C'), indexer: false }) // A0
+    env.op('A', 'add-writer', { key: writerKey('Z'), indexer: false }) // A1
+    env.op('A', 'create-concept', { path: 'w/doc', type: 'note' }) // A2
+    const id = env.tag('A', 2)
+    env.op('J', 'add-tag', { id, value: 'j0' }) // not-a-writer, and seen/J moves
+    env.op('Z', 'add-tag', { id, value: 'z0' }, clocked())
+    env.op('C', 'add-tag', { id, value: 'c0' }, clocked()) // cites A:2, Z:0
+    const c1 = env.op('C', 'add-tag', { id, value: 'c1' }, clocked()) // cites A:2, Z:0
+    env.op('A', 'remove-writer', { key: writerKey('Z') }, clocked()) // A3
+    // A has folded C through c1, so seqAtRemoval is 1. Without Z, A's clock
+    // is what a store that drops revoked writers would send.
+    const clock = [[A, 4], [C, 1], ...(removalCitesZ ? [[Z, 0]] : [])]
+    env.op('A', 'remove-writer', { key: writerKey('C') }, { clock, verbatimClock: true }) // A4
+    const view = await env.run([...env.nodes.filter((n) => n !== c1), c1])
+    const tags = Object.values(view.dump(`c/${id}/f/tags`)[`c/${id}/f/tags`].els).sort()
+    return { reasons: rejectedReasons(view), tags, removed: JSON.parse((await view.get(K.govRemoved(C))).value), J, C }
+  }
+
+  const kept = await run(true)
+  assert.deepEqual(kept.reasons, { [rk(kept.J, 0)]: 'not-a-writer' }, 'only the op of J is rejected')
+  assert.deepEqual(kept.tags, ['c0', 'c1', 'z0'], 'c1 lands in the window')
+  assert.equal(kept.removed.seqAtRemoval, 1)
+
+  const dropped = await run(false)
+  assert.deepEqual(
+    dropped.reasons,
+    { [rk(dropped.J, 0)]: 'not-a-writer', [rk(dropped.C, 1)]: 'revoked' },
+    'c1 cites Z, and the revocation clock does not, so c1 is not strictly before it'
+  )
+  assert.deepEqual(dropped.tags, ['c0', 'z0'])
 })
 
 // ---------- store: the Bundle's seq is the local core's next length ----------
