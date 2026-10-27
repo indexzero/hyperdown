@@ -110,6 +110,12 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *   sign         async (checkpoint) => { signer, signature } (hex) — signs the
  *                predecessor checkpoint that anchors the generation chain (§10:
  *                operator-signed provenance, never verified here).
+ *   onPlaintext  async (warning) => void. When the predecessor is encrypted,
+ *                compact calls it once with the plaintext warning of the
+ *                face, and awaits it, before the first write to the face
+ *                (materialize opts.onPlaintext). The CLI prints the warning
+ *                there, so a failure or a crash after a plaintext write
+ *                finds it already printed.
  *
  * compact takes no `keyPair`. The fresh vault always takes the writer key
  * pair that the store derives under the generation namespace (§10 step 3).
@@ -129,7 +135,8 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *             turned into ops.
  *   warnings  [{ kind, path, message }], kind one of 'plaintext' (the face
  *             directory, when the predecessor is encrypted: the face holds
- *             its contents as plaintext, and this warning comes first),
+ *             its contents as plaintext, and this warning comes first, made
+ *             before the first write to the face),
  *             'reserved' (a reserved `.okf-*` name the stage excludes),
  *             'parse' and 'no-frontmatter' (the stage parse), 'ingest',
  *             'oversize' and 'skip' (the ingest watcher's events). Every
@@ -215,13 +222,19 @@ export async function compact(vault, opts = {}) {
   }
 
   // ---- 2. materialize the hydrated face (§10 step 1) ----
-  const report = await materialize(vault, toDir)
   // The face is the plaintext artifact of compaction. When the predecessor
-  // is encrypted, the first warning names the face, and every way out from
-  // here on carries the warnings, so the caller can announce it.
-  const warnings = vault.metadata.encrypted === true ? [plaintextWarning(report.root)] : []
+  // is encrypted, materialize announces the face before its first write:
+  // the warning goes first into `warnings`, and to opts.onPlaintext. Every
+  // way out from here on carries the warnings, a failure inside
+  // materialize included.
+  const warnings = []
+  const onPlaintext = async (warning) => {
+    warnings.push(warning)
+    if (typeof opts.onPlaintext === 'function') await opts.onPlaintext(warning)
+  }
   let ownStage = false
   try {
+    const report = await materialize(vault, toDir, { onPlaintext })
     if (!report.ok && !force) {
       throw compactError(
         'COMPACT_DIRTY_TARGET',
@@ -678,11 +691,6 @@ async function notesOf(report, ids) {
     if (fm && ids.has(fm._id)) notes.set(fm._id, rel)
   }
   return notes
-}
-
-/** The warning that names a directory that now holds an encrypted vault's contents as plaintext. */
-function plaintextWarning(dir) {
-  return { kind: 'plaintext', path: dir, message: 'now holds the contents of an encrypted vault as plaintext' }
 }
 
 /** COMPACT_FIDELITY: every difference is in the message and in `differences`. */

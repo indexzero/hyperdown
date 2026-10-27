@@ -190,10 +190,25 @@ export async function planBundle(vault) {
 }
 
 /**
- * Walk the view and emit the bundle. `opts.forceMirror` restores
- * unconditional mirroring (overwrite/delete regardless of manifest).
+ * Walk the view and emit the bundle. Options:
+ *
+ *   forceMirror  restore unconditional mirroring (overwrite/delete
+ *                regardless of manifest).
+ *   onPlaintext  async (warning) => void. materialize is the plaintext
+ *                export (decision 8). When the vault is encrypted (its
+ *                pinned `metadata.encrypted`), materialize calls it once with
+ *                the plaintext warning, and awaits it, before its first write
+ *                to the directory. So a caller can announce the directory
+ *                before any plaintext lands in it.
+ *
  * Returns a report:
- *   { root, ok, written, unchanged, pendingIngest, removed, stale, unsafe }
+ *   { root, ok, written, unchanged, pendingIngest, removed, stale, unsafe,
+ *     warnings }
+ *
+ * `warnings` is [] for an unencrypted vault. For an encrypted vault it is
+ * [{ kind: 'plaintext', path: root, message }]: the directory now holds the
+ * vault's contents as plaintext. An error that materialize throws after that
+ * announcement carries the same list as `err.warnings`.
  */
 export async function materialize(vault, dir, opts = {}) {
   const { realRoot, registry } = await rootRegistry(dir)
@@ -210,9 +225,41 @@ export async function materialize(vault, dir, opts = {}) {
     pendingIngest: [],
     removed: [],
     stale: [],
-    unsafe: []
+    unsafe: [],
+    warnings: []
   }
   const manifest = await withPathLock(registry, MANIFEST_FILE, () => loadManifest(realRoot))
+
+  // Decision 8: announce the plaintext directory before the first write, so
+  // a failure or a crash after a plaintext write finds the warning out.
+  if (vault.metadata && vault.metadata.encrypted === true) {
+    const warning = plaintextWarning(realRoot)
+    report.warnings.push(warning)
+    if (typeof opts.onPlaintext === 'function') await opts.onPlaintext(warning)
+  }
+  try {
+    await reconcile(realRoot, registry, planned, manifest, report, forceMirror)
+  } catch (err) {
+    if (report.warnings.length > 0 && err !== null && typeof err === 'object' && err.warnings === undefined) {
+      err.warnings = report.warnings
+    }
+    throw err
+  }
+  report.ok = report.pendingIngest.length === 0
+  return report
+}
+
+/** The warning that names a directory that now holds an encrypted vault's contents as plaintext. */
+export function plaintextWarning(dir) {
+  return { kind: 'plaintext', path: dir, message: 'now holds the contents of an encrypted vault as plaintext' }
+}
+
+/**
+ * Materialize steps 5 to 7 for `planned` (Map<rel, Buffer>): write each
+ * planned file, remove this run's own prior outputs, and merge-save the
+ * manifest. Fills `report`.
+ */
+async function reconcile(realRoot, registry, planned, manifest, report, forceMirror) {
   const next = { files: {} }
 
   for (const rel of [...planned.keys()].sort(byteCmp)) {
@@ -331,9 +378,6 @@ export async function materialize(vault, dir, opts = {}) {
     for (const rel of droppedFromManifest) delete merged[rel]
     await saveManifest(realRoot, { files: merged })
   })
-
-  report.ok = report.pendingIngest.length === 0
-  return report
 }
 
 // ---------- index.md (OKF §6) ----------

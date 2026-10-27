@@ -13,7 +13,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
 import { keyspace as K } from '../core/index.js'
-import { compact } from '../faces/index.js'
+import { compact, materialize } from '../faces/index.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(ROOT, 'okf', 'cli', 'bin', 'auto-okf.js')
@@ -829,6 +829,90 @@ test('F02: compact checks that the new vault is encrypted before the import and 
   // directory. The faces stay: they are the announced plaintext artifacts.
   assert.deepEqual(await entries(base), ['face-before-import', 'face-before-success', 'vault'])
   await old.close()
+})
+
+// ---------- G3-P5 F03: the plaintext warning comes before the plaintext write ----------
+
+/**
+ * An encrypted vault that holds concept `a` (body SECRET) and concept `z`.
+ * materialize writes a.md, index.md and log.md before z.md, in byte order.
+ */
+async function initEncryptedAZ(storage) {
+  const init = await cli(['init', storage, '--encryption-key', ENC_KEY])
+  assert.equal(init.code, 0, init.stderr)
+  const v = await Bundle.open(storage)
+  try {
+    const { tag } = await v.createConcept('a', 'note')
+    await v.setBody(tag, null, SECRET)
+    await v.createConcept('z', 'note')
+    await v.update()
+  } finally {
+    await v.close()
+  }
+}
+
+/** A face directory whose z.md is a directory: materialize writes a.md, then fails with EISDIR on z.md. */
+async function faceWithDirAtZ(face) {
+  await mkdir(join(face, 'z.md'), { recursive: true })
+  return face
+}
+
+/** Does `face`/a.md hold SECRET? */
+async function secretIn(face) {
+  return (await readFile(join(face, 'a.md'), 'utf8').catch(() => '')).includes(SECRET)
+}
+
+test('F03: the in-process materialize and compact announce the plaintext directory before the first write, and a failure partway carries the warning', async () => {
+  // D-029 F03: compact made its warning after materialize returned, so a
+  // materialize that wrote a.md and then failed threw no warning. materialize
+  // itself made none. Both now call onPlaintext, and await it, before the
+  // first write, and put the warning in the report and in a later error.
+  const base = await tmpDir('enc-announce')
+  const storage = join(base, 'vault')
+  await initEncryptedAZ(storage)
+  const warning = (dir) => ({ kind: 'plaintext', path: dir, message: 'now holds the contents of an encrypted vault as plaintext' })
+  const v = await Bundle.open(storage)
+  try {
+    /** An onPlaintext that records each warning, and what the face held at that moment. */
+    const recorder = (face) => {
+      const calls = []
+      return { calls, onPlaintext: async (w) => calls.push({ w, secretWritten: await secretIn(face) }) }
+    }
+
+    // materialize, success: the warning in the report, announced before a.md.
+    const ok = join(base, 'mat-ok')
+    const okRec = recorder(ok)
+    const report = await materialize(v, ok, { onPlaintext: okRec.onPlaintext })
+    assert.deepEqual(report.warnings, [warning(ok)])
+    assert.deepEqual(okRec.calls, [{ w: warning(ok), secretWritten: false }])
+    assert.equal(await secretIn(ok), true)
+
+    // materialize and compact, a failure after a.md: the error carries the warning.
+    for (const name of ['materialize', 'compact']) {
+      const face = await faceWithDirAtZ(join(base, `partial-${name}`))
+      const rec = recorder(face)
+      const run = name === 'materialize'
+        ? () => materialize(v, face, { onPlaintext: rec.onPlaintext })
+        : () => compact(v, { initBundle: Bundle.init, toDir: face, vaultDir: join(base, 'partial-out'), encryptionKey: Buffer.from(NEW_KEY, 'hex'), onPlaintext: rec.onPlaintext })
+      await assert.rejects(run, (err) => {
+        assert.equal(err.code, 'EISDIR', `${name}: ${err.stack}`)
+        assert.deepEqual(err.warnings, [warning(face)], name)
+        return true
+      })
+      assert.deepEqual(rec.calls, [{ w: warning(face), secretWritten: false }], name)
+      assert.equal(await secretIn(face), true, `${name}: setup: a.md must hold the plaintext`)
+    }
+  } finally {
+    await v.close()
+  }
+
+  // An unencrypted vault: no warning, and no call.
+  const plain = await Bundle.init(join(base, 'plain'))
+  const calls = []
+  const plainReport = await materialize(plain, join(base, 'plain-bundle'), { onPlaintext: (w) => calls.push(w) })
+  assert.deepEqual(plainReport.warnings, [])
+  assert.deepEqual(calls, [])
+  await plain.close()
 })
 
 test('T17, T18: compact refuses a stage directory that it did not create, keeps its contents and writes nothing (G15)', async () => {
