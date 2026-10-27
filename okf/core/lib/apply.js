@@ -346,6 +346,15 @@ class Applier {
     const type = dec.type
     this.at = atOf(op)
 
+    // §8 (AD7): every AddWriter op that core folds grants its key at the
+    // substrate, whether core accepts or rejects the op below. The grant
+    // comes right after the decode and before every check that can reject
+    // the op, because those checks read the op's linearized position, and
+    // a reorder can flip their outcome (G9b). The grant reads the op bytes
+    // alone, so it is the same on every peer in every order, and a reorder
+    // can never undo it. okf membership still comes only from gov/.
+    if (type === 'add-writer') await this.grant(op.key)
+
     // §3 post-decode limits, fixed order: path bytes, then depth.
     if (typeof op.path === 'string') {
       if (Buffer.byteLength(op.path, 'utf8') > this.cfg.limits.maxPathBytes) {
@@ -373,7 +382,8 @@ class Applier {
 
     if (GOVERNANCE_OPS.has(type)) {
       // §8: governance requires an indexer issuer at the op's linearized
-      // position; host.addWriter/removeWriter are never reached otherwise.
+      // position. The AddWriter grant above does not depend on it, and
+      // host.removeWriter is never called.
       if (!writerRec || writerRec.indexer !== true) {
         return this.reject(W, seq, 'policy-governance')
       }
@@ -396,6 +406,21 @@ class Applier {
     if (res && res.rejected) return this.reject(W, seq, res.reason)
     await this.accepted(W)
     return this.writeLog(this.pos)
+  }
+
+  /**
+   * §8 (AD7): the substrate grant of an AddWriter op. The weight is an
+   * explicit 0, so autobee's `isIndexer ? 2 : 1` default never applies
+   * (lib/apply-calls.js:33), and isIndexer is not passed: it only selects
+   * that default. Only a 32-byte key is granted. autobee copies the key
+   * into a fixed 34-byte system key (lib/encoding.js:64-69), so a shorter
+   * key would leave uninitialized bytes there, and a longer one throws.
+   * The check reads the op bytes alone, so it is the same on every peer.
+   */
+  async grant(key) {
+    if (!this.host || !this.host.addWriter) return
+    if (!(key instanceof Uint8Array) || key.byteLength !== 32) return
+    await this.host.addWriter(keyBuf(key), { weight: 0 })
   }
 
   async reject(W, seq, reason) {
@@ -488,11 +513,8 @@ class Applier {
     if ((await this.val(K.govRemoved(target))) !== undefined) {
       this.delKey(K.govRemoved(target))
     }
-    // §8: explicit uniform weight — never autobee's defaults
-    // (lib/apply-calls.js: weight defaults to `isIndexer ? 2 : 1`).
-    if (this.host && this.host.addWriter) {
-      await this.host.addWriter(keyBuf(op.key), { isIndexer: rec.indexer, weight: 1 })
-    }
+    // The substrate grant already happened in applyNode (AD7), before any
+    // check that can reject this op.
     // §8: bucket starts full at admission.
     const indexerOps = (await this.val(K.rateIndexerOps())) ?? 0
     this.put(K.rate(target), { tokens: this.capacityFor(rec), seenIndexerOps: indexerOps })

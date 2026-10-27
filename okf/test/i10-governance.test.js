@@ -7,18 +7,68 @@ import assert from 'node:assert/strict'
 import { Env, writerKey, hostStub, keysUnder, rejectedReasons } from './helpers.js'
 import { MemView } from '../core/index.js'
 
-test('I10: governance requires an indexer issuer; host.addWriter never called for it', async () => {
+test('I10: governance requires an indexer issuer; an unauthorized AddWriter still grants at weight 0 and never admits', async () => {
   const env = new Env({ genesis: 'A' })
   env.op('A', 'add-writer', { key: writerKey('B'), indexer: false }) // B: plain writer
   env.op('B', 'add-writer', { key: writerKey('E'), indexer: true }) // unauthorized
   const host = hostStub()
   const view = await env.run(env.nodes, { host })
-  assert.ok(Object.values(rejectedReasons(view)).includes('policy-governance'))
+  assert.deepEqual(rejectedReasons(view), { [`${env.hex('B')}/000000000000`]: 'policy-governance' })
   assert.equal((await view.get('gov/writer/' + env.hex('E'))), null, 'E never admitted')
-  const added = host.calls.filter(([m]) => m === 'addWriter').map(([, k]) => k)
-  assert.deepEqual(added, [env.hex('B')], 'host.addWriter only for the authorized op')
-  // §8: explicit uniform weight, never autobee defaults
-  assert.deepEqual(host.calls.find(([m]) => m === 'addWriter')[2], { isIndexer: false, weight: 1 })
+  // §8 (AD7): an autobee grant follows every AddWriter op, accepted or
+  // rejected, at an explicit weight 0. okf membership comes only from gov/.
+  assert.deepEqual(
+    host.calls.filter(([m]) => m === 'addWriter'),
+    [
+      ['addWriter', env.hex('B'), { weight: 0 }],
+      ['addWriter', env.hex('E'), { weight: 0 }]
+    ],
+    'host.addWriter for the authorized op and for the unauthorized one'
+  )
+})
+
+test('I10: the AddWriter grant comes before every check that can reject the op, and only a 32-byte key is granted', async () => {
+  const env = new Env({ genesis: 'A' })
+  const A = env.hex('A')
+  // B: a plain writer. C and F: indexers.
+  env.op('A', 'add-writer', { key: writerKey('B'), indexer: false })
+  env.op('A', 'add-writer', { key: writerKey('C'), indexer: true })
+  env.op('A', 'add-writer', { key: writerKey('F'), indexer: true })
+  env.op('A', 'set-writer-policy', { key: writerKey('F'), namespacePrefixes: [], rateCeiling: 1 })
+  // policy-governance: the issuer is not an indexer
+  env.op('B', 'add-writer', { key: writerKey('E1'), indexer: false })
+  // policy-governance: the issuer has no gov/writer record
+  env.op('D', 'add-writer', { key: writerKey('E2'), indexer: false })
+  // forged-clock: the self-entry (9) is not A's actual seq (4)
+  env.op('A', 'add-writer', { key: writerKey('E3'), indexer: false }, { clock: [[A, 9]], verbatimClock: true })
+  // revoked: A removes C before C's first op (seqAtRemoval -1)
+  env.op('A', 'remove-writer', { key: writerKey('C') }, { clock: [[A, 5]], verbatimClock: true })
+  env.op('C', 'add-writer', { key: writerKey('E4'), indexer: false })
+  // policy-rate: F spends its one token on a rejected op, so its bucket is empty
+  env.op('F', 'set-writer-policy', { key: writerKey('nobody'), namespacePrefixes: [], rateCeiling: 1 })
+  env.op('F', 'add-writer', { key: writerKey('E5'), indexer: false })
+  // a key that is not 32 bytes: no grant
+  env.op('A', 'add-writer', { key: Buffer.alloc(31, 7), indexer: false })
+  const host = hostStub()
+  const view = await env.run(env.nodes, { host })
+
+  assert.deepEqual(rejectedReasons(view), {
+    [`${env.hex('B')}/000000000000`]: 'policy-governance',
+    [`${env.hex('D')}/000000000000`]: 'policy-governance',
+    [`${A}/000000000004`]: 'forged-clock',
+    [`${env.hex('C')}/000000000000`]: 'revoked',
+    [`${env.hex('F')}/000000000000`]: 'policy-governance',
+    [`${env.hex('F')}/000000000001`]: 'policy-rate'
+  })
+  for (const e of ['E1', 'E2', 'E3', 'E4', 'E5']) {
+    assert.equal(await view.get('gov/writer/' + env.hex(e)), null, `${e} never admitted`)
+  }
+  // §8 (AD7): one grant per decoded AddWriter op with a 32-byte key, in
+  // linearized order, whatever the op's disposition.
+  assert.deepEqual(
+    host.calls.filter(([m]) => m === 'addWriter'),
+    ['B', 'C', 'F', 'E1', 'E2', 'E3', 'E4', 'E5'].map((w) => ['addWriter', env.hex(w), { weight: 0 }])
+  )
 })
 
 test('I10: apply does not return before host.addWriter settles', async () => {
