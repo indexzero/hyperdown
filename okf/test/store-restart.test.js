@@ -4,6 +4,7 @@
 // the replicated log converges to the same hash (rebuild equivalence).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import Corestore from '../store/node_modules/corestore/index.js'
 import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
 
 test('restart from disk: reopened view equals the pre-close view (I3)', async (t) => {
@@ -59,6 +60,51 @@ test('an empty block at the tail of the local core takes a position, so the seq 
   assert.equal(await a2.val(K.flagRejected(self, r.seq)), undefined, 'not rejected forged-clock')
   assert.equal(await a2.val(K.seen(self)), 4, 'seen/<self> is the last position plus one')
   assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['After the empty block'])
+})
+
+test('a reopen folds every node that the local core holds before open resolves', async (t) => {
+  // Bundle.open runs db.update() before it resolves (store/lib/bundle.js
+  // _openInner), so the view is current when open resolves. A crash can
+  // leave a node in the local core that the stored boot record does not
+  // cover: autobee's drain writes the local nodes to the core
+  // (index.js:824) before it stores the boot record, `autobee/head` in the
+  // user data of the local core (index.js:841, :1492). The test simulates
+  // that crash. It puts back the boot record from before the last node,
+  // through the documented hypercore API of a closed store, as
+  // store-ordinal.test.js G10 does. Without the update() on open, autobee
+  // folds the node later in the background, and reads right after open
+  // miss it.
+  const dir = await tmpDir('reopen-fold')
+  const open = new Set()
+  t.after(async () => {
+    for (const v of open) await v.close()
+  })
+  const a = await Bundle.init(dir)
+  open.add(a)
+  const self = a.localKey.toString('hex')
+  const { tag: id } = await a.createConcept('guides/fold', 'guide')
+  await a.update()
+  const H0 = await a.db.local.getUserData('autobee/head') // covers position 0
+  await a.setField(id, 'title', ['After the boot record']) // position 1
+  await a.update()
+  const gen = a.generation
+  await a.close()
+  open.delete(a)
+  const store = new Corestore(dir)
+  try {
+    const core = store.namespace('okf/generation/' + gen).get({ key: a.localKey, active: false })
+    await core.ready()
+    await core.setUserData('autobee/head', H0)
+  } finally {
+    await store.close() // closes the core too
+  }
+
+  const a2 = await Bundle.open(dir)
+  open.add(a2)
+  // No update() here: open itself must have folded position 1.
+  assert.equal(a2.db.local.length, 2, 'the local core holds both nodes')
+  assert.equal(await a2.val(K.seen(self)), 2, 'the view holds both nodes when open resolves')
+  assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['After the boot record'])
 })
 
 test('fresh peer rebuild from the log equals the restarted view (I3)', async (t) => {
