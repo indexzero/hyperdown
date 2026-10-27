@@ -9,8 +9,10 @@
 //   (https://nodejs.org/api/fs.html#fspromisesrenameoldpath-newpath).
 // - Containment (§9 "lexical + realpath containment"): a lexical check on
 //   the resolved path (no '..' escape, no absolute override) AND a realpath
-//   check on the parent directory after mkdir, so a symlinked parent that
-//   resolves outside the root is refused.
+//   check on the parent directory (containedParent), so a symlinked parent
+//   that resolves outside the root is refused. atomicWrite checks the parent
+//   before its mkdir and again after it. atomicUnlink checks the parent
+//   before it unlinks, and unlinks through the checked real parent.
 // - Per-path in-flight locks: one promise-chain mutex per (vault root,
 //   relative path), shared process-wide through a registry keyed by the
 //   root's realpath, so a materializer and an ingest watcher on the same
@@ -23,7 +25,7 @@
 //   ignore the system's own writes. Stored at <root>/.okf-manifest.json in
 //   canonical bytes, so it is itself deterministic for a given view.
 import { createHash } from 'node:crypto'
-import { mkdir, open, readFile, readdir, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, readlink, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { canonical } from '@auto-okf/core'
 
@@ -66,8 +68,8 @@ export function withPathLock(registry, rel, fn) {
   return run
 }
 
-function containedError(rel) {
-  const err = new Error(`UNSAFE_PATH: '${rel}' resolves outside the bundle root`)
+function containedError(rel, detail = '') {
+  const err = new Error(`UNSAFE_PATH: '${rel}' resolves outside the bundle root${detail}`)
   err.code = 'UNSAFE_PATH'
   return err
 }
@@ -90,6 +92,45 @@ export async function containedRealPath(realRoot, rel) {
   return abs
 }
 
+/**
+ * Containment of the parent directory of `rel` (G3-P5 F05): lexical, then
+ * the real location of the parent (realLocation), which must be realRoot or
+ * inside it. The parent need not exist yet. A symlink in the root that leads
+ * out of it, dangling or not, throws UNSAFE_PATH. Returns the real parent.
+ */
+export async function containedParent(realRoot, rel) {
+  const abs = containedPath(realRoot, rel)
+  const parent = await realLocation(dirname(abs))
+  if (parent !== realRoot && !parent.startsWith(realRoot + sep)) {
+    throw containedError(rel, `: its parent directory is ${parent}, through a symlink`)
+  }
+  return parent
+}
+
+/**
+ * Where a write to `path` lands: its real path when it exists, else the real
+ * path of its nearest existing ancestor with the rest of `path` appended. A
+ * dangling symlink resolves through its target.
+ */
+export async function realLocation(path) {
+  let head = resolve(path)
+  const rest = []
+  for (let links = 0; ; ) {
+    try {
+      return join(await realpath(head), ...rest)
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err
+    }
+    const target = await readlink(head).catch(() => null)
+    if (target !== null && links++ < 40) {
+      head = resolve(dirname(head), target)
+      continue
+    }
+    rest.unshift(basename(head))
+    head = dirname(head)
+  }
+}
+
 /** sha256 of a file, or null when it does not exist. */
 export async function hashFile(abs) {
   try {
@@ -109,6 +150,9 @@ export async function hashFile(abs) {
  */
 export async function atomicWrite(realRoot, rel, buf, { precondition } = {}) {
   const abs = containedPath(realRoot, rel)
+  // Before the mkdir: a mkdir through a symlinked parent creates directories
+  // outside the root.
+  await containedParent(realRoot, rel)
   await mkdir(dirname(abs), { recursive: true })
   const realParent = await realpath(dirname(abs))
   if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) {
@@ -150,9 +194,14 @@ export async function atomicWrite(realRoot, rel, buf, { precondition } = {}) {
   return abs
 }
 
-/** Delete a contained file if present (materialize reconciliation, §9). */
+/**
+ * Delete a contained file if present (materialize reconciliation, §9). The
+ * parent must be in the root by its real path (containedParent), and the
+ * unlink goes through that real parent, so a symlinked parent never leads
+ * it out of the root. Throws UNSAFE_PATH.
+ */
 export async function atomicUnlink(realRoot, rel) {
-  const abs = containedPath(realRoot, rel)
+  const abs = join(await containedParent(realRoot, rel), basename(rel))
   try {
     await unlink(abs)
     return true

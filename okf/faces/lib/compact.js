@@ -54,13 +54,13 @@
 // This module imports NO substrate (consistent with the rest of @auto-okf/
 // faces: "the substrate is injected"). The @auto-okf/store `Bundle.init` is
 // passed in as `opts.initBundle`; the CLI (okf/cli) wires the two together.
-import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, writeFile, rm } from 'node:fs/promises'
-import { join, dirname, basename, resolve, sep } from 'node:path'
+import { lstat, mkdir, mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { join, dirname, resolve, sep } from 'node:path'
 import { keyspace as K } from '@auto-okf/core'
 import { materialize } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
 import { parseNote, renderNote } from './yaml.js'
-import { containedRealPath, loadManifest, isReservedDotFile, isReservedFile } from './fsatomic.js'
+import { containedRealPath, loadManifest, isReservedDotFile, isReservedFile, realLocation } from './fsatomic.js'
 import { compareTrees, compareStates, liveState } from './verify.js'
 
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}\.md$/
@@ -639,30 +639,6 @@ async function refuseOverlap(areas) {
       err.areas = [resolved[i].name, resolved[j].name]
       throw err
     }
-  }
-}
-
-/**
- * Where a write to `path` lands: its real path when it exists, else the real
- * path of its nearest existing ancestor with the rest of `path` appended. A
- * dangling symlink resolves through its target.
- */
-async function realLocation(path) {
-  let head = resolve(path)
-  const rest = []
-  for (let links = 0; ; ) {
-    try {
-      return join(await realpath(head), ...rest)
-    } catch (err) {
-      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err
-    }
-    const target = await readlink(head).catch(() => null)
-    if (target !== null && links++ < 40) {
-      head = resolve(dirname(head), target)
-      continue
-    }
-    rest.unshift(basename(head))
-    head = dirname(head)
   }
 }
 

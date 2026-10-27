@@ -15,6 +15,7 @@
 // conflict copies, prior paths of renamed concepts, index.md of vanished
 // directories).
 import { createHash } from 'node:crypto'
+import { dirname } from 'node:path'
 import { keyspace as K, canonical, dirOf } from '@auto-okf/core'
 import { readView, readLog, collisionKey } from './view.js'
 import { renderNote, emitFrontmatter } from './yaml.js'
@@ -22,6 +23,7 @@ import {
   rootRegistry,
   withPathLock,
   containedPath,
+  containedParent,
   atomicWrite,
   atomicUnlink,
   hashFile,
@@ -209,6 +211,12 @@ export async function planBundle(vault) {
  * [{ kind: 'plaintext', path: root, message }]: the directory now holds the
  * vault's contents as plaintext. An error that materialize throws after that
  * announcement carries the same list as `err.warnings`.
+ *
+ * Before it changes anything in the directory, materialize checks the real
+ * path of the parent of each path that it can create, overwrite or delete:
+ * each planned file and each manifest entry. A parent outside the root, by
+ * a symlink in the root, throws UNSAFE_PATH, and nothing in the directory
+ * or outside it changes (§9 realpath containment).
  */
 export async function materialize(vault, dir, opts = {}) {
   const { realRoot, registry } = await rootRegistry(dir)
@@ -229,6 +237,7 @@ export async function materialize(vault, dir, opts = {}) {
     warnings: []
   }
   const manifest = await withPathLock(registry, MANIFEST_FILE, () => loadManifest(realRoot))
+  await refuseEscapes(realRoot, [...planned.keys(), ...Object.keys(manifest.files)])
 
   // Decision 8: announce the plaintext directory before the first write, so
   // a failure or a crash after a plaintext write finds the warning out.
@@ -247,6 +256,30 @@ export async function materialize(vault, dir, opts = {}) {
   }
   report.ok = report.pendingIngest.length === 0
   return report
+}
+
+/**
+ * §9 realpath containment, before reconciliation changes anything: the real
+ * parent of each path in `rels` must be in realRoot (containedParent). A
+ * symlink in the root that leads out of it throws UNSAFE_PATH, which names
+ * the path. A path that escapes lexically is skipped here: reconcile never
+ * touches it, and reports a planned one as unsafe. One check per parent
+ * directory.
+ */
+async function refuseEscapes(realRoot, rels) {
+  const checked = new Set()
+  for (const rel of rels) {
+    let abs
+    try {
+      abs = containedPath(realRoot, rel)
+    } catch {
+      continue
+    }
+    const parent = dirname(abs)
+    if (checked.has(parent)) continue
+    await containedParent(realRoot, rel)
+    checked.add(parent)
+  }
 }
 
 /** The warning that names a directory that now holds an encrypted vault's contents as plaintext. */

@@ -11,7 +11,7 @@ import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import assert from 'node:assert/strict'
-import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, symlink, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
@@ -1063,6 +1063,80 @@ test('F01: --force no longer carries a hand edit of the face into the new vault:
     { path: 'notes/a', kind: 'state', id: tag, key: 'f/tags' }
   ])
   await old.close()
+})
+
+// ---------- G3-P5 F05: face reconciliation stays in the face ----------
+
+test('F05: a symlink in the face that leads out of it fails materialize and compact by name before any change, and the files outside stay', async () => {
+  // D-029 F05: the face's notes/ directory is a symlink to a directory
+  // outside the face. The concept moved, so reconciliation removed its old
+  // notes, and atomicUnlink checked only lexical containment. It deleted
+  // both files outside the face through the symlink. materialize now checks
+  // the real parent of every path that it can create, overwrite or delete
+  // before it changes anything.
+  const base = await tmpDir('face-escape')
+  const old = await Bundle.init(join(base, 'vault'))
+  const { tag } = await old.createConcept('notes/a', 'note')
+  await old.setBody(tag, null, 'outside victim content')
+  await old.update()
+  const face = join(base, 'face')
+  assert.equal((await materialize(old, face)).ok, true)
+  const outside = join(base, 'outside')
+  await rename(join(face, 'notes'), outside)
+  await symlink(outside, join(face, 'notes'))
+  await old.setPath(tag, 'new/a')
+  await old.update()
+  const state = async () => ({
+    outsideFiles: await listFiles(outside),
+    outsideBytes: await treeHash(outside),
+    faceEntries: await entries(face),
+    faceBytes: await treeHash(face),
+    predecessor: await predecessorState(old)
+  })
+  const before = await state()
+  assert.deepEqual(before.outsideFiles, ['a.md', 'index.md'])
+  const runs = [
+    ['materialize', () => materialize(old, face)],
+    ['compact', () => compact(old, { initBundle: Bundle.init, toDir: face, vaultDir: join(base, 'out') })]
+  ]
+  for (const [name, run] of runs) {
+    await assert.rejects(run, (err) => {
+      assert.equal(err.code, 'UNSAFE_PATH', `${name}: ${err.stack}`)
+      assert.match(err.message, /'notes\/(a|index)\.md' resolves outside the bundle root/, name)
+      return true
+    })
+    assert.deepEqual(await state(), before, `${name} changed the face, the files outside it or the predecessor`)
+  }
+  assert.deepEqual(await entries(base), ['face', 'outside', 'vault'], 'the refused compaction left an out-dir or a stage')
+  await old.close()
+
+  // A write through a symlink: <face>/new leads to an empty directory
+  // outside the face. The mkdir of a planned note's parent created a
+  // directory there before the real-path check of atomicWrite refused it.
+  const base2 = await tmpDir('face-escape-write')
+  const v = await Bundle.init(join(base2, 'vault'))
+  await v.createConcept('new/sub/a', 'note')
+  await v.update()
+  const face2 = join(base2, 'face')
+  const elsewhere = join(base2, 'elsewhere')
+  await mkdir(elsewhere)
+  await mkdir(face2)
+  await symlink(elsewhere, join(face2, 'new'))
+  const runs2 = [
+    ['materialize', () => materialize(v, face2)],
+    ['compact', () => compact(v, { initBundle: Bundle.init, toDir: face2, vaultDir: join(base2, 'out') })]
+  ]
+  for (const [name, run] of runs2) {
+    await assert.rejects(run, (err) => {
+      assert.equal(err.code, 'UNSAFE_PATH', `${name}: ${err.stack}`)
+      assert.match(err.message, /'new\/(index|sub\/a|sub\/index)\.md' resolves outside the bundle root/, name)
+      return true
+    })
+    assert.deepEqual(await entries(elsewhere), [], `${name} created something outside the face`)
+    assert.deepEqual(await entries(face2), ['new'], `${name} wrote to the face`)
+  }
+  assert.deepEqual(await entries(base2), ['elsewhere', 'face', 'vault'])
+  await v.close()
 })
 
 const BIN = join(ROOT, 'okf', 'cli', 'bin', 'auto-okf.js')
