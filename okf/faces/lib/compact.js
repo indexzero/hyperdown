@@ -107,10 +107,14 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *             emission manifest lists (index.md and log.md excluded), the
  *             notes written to the stage, and the staged notes the ingest
  *             turned into ops.
- *   warnings  [{ kind, path, message }], kind one of 'reserved' (a reserved
- *             `.okf-*` name the stage excludes), 'parse' and
- *             'no-frontmatter' (the stage parse), 'ingest', 'oversize' and
- *             'skip' (the ingest watcher's events).
+ *   warnings  [{ kind, path, message }], kind one of 'plaintext' (the face
+ *             directory, when the predecessor is encrypted: the face holds
+ *             its contents as plaintext, and this warning comes first),
+ *             'reserved' (a reserved `.okf-*` name the stage excludes),
+ *             'parse' and 'no-frontmatter' (the stage parse), 'ingest',
+ *             'oversize' and 'skip' (the ingest watcher's events). Every
+ *             error that compact throws after the face step carries the
+ *             warnings too, as `err.warnings`.
  *   conflictCopies  [{ from, to, id }] (§10 --force), one per conflicted
  *             copy that the import took: its path in the face, the path at
  *             which the new vault holds the _id that the import gave it (null
@@ -178,6 +182,20 @@ export async function compact(vault, opts = {}) {
 
   // ---- 2. materialize the hydrated face (§10 step 1) ----
   const report = await materialize(vault, toDir)
+  // The face is the plaintext artifact of compaction. When the predecessor
+  // is encrypted, the first warning names the face, and every way out from
+  // here on carries the warnings, so the caller can announce it.
+  const warnings = vault.metadata.encrypted === true ? [plaintextWarning(report.root)] : []
+  try {
+    return await generateFromFace(vault, report, warnings, { stageDir, vaultDir, force, encryptionKey, sign, initBundle })
+  } catch (err) {
+    if (err !== null && typeof err === 'object' && err.warnings === undefined) err.warnings = warnings
+    throw err
+  }
+}
+
+/** Everything after the face step: the dirty-face refusal, the stage, the fresh vault, its ingest, its check and its generation entry. */
+async function generateFromFace(vault, report, warnings, { stageDir, vaultDir, force, encryptionKey, sign, initBundle }) {
   if (!report.ok && !force) {
     throw compactError(
       'COMPACT_DIRTY_TARGET',
@@ -196,7 +214,6 @@ export async function compact(vault, opts = {}) {
   const staged = []
   const claimOrd = new Map() // conflicted copy -> the predecessor's claim ord of its _id (§4 c/<id>/path)
   const counts = { walked: 0, staged: 0, ingested: 0 }
-  const warnings = []
   for (const rel of emitted.sort(byteCmp)) {
     if (!rel.endsWith('.md') || isReservedFile(rel)) continue // index.md / log.md are regenerated faces
     counts.walked++
@@ -409,6 +426,11 @@ async function notesOf(report, ids) {
     if (fm && ids.has(fm._id)) notes.set(fm._id, rel)
   }
   return notes
+}
+
+/** The warning that names a directory that now holds an encrypted vault's contents as plaintext. */
+function plaintextWarning(dir) {
+  return { kind: 'plaintext', path: dir, message: 'now holds the contents of an encrypted vault as plaintext' }
 }
 
 /** COMPACT_FIDELITY: every difference is in the message and in `differences`. */

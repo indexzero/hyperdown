@@ -479,6 +479,12 @@ async function cmdMaterialize({ args, flags }) {
       `materialized ${bundleDir}: ${report.written.length} written, ` +
         `${report.unchanged.length} unchanged, ${report.removed.length} removed`
     )
+    // materialize is the plaintext export. For an encrypted vault, name the
+    // directory that now holds its contents as plaintext. The exit code
+    // does not change.
+    if (vault.metadata.encrypted === true) {
+      process.stderr.write(`warning: ${report.root}: now holds the contents of an encrypted vault as plaintext\n`)
+    }
     for (const rel of report.pendingIngest) {
       process.stderr.write(`notice: pending ingest (unsaved external edit, left in place): ${rel}\n`)
     }
@@ -701,11 +707,13 @@ async function cmdCompact({ args, flags }) {
         ...encryptionOpt(flags)
       })
     } catch (err) {
-      // COMPACT_FIDELITY names every difference in its message, and run()
-      // prints the message and exits 1. Print the warnings and the counts
-      // first, so the operator sees why a note did not survive.
+      // run() prints the message and exits 1. Every failure after the face
+      // step carries the warnings, so print them first: the plaintext face
+      // of an encrypted vault, and why a note did not survive.
+      // COMPACT_FIDELITY names every difference in its message, and the
+      // counts follow the warnings.
+      for (const w of err.warnings || []) process.stderr.write(compactWarningLine(w))
       if (err.code === 'COMPACT_FIDELITY') {
-        for (const w of err.warnings) process.stderr.write(compactWarningLine(w))
         process.stderr.write(`notes:            ${compactCountsLine(err.counts)}\n`)
       }
       throw err

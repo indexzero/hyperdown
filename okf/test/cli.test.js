@@ -564,6 +564,11 @@ async function inspectSecret(v, id) {
   return { encrypted: v.metadata.encrypted, text: await headText(v, id), rawHits: (await rawHits(v, Buffer.from(SECRET))).length > 0 }
 }
 
+/** The CLI's plaintext warning for `dir` (decision 8). */
+function plaintextLine(dir) {
+  return `warning: ${dir}: now holds the contents of an encrypted vault as plaintext\n`
+}
+
 test('T17: compact refuses an encrypted vault without --encryption-key by name, and creates nothing (s1.mjs A, G14)', async () => {
   // scratch-D/s1.mjs scenario A: an encrypted vault compacted without a key
   // gave an unencrypted vault and exit 0. No flag makes an unencrypted copy.
@@ -658,6 +663,87 @@ test('T17: the in-process compact with a key makes an encrypted vault whose raw 
     await ctlRes.vault.close()
     await ctl.close()
   }
+})
+
+test('T17: materialize and compact warn when they write an encrypted vault as plaintext, and keep their exit codes; an unencrypted vault gets no warning', async () => {
+  const base = await tmpDir('enc-warn')
+  const storage = join(base, 'vault')
+  await initEncrypted(storage)
+
+  // materialize: exit 0, one warning that names the bundle directory.
+  const bundle = join(base, 'bundle')
+  const mat = await cli(['materialize', storage, bundle])
+  assert.equal(mat.code, 0, mat.stderr)
+  assert.equal(mat.stderr, plaintextLine(bundle))
+  assert.match(await readFile(join(bundle, 'secret', 'plan.md'), 'utf8'), new RegExp(SECRET))
+
+  // compact, success: exit 0, the warning names the face.
+  const face = join(base, 'face')
+  const ok = await cli(['compact', storage, join(base, 'out'), '--face', face, '--encryption-key', NEW_KEY])
+  assert.equal(ok.code, 0, ok.stderr)
+  assert.equal(ok.stderr, plaintextLine(face))
+  assert.ok(!(await entries(base)).some((e) => e.includes('.verify-')), 'a verification directory remains')
+
+  // compact, failure after the face step: exit 1 (COMPACT_FIDELITY, a
+  // reserved .okf- name is not staged), and the warning still names the face.
+  const failStorage = join(base, 'vault-fail')
+  await initEncrypted(failStorage)
+  const fv = await Bundle.open(failStorage)
+  await fv.createConcept('notes/.okf-state', 'note')
+  await fv.close()
+  const failFace = join(base, 'face-fail')
+  const failed = await cli(['compact', failStorage, join(base, 'out-fail'), '--face', failFace, '--encryption-key', NEW_KEY])
+  assert.equal(failed.code, 1, failed.stdout + failed.stderr)
+  assert.match(failed.stderr, /COMPACT_FIDELITY/)
+  assert.ok(failed.stderr.startsWith(plaintextLine(failFace)), failed.stderr)
+  assert.ok(!(await entries(base)).some((e) => e.includes('.verify-')), 'a verification directory remains')
+
+  // An unencrypted vault: no warning from either command.
+  const plain = join(base, 'plain')
+  const pv = await Bundle.init(plain)
+  await seedSecret(pv)
+  await pv.close()
+  const pmat = await cli(['materialize', plain, join(base, 'plain-bundle')])
+  assert.equal(pmat.code, 0, pmat.stderr)
+  assert.equal(pmat.stderr, '')
+  const pcom = await cli(['compact', plain, join(base, 'plain-out')])
+  assert.equal(pcom.code, 0, pcom.stderr)
+  assert.equal(pcom.stderr, '')
+})
+
+test('T17: the in-process compact reports the plaintext face as a warning, on success and on a failure after the face step', async () => {
+  const base = await tmpDir('enc-lib-warn')
+  const old = await Bundle.init(join(base, 'vault'), { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
+  await seedSecret(old)
+  const key = Buffer.from(NEW_KEY, 'hex')
+  const warning = (dir) => ({ kind: 'plaintext', path: dir, message: 'now holds the contents of an encrypted vault as plaintext' })
+
+  const res = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'face'), vaultDir: join(base, 'out'), encryptionKey: key })
+  assert.deepEqual(res.warnings, [warning(join(base, 'face'))])
+  await res.vault.close()
+
+  // A hand-authored note makes the face dirty. compact refuses it with
+  // COMPACT_DIRTY_TARGET after the face step, and the error carries the warning.
+  const dirty = join(base, 'face-dirty')
+  await mkdir(dirty, { recursive: true })
+  await writeFile(join(dirty, 'hand.md'), '---\ntype: note\n---\n\nby hand\n')
+  await assert.rejects(
+    () => compact(old, { initBundle: Bundle.init, toDir: dirty, vaultDir: join(base, 'out-dirty'), encryptionKey: key }),
+    (err) => {
+      assert.equal(err.code, 'COMPACT_DIRTY_TARGET', err.stack)
+      assert.deepEqual(err.warnings, [warning(dirty)])
+      return true
+    }
+  )
+  await old.close()
+
+  // An unencrypted vault: no plaintext warning.
+  const ctl = await Bundle.init(join(base, 'control'))
+  await seedSecret(ctl)
+  const ctlRes = await compact(ctl, { initBundle: Bundle.init, toDir: join(base, 'control-face'), vaultDir: join(base, 'control-out') })
+  assert.deepEqual(ctlRes.warnings, [])
+  await ctlRes.vault.close()
+  await ctl.close()
 })
 
 test('undelete restores a tombstoned concept', async () => {
