@@ -79,14 +79,19 @@ const handlers = {
    * seqHex), not a Buffer — pass it through verbatim (the minting
    * create-concept's tag is the concept _id the scenarios track).
    */
-  async append({ type, payload = {}, optimistic = false }) {
-    const res = await vault.append(type, reviveBuffers(payload), { optimistic })
+  async append({ type, payload = {} }) {
+    const res = await vault.append(type, reviveBuffers(payload))
     return { seq: res.seq, tag: res.tag ?? null }
   },
 
-  /** Poison-op path: append raw bytes, bypassing the op encoder. */
-  async appendRaw({ hexBytes, optimistic = false }) {
-    await vault.db.append(Buffer.from(hexBytes, 'hex'), { optimistic })
+  /**
+   * Poison-op path: append raw bytes, bypassing the op encoder. Like
+   * Bundle.append, it refuses a writer that autobee has not added: a plain
+   * append from such a writer would close autobee (G12).
+   */
+  async appendRaw({ hexBytes }) {
+    if (!vault.writable) throw new Error('VAULT_NOT_WRITABLE: appendRaw before admission')
+    await vault.db.append(Buffer.from(hexBytes, 'hex'))
     return true
   },
 

@@ -102,8 +102,8 @@ export class WriterHandle {
     return this.cmd('call', { method, args })
   }
 
-  append(type, payload, optimistic = false) {
-    return this.cmd('append', { type, payload, optimistic })
+  append(type, payload) {
+    return this.cmd('append', { type, payload })
   }
 
   hash() {
