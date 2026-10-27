@@ -1,8 +1,12 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.5 (2026-10-27). RFC 2119
+**Status:** Normative build instruction, v1.6 (2026-10-27). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.5 deletes optimistic onboarding: a writer's ops take
+**Changelog:** v1.6 makes an autobee grant follow every `AddWriter` op:
+apply calls `host.addWriter(key, { weight: 0 })` for every `AddWriter` op
+it folds, accepted or rejected, before any check that can reject it. okf
+membership comes only from `gov/`. The uniform weight is 0 (§8).
+v1.5 deletes optimistic onboarding: a writer's ops take
 effect only once an indexer's `AddWriter` has admitted it, and an op from
 any other writer is rejected `not-a-writer` (§8). The hold buffer, the
 `optimistic` flag family, the `hold-overflow` rejection and the unacked
@@ -413,8 +417,9 @@ saga is the cautionary tale). The rules are frozen:
 - Governance ops (`AddWriter`, `RemoveWriter`, `SetWriterPolicy`) require an
   **indexer issuer**, checked in apply against `gov/writer/<issuer>` at the
   op's linearized position; violations are rejected (reason
-  `policy-governance`), and `host.addWriter`/`removeWriter` are never called
-  for unauthorized ops (vault-ld §8.0/B2 ancestry). A `RemoveWriter` that
+  `policy-governance`) and change no `gov/` key. `host.removeWriter` is
+  never called (below). The autobee grant of an `AddWriter` op does not
+  depend on the op's disposition (the grant rule below). A `RemoveWriter` that
   would leave zero indexers is rejected (reason `policy-governance`) — a
   vault can never become permanently ungovernable. Genesis: the vault
   creator's key is the first indexer, seeded deterministically.
@@ -433,18 +438,23 @@ saga is the cautionary tale). The rules are frozen:
   to the (bounded) window of ops at `seq <= seqAtRemoval` still in flight.
   Additionally, apply rejects any op whose claimed self-clock entry does
   not equal its actual seq (reason `forged-clock`).
-- Writers are admitted with an **explicit** uniform weight. The substance
-  is *uniform* weight, not any particular value; the delivered value is
-  **2**, pinning `host.addWriter(key, { isIndexer: op.indexer, weight: 2 })`
-  on every admission. **Resolved (delivery):** autobee@1.0.10's GENESIS
-  auto-add is uncontrollable from apply and always uses weight 2, so a
-  literal `weight: 1` for later writers would re-create exactly the
-  mixed-weight condition this rule exists to prevent (1.0.x topo
-  comparators diverge under unequal concurrent weights). Pinning every
-  writer at the genesis value 2 keeps all weights uniform. Side effect:
-  autobee's cosmetic `isIndexer` getter (`weight === 2`) then reads true
-  for all writers — immaterial, because §8 governance authority is decided
-  from `gov/` by core, never from autobee writer state.
+- **An autobee grant follows every `AddWriter` op.** Apply MUST call
+  `host.addWriter(key, { weight: 0 })` for every `AddWriter` op it folds,
+  whether it accepts or rejects the op. The call comes right after a
+  successful decode, before every check that can reject the op: the §3
+  post-decode limits, `forged-clock`, the revocation check, the
+  indexer-issuer rule and the rate check. Those checks read the op's
+  linearized position, and a reorder can flip their outcome. The grant
+  reads the op bytes alone, so every peer makes it in every order, and no
+  reorder undoes it. Only a 32-byte key is granted: autobee@2.12.1 copies
+  the key into a fixed 34-byte system key (`lib/encoding.js:64-69`). The
+  weight is explicit and uniform, 0 for every writer, never autobee's
+  default `isIndexer ? 2 : 1` (`lib/apply-calls.js:33`). The store constructs
+  autobee with `bootstrapWeight: 0`, so genesis stands at 0 too. The grant
+  makes the key an autobee writer, so its nodes reach apply on every peer.
+  It confers no okf membership: **okf membership comes only from `gov/`**,
+  which apply decides. A granted key with no `gov/writer/<key>` record has
+  each of its ops rejected `not-a-writer` (below), with a flag (I4).
 - **Admission comes before effect.** A writer's ops take effect only once
   an indexer-authored `AddWriter` naming its key has admitted it, at that
   op's linearized position. The genesis indexer is the one writer admitted
