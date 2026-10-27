@@ -258,7 +258,7 @@ export async function compact(vault, opts = {}) {
       throw err.code === 'EEXIST' ? stageExistsError(stageDir) : err
     })
     ownStage = true
-    return await generateFromFace(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, sign, initBundle })
+    return await generateSuccessor(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, sign, initBundle })
   } catch (err) {
     if (err !== null && typeof err === 'object' && err.warnings === undefined) err.warnings = warnings
     throw err
@@ -307,7 +307,7 @@ export async function guardCompactPaths({ predecessorDir = null, toDir, vaultDir
 }
 
 /** Everything after the stage is created: the staged copy, the fresh vault, its ingest, its check and its generation entry. */
-async function generateFromFace(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, sign, initBundle }) {
+async function generateSuccessor(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, sign, initBundle }) {
   // The stage walks the face's emission manifest, not the directory: a
   // directory walk (walkNotes) skips every dot name, and a concept at a
   // dot-segment path such as `.drafts/idea` is a note that materialize wrote.
