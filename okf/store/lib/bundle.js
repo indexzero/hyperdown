@@ -154,6 +154,8 @@ export class Bundle extends EventEmitter {
     this._nextSeq = 0 // §3 (AD4): the position of the next local node, see _nextPosition()
     this._foldedSeq = 0
     this._appendChain = Promise.resolve()
+    this._appending = new Set() // every started append until it settles (see append())
+    this._closedLength = null // see _lengthAfterClose()
     this._backpressure = normalizeBackpressure(opts.backpressure)
     this._trackAcks = !!this._backpressure
     this._ackSeen = false // ever folded another writer's op (multiwriter)
@@ -444,10 +446,16 @@ export class Bundle extends EventEmitter {
 
   /**
    * No append starts once close() begins: append() refuses with
-   * VAULT_CLOSED. Every append that started before close() settles first
-   * (G11). autobee's close interrupts the drain before it writes local nodes
-   * to the core (index.js _close, :797-831), so an append still in flight
-   * would resolve with its node only in memory.
+   * VAULT_CLOSED. Every append that started before close() settles before
+   * close() resolves (G11):
+   * - First each one hands its node to autobee (the append chain). autobee's
+   *   close sets _interrupting (index.js:392), and the drain then pulls in
+   *   no more local nodes (index.js:797, :1580). So a db.append still in
+   *   flight would resolve with its node only in memory.
+   * - Then autobee closes. An append whose node is still not in the local
+   *   core then fails VAULT_CLOSED_BEFORE_DURABLE, and its op is not
+   *   written (see _durable() and _lengthAfterClose()). close() does not
+   *   wait for such a node.
    */
   async close() {
     this._closing = true
@@ -465,6 +473,7 @@ export class Bundle extends EventEmitter {
     // db.close() closes the generation SESSION (autobee _close); the root
     // corestore — which the Bundle owns either way — closes after it.
     if (this.db) await this.db.close()
+    await Promise.all(this._appending) // before the root store closes
     await this.store.close()
   }
 
@@ -534,7 +543,8 @@ export class Bundle extends EventEmitter {
    * wall-clock ms, §3). Returns `{ seq, tag }` — `seq` is the position of
    * the op's node in the local core (§3), and `tag` is the §3 opId apply
    * will derive (`writerKey || seq`), which for a minting `create-concept`
-   * is the concept's `_id`.
+   * is the concept's `_id`. It resolves only once the local core holds the
+   * node (T10, see _durable()).
    *
    * Appends are internally serialized (one at a time): the §8 forged-clock
    * rule pins each op's self-clock entry to its actual local position, so
@@ -563,6 +573,10 @@ export class Bundle extends EventEmitter {
    *
    * Close (G11): an append that starts after close() begins fails with
    * VAULT_CLOSED. close() waits for every append that started before it.
+   *
+   * The chain serializes the appends only until autobee holds each node.
+   * The wait for the local core runs outside it, so the next append can
+   * take the next position while a node waits behind a missing link.
    */
   append(type, payload = {}, opts = {}) {
     if (this._closing) return Promise.reject(closedError())
@@ -571,7 +585,91 @@ export class Bundle extends EventEmitter {
       () => {},
       () => {}
     )
-    return run
+    const durable = run.then((res) => this._durable(res.seq).then(() => res))
+    const settled = durable.then(
+      () => this._appending.delete(settled),
+      () => this._appending.delete(settled)
+    )
+    this._appending.add(settled)
+    return durable
+  }
+
+  /**
+   * Resolves once the local core holds position `seq` (T10). A plain
+   * db.append resolves with the drain that writes its node to the core, so
+   * this mostly resolves at once. A node that waits behind an earlier local
+   * node that links a missing block stays in autobee's memory
+   * (lib/writers.js:624-631) until a later drain writes it. The wait listens
+   * to the documented hypercore events of db.local (the local writer
+   * Hypercore, autobee README): 'append' for a new length, and 'close'.
+   * The local writer appends through db.local itself (lib/writers.js:19,
+   * :37, :785). No timer polls.
+   *
+   * On 'close' the wait decides only once autobee has closed (see
+   * _lengthAfterClose()). A flush that started before db.local closed can
+   * still commit after it (hypercore index.js:1151, lib/session-state.js:
+   * 683-785), and the closed session then gets no 'append'.
+   */
+  _durable(seq) {
+    const local = this.db.local
+    if (local.length > seq) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      let waiting = true
+      const onAppend = () => {
+        if (local.length > seq) done(null)
+      }
+      const onClose = () => {
+        local.off('append', onAppend)
+        this._lengthAfterClose().then(
+          (length) => done(length > seq ? null : closedBeforeDurableError(seq)),
+          done
+        )
+      }
+      const done = (err) => {
+        if (!waiting) return
+        waiting = false
+        local.off('append', onAppend)
+        local.off('close', onClose)
+        if (err) reject(err)
+        else resolve()
+      }
+      local.on('append', onAppend)
+      local.once('close', onClose)
+      if (!local.readable) onClose() // it closed before the wait began
+    })
+  }
+
+  /**
+   * The length of the local core once autobee has closed, read from storage
+   * through the root corestore, which the Bundle closes last. A node that
+   * is not in the core then never lands, also not after a reopen:
+   * - It lives only in the writer's pending list (lib/writers.js:732-755).
+   * - Writer.flush is the only code that writes it to the core
+   *   (lib/writers.js:768-789). It runs only from the drain (index.js:824,
+   *   :1578-1597, lib/writers.js:137-147).
+   * - autobee's close calls no flush. It closes the writers and db.local,
+   *   and then awaits the drain in flight (index.js:391-452, :424, :439,
+   *   :446).
+   * - A reopen starts the writer with no pending node, at the core length
+   *   (lib/writers.js:329-331).
+   * - A node that waits behind a missing link never reached apply, so no
+   *   view or system state holds it (lib/writers.js:556-631).
+   * So an append that fails VAULT_CLOSED_BEFORE_DURABLE wrote nothing, and
+   * a retry writes the op once.
+   */
+  _lengthAfterClose() {
+    if (!this._closedLength) {
+      this._closedLength = this.db.close().then(async () => {
+        const core = this.store.get({ key: this.db.local.key, active: false })
+        try {
+          await core.ready()
+          return core.length
+        } finally {
+          await core.close()
+        }
+      })
+    }
+    return this._closedLength
   }
 
   async _append(type, payload, { backpressure } = {}) {
@@ -939,6 +1037,15 @@ function toKeyBuffer(key) {
 
 function closedError() {
   return vaultError('VAULT_CLOSED', 'the vault is closing or closed, so no new append starts')
+}
+
+function closedBeforeDurableError(seq) {
+  const err = vaultError(
+    'VAULT_CLOSED_BEFORE_DURABLE',
+    `the vault closed before the node at position ${seq} reached the local core; the op is not written`
+  )
+  err.seq = seq
+  return err
 }
 
 function vaultError(code, message) {

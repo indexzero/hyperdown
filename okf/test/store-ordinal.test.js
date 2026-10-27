@@ -253,11 +253,21 @@ test('G10 (s6): after a crash that loses the boot record, each next op takes its
   b2 = await Bundle.open(bdir)
   assert.equal(b2.db.local.length, 2, 'the local core holds b0 and S')
   assert.equal(await b2.val(K.seen(bHex)), 1, 'the reopen folded b0 only: S waits for R')
-  const T = await b2.setField(id, 'title', ['T'])
-  const U = await b2.setField(id, 'title', ['U'])
+  // T10: an append resolves only once its node is in the local core. The
+  // nodes of T and U wait in memory behind S, so T and U resolve only after
+  // a serves R.
+  const TU = Promise.all([
+    b2.setField(id, 'title', ['T']).then((r) => ({ ...r, length: b2.db.local.length })),
+    b2.setField(id, 'title', ['U']).then((r) => ({ ...r, length: b2.db.local.length }))
+  ])
+  const before = await Promise.race([TU.then(() => 'resolved'), sleep(500).then(() => 'waiting')])
+  assert.equal(before, 'waiting', 'T and U do not resolve before a peer serves R')
+  assert.equal(b2.db.local.length, 2, 'T and U are not in the local core yet')
+  unA2 = pair(a, b2) // a serves R
+  const [T, U] = await TU
   assert.equal(T.seq, S.seq + 1, 'T takes position 2')
   assert.equal(U.seq, T.seq + 1, 'U takes position 3, also while T waits behind S')
-  unA2 = pair(a, b2) // a serves R
+  assert.ok(T.length > T.seq && U.length > U.seq, 'T and U resolve with their nodes in the local core')
   assert.ok(await until(async () => (await b2.update(), ((await b2.val(K.seen(bHex))) ?? 0) >= U.seq + 1)), 'b2 folds S, T and U')
   assert.equal(b2.db.local.length, 4, 'T and U are at positions 2 and 3')
   assert.ok(await until(async () => (await a.update(), ((await a.val(K.seen(bHex))) ?? 0) >= U.seq + 1)), 'a folds S, T and U')
