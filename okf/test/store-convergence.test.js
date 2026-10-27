@@ -4,6 +4,10 @@
 // refused until an indexer admits it, and the refusal uses no seq.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import Autobee from '../store/node_modules/autobee/index.js'
+import Corestore from '../store/node_modules/corestore/index.js'
+import { createApply } from '../core/index.js'
+import { applyConfig, ViewAdapter } from '../store/index.js'
 import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
 
 test('two writers converge to bit-identical views (hash equality)', async (t) => {
@@ -115,7 +119,22 @@ test('a joiner folds every op through its own apply, never a stamped view (I2/I3
   // default it trusts every writer's stamp (autobee lib/trusted.js). Here
   // the genesis peer runs a DIFFERENT apply — it writes a key okf's apply
   // never writes — so a joiner that adopted its stamp would hold that key.
+  //
+  // Positive control: a joiner built from a raw Autobee as the Bundle
+  // builds one (core's createApply under the pinned config of a, the
+  // ViewAdapter, optimistic: false, bootstrapWeight: 0), with one
+  // difference: fastForward stays at autobee's default, on (index.js:106).
+  // It must fast-forward and hold the stamped key. So in this scenario a
+  // joiner with fast-forward on fails the checks that the Bundle joiner
+  // must pass.
+  const open = []
+  const unpairs = []
+  t.after(async () => {
+    for (const unpair of unpairs) unpair()
+    for (const v of open) await v.close()
+  })
   const a = await Bundle.init(await tmpDir('ff-a'))
+  open.push(a)
   const pinned = a._coreApply
   a._coreApply = async (nodes, view, host) => {
     await pinned(nodes, view, host)
@@ -130,15 +149,42 @@ test('a joiner folds every op through its own apply, never a stamped view (I2/I3
     await a.update() // one flush (one stamped view head) per op
   }
   assert.equal(await a.val('zz/foreign-config'), 'stamped')
+  const aHex = a.localKey.toString('hex')
+
+  const controlStore = new Corestore(await tmpDir('ff-control'))
+  let control = null
+  open.push({
+    async close() {
+      if (control) await control.close()
+      await controlStore.close()
+    }
+  })
+  control = new Autobee(controlStore.namespace('okf/generation/' + a.generation), a.key, {
+    apply: createApply(applyConfig(a.metadata)),
+    open: (bee) => new ViewAdapter(bee),
+    optimistic: false,
+    bootstrapWeight: 0
+  })
+  await control.ready()
+  await control.update() // as Bundle.join does before it resolves, with no peer yet
+  unpairs.push(pair(a, control))
+  const controlVal = async (key) => {
+    const node = await control.view.get(key)
+    return node ? JSON.parse(node.value) : undefined
+  }
+  assert.ok(
+    await until(async () => {
+      await control.update()
+      return (await controlVal(K.seen(aHex))) === 40
+    }),
+    'the control reaches all 40 ops of a'
+  )
+  assert.ok(control.stats.fastForwards >= 1, 'control: with fast-forward on, the joiner fast-forwards')
+  assert.equal(await controlVal('zz/foreign-config'), 'stamped', 'control: the joiner holds the key that only the apply of a writes')
 
   const b = await Bundle.join(await tmpDir('ff-b'), a.key)
-  const unpair = pair(a, b)
-  t.after(async () => {
-    unpair()
-    await a.close()
-    await b.close()
-  })
-  const aHex = a.localKey.toString('hex')
+  open.push(b)
+  unpairs.push(pair(a, b))
   assert.ok(
     await until(async () => {
       await b.update()
