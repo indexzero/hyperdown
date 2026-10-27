@@ -133,13 +133,16 @@ test('a refused append does not burn a seq (§8 forged-clock)', async (t) => {
   )
 
   // autobee@2 records an unadmitted writer as removed once its optimistic
-  // node is applied (lib/system.js ackWriter), and then refuses its plain
-  // appends up front with "Not writable" (index.js append), before
-  // anything reaches the local core.
+  // node is applied (lib/system.js ackWriter), so db.writable is false and
+  // the Bundle refuses its plain appends up front with VAULT_NOT_WRITABLE,
+  // before anything reaches the local core.
   const first = await c.setField(id, 'status', ['one'], { optimistic: true })
   assert.equal(first.seq, 0)
   await c.update()
-  await assert.rejects(() => c.setField(id, 'status', ['plain']), /Not writable/)
+  await assert.rejects(
+    () => c.setField(id, 'status', ['plain']),
+    (err) => err.code === 'VAULT_NOT_WRITABLE'
+  )
 
   const second = await c.setField(id, 'status', ['two'], { optimistic: true })
   assert.equal(second.seq, 1, 'the refused append did not consume seq 1')

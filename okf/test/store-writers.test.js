@@ -6,7 +6,7 @@
 // isIndexer from gov/, and weight 0 for every writer (T5).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
+import { Bundle, K, tmpDir, pair, until, sleep, converged } from './store-helpers.js'
 import { forgeNext, sys, linearized, carriers } from './attack-helpers.js'
 
 test('writer add/remove round trip: causal revocation, uniform on every peer', async (t) => {
@@ -86,6 +86,53 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
   // the removal of b did not go through b, and a stays the only indexer
   const aOthers = await a.val(K.govWriter(bHex))
   assert.equal(aOthers.indexer, false)
+})
+
+test('an append from a writer that is not writable fails fast: VAULT_NOT_WRITABLE, autobee stays open, no seq used (G12)', async (t) => {
+  // Ported from ab2-review/scratch-A/s3-plain-fresh.mjs. autobee's own
+  // append refuses only a writer it records as removed (autobee
+  // index.js:1531-1533). A writer it never added got past that check. Its
+  // node then failed the local flush with 'Not writable'
+  // (lib/writers.js:633-638), autobee closed itself (index.js:669-690),
+  // and the append still resolved with a seq.
+  const a = await Bundle.init(await tmpDir('nw-a'))
+  const { tag: id } = await a.createConcept('notes/x', 'note')
+  const c = await Bundle.join(await tmpDir('nw-c'), a.key)
+  const errors = []
+  c.on('error', (err) => errors.push(err.message))
+  const unpair = pair(a, c)
+  t.after(async () => {
+    unpair()
+    await a.close()
+    await c.close()
+  })
+  assert.ok(
+    await until(async () => {
+      await c.update()
+      return (await c.val(K.cMeta(id))) !== undefined
+    }),
+    'c syncs the vault'
+  )
+  assert.equal(c.writable, false, 'nobody admitted c')
+
+  await assert.rejects(
+    () => c.setField(id, 'status', ['plain']),
+    (err) => err.code === 'VAULT_NOT_WRITABLE',
+    'a content op fails fast with the named error'
+  )
+  await assert.rejects(
+    () => c.addWriter(a.localKey),
+    (err) => err.code === 'VAULT_NOT_WRITABLE',
+    'a governance op fails fast with the named error'
+  )
+  await sleep(200)
+  assert.equal(c.db.closing, null, 'autobee was never asked to close')
+  assert.equal(c.db.closed, false, 'autobee stays open')
+  assert.deepEqual(errors, [], 'autobee emitted no error')
+  assert.equal(c._nextSeq, 0, 'no seq used')
+  assert.equal(c.db.local.length, 0, 'no node reached the local core')
+  await c.update()
+  assert.ok(await c.val(K.cMeta(id)), 'c still reads the view')
 })
 
 test('remove-writer that would leave zero indexers is rejected (§8)', async (t) => {

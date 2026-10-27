@@ -553,6 +553,7 @@ export class Bundle extends EventEmitter {
 
   async _append(type, payload, { optimistic = false, backpressure } = {}) {
     await this.ready()
+    if (!optimistic) this._assertWritable() // fail fast, before any gate waits
     const bp = backpressure === undefined ? this._backpressure : normalizeBackpressure(backpressure)
     if (bp) {
       this._trackAcks = true
@@ -569,13 +570,34 @@ export class Bundle extends EventEmitter {
     if (op.clock === undefined) op.clock = await this.clock(seq)
     if (op.at === undefined) op.at = Date.now() // §3: informational only
     const buf = encodeOp(type, op) // may throw on a bad payload: seq not yet burned
+    // Again after the awaits above: a fold can take the grant away.
+    if (!optimistic) this._assertWritable()
     // Appends are serialized (append()), so the seq moves only once the
-    // node is in. autobee@2 refuses a plain append from a writer it
-    // records as removed with "Not writable" before touching the local
-    // core (index.js append): that seq is still free.
+    // node is in.
     await this.db.append(buf, { optimistic })
     this._nextSeq = seq + 1
     return { seq, tag: makeTag(this.db.local.key, seq) }
+  }
+
+  /**
+   * Refuse a plain append unless autobee has added this writer and not
+   * removed it: `db.writable` (autobee index.js:196-198, lib/writers.js:
+   * 208-216). autobee's own append refuses only a removed writer
+   * (index.js:1531-1533). A writer it never added gets past that, fails
+   * the local flush with 'Not writable' (lib/writers.js:633-638), and
+   * autobee closes itself while the append resolves (index.js:669-690,
+   * G12). This check throws before the seq moves and before anything
+   * reaches the local core.
+   */
+  _assertWritable() {
+    if (this.db.writable) return
+    const self = b4a.toString(this.db.local.key, 'hex')
+    const err = vaultError(
+      'VAULT_NOT_WRITABLE',
+      `local writer ${self} is not writable yet; an indexer must admit it with add-writer (§8)`
+    )
+    err.writerKey = self
+    throw err
   }
 
   /** The two admission gates (see append()). */

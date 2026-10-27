@@ -94,9 +94,26 @@ export async function run(argv) {
       process.stderr.write(`error: ${err.message}\n`)
       return 1
     }
-    process.stderr.write(`auto-okf ${parsed.name}: ${err && err.message ? err.message : err}\n`)
+    process.stderr.write(`auto-okf ${parsed.name}: ${errorText(err)}\n`)
     return 1
   }
+}
+
+/**
+ * The text for an operational error. The store refuses every append until
+ * an indexer has admitted this peer (VAULT_NOT_WRITABLE, §8), so that error
+ * names the writer key and the step that admits it.
+ */
+function errorText(err) {
+  if (err && err.code === 'VAULT_NOT_WRITABLE') {
+    const key = err.writerKey ? ` ${err.writerKey}` : ''
+    return (
+      'Not writable: no indexer has admitted this peer yet. ' +
+      `Hand its writer key${key} to an indexer (\`auto-okf add-writer\`), ` +
+      'then replicate and try again'
+    )
+  }
+  return err && err.message ? err.message : String(err)
 }
 
 // ---------- command tree (paparam) ----------
@@ -599,7 +616,7 @@ async function cmdWatch({ args, flags }) {
     watcher.on('delete-skipped', ({ path }) =>
       process.stderr.write(`delete skipped (no --confirm-deletes): ${path}\n`)
     )
-    watcher.on('error', (err) => process.stderr.write(`watch error: ${err.message}\n`))
+    watcher.on('error', (err) => process.stderr.write(`watch error: ${errorText(err)}\n`))
     vault.on('error', (err) => process.stderr.write(`vault error: ${err.message}\n`))
     if (flags.swarm) {
       await vault.swarm()
