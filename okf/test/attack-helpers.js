@@ -19,7 +19,8 @@
 // approval at a huge weight can exhaust a heap, so it runs in a child.
 //
 // Vaults live under the store tests' temp root (store-helpers.js tmpDir).
-import { mkdir, appendFile } from 'node:fs/promises'
+import { mkdir, appendFile, readdir, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
@@ -136,6 +137,25 @@ export async function holds(v, key, length = 1) {
   try {
     await core.ready()
     return core.contiguousLength >= length
+  } catch {
+    return false
+  } finally {
+    await core.close().catch(() => {})
+  }
+}
+
+/**
+ * True when `v`'s corestore has a stored core for `key`, whether or not it
+ * holds blocks. After a reopen this is how a test tells that an outsider's
+ * announced writer core persisted. Only call it for a core that is
+ * expected: hypercore rejects a missing one with STORAGE_EMPTY, and that
+ * rejection can also surface outside this call.
+ */
+export async function storedCore(v, key) {
+  const core = v.store.get({ key, createIfMissing: false })
+  try {
+    await core.ready()
+    return true
   } catch {
     return false
   } finally {
@@ -266,9 +286,51 @@ export async function timed(fn, ms, label = '') {
   }
 }
 
-/** autobee counters of one vault: reorders undone and nodes applied. */
+/**
+ * autobee counters of one vault: reorders undone, nodes applied, writer
+ * cores opened and closed (autobee lib/writers.js:266, :464), and the
+ * writers it keeps active (lib/writers.js:41-43). The G44 flood is measured
+ * in `opened` and `active`.
+ */
 export function coreStats(v) {
-  return { undos: v.db.stats.undos, applies: v.db.stats.applies }
+  return {
+    undos: v.db.stats.undos,
+    applies: v.db.stats.applies,
+    opened: v.db.stats.writersOpened,
+    closed: v.db.stats.writersClosed,
+    active: v.db.writers.active.size
+  }
+}
+
+/** Bytes on disk under `dir`, recursively. The G44 storage metric. */
+export async function duBytes(dir) {
+  let total = 0
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) total += await duBytes(p)
+    else total += (await stat(p)).size
+  }
+  return total
+}
+
+/** `n` fresh 32-byte keys that belong to nobody, each with a length. */
+export function freshKeys(n, length = 1) {
+  const out = []
+  for (let i = 0; i < n; i++) out.push({ key: randomBytes(32), length })
+  return out
+}
+
+/**
+ * Milliseconds for `n` appends plus folds on one vault: the G44 latency
+ * metric. Each append is one honest op through the Bundle.
+ */
+export async function timeAppends(v, label, n = 20) {
+  const t0 = performance.now()
+  for (let i = 0; i < n; i++) {
+    await v.createConcept(`bench/${label}/${i}`, 'note')
+    await v.update()
+  }
+  return Math.round(performance.now() - t0)
 }
 
 /**
@@ -344,14 +406,15 @@ export function runChild(args, ms) {
 // Child-process entry point. A peer that applies an approval at weight W
 // builds one Set entry and one digest slot per tier (autobee
 // lib/promotions.js:137, :144). At W = 1e9 that exhausts the heap, so the
-// G2 test spawns this file and reads the JSON line it prints:
+// G2 tests spawn this file and read the JSON line it prints:
 //
-//   node okf/test/attack-helpers.js huge-approval <weight>
+//   node okf/test/attack-helpers.js huge-approval <arm> <weight>
 //
-// The carrier is an outsider: a Bundle that no indexer admitted. Adopted
-// from the T1 spike (D-003) as its outsider arm only.
+// `arm` is `outsider` (a Bundle that no indexer admitted) or `member` (a
+// key an indexer admitted with add-writer). Adopted from the T1 spike
+// (D-003), which measured both arms.
 // ---------------------------------------------------------------------------
-async function childHugeApproval(weight) {
+async function childHugeApprovalOutsider(weight) {
   const rss = () => Math.round(process.memoryUsage().rss / 1048576)
   const out = { weight, rssStart: rss() }
   const a = quiet(await Bundle.init(await tmpDir('g2-a'))) // the victim
@@ -412,12 +475,106 @@ async function childHugeApproval(weight) {
   }
 }
 
+/**
+ * The member arm of G2 (T11 residual). The carrier is a key an indexer
+ * admitted with add-writer, so autobee has added it and its plain nodes
+ * reach _applyBatch on every peer that reads them (index.js:1359,
+ * :1425-1455). okf cannot filter the approvals on such a node: autobee
+ * applies them before apply runs (index.js:1432-1441).
+ *
+ * The result records which peers died and what the memory cost was. A
+ * member folds its OWN node before the drain flushes it to the local core
+ * (index.js:818 _bumpPendingWriters, then :824 _flushLocal), so the first
+ * peer to pay the cost is the attacker itself.
+ */
+async function childHugeApprovalMember(weight) {
+  const rss = () => Math.round(process.memoryUsage().rss / 1048576)
+  const out = { arm: 'member', weight, rssStart: rss() }
+  const a = quiet(await Bundle.init(await tmpDir('g2m-a'))) // genesis, the victim
+  const b = quiet(await Bundle.join(await tmpDir('g2m-b'), a.key)) // the member
+  const named = randomBytes(32) // the key the forged approval names
+  const unpair = pair(a, b)
+  try {
+    const { tag } = await a.createConcept('seed', 'note')
+    out.synced = await until(async () => (await b.update(), (await b.val(K.cMeta(tag))) !== undefined), 20000)
+    await a.writers.add(b.localKey, { indexer: false })
+    out.memberWritable = await until(async () => (await b.update(), b.writable), 20000)
+    out.hash0 = await converged([a, b], 20000)
+
+    // the attack: the member's next node approves a key at `weight`
+    forgeNext(b, { approvals: [{ key: named, weight }] })
+    const append = await timed(() => b.createConcept('carrier', 'note'), 120000)
+    out.forgedAppend = append.status
+    out.forgedError = append.error ?? null
+    out.rssAfterAppend = rss()
+
+    // Did the forged node leave the attacker's core, and did the victim
+    // fold it? Both are reads, each under a deadline, because either peer
+    // can be down by now.
+    const len = await timed(() => b.db.local.length, 5000)
+    out.memberCoreLength = len.status === 'ok' ? len.value : null
+    out.delivered =
+      out.memberCoreLength > 0
+        ? await deliveredTo([['a', a]], [{ key: b.localKey, length: out.memberCoreLength }], 10000)
+        : { a: false }
+    // How long the victim takes to fold the forged approval into its own
+    // system. A node that never left the attacker's core cannot be folded,
+    // so that case is recorded and not waited on.
+    const fold = out.delivered.a
+      ? await timed(
+          () =>
+            until(
+              async () => {
+                await a.update()
+                return (await a.db.system.get(named)) !== null
+              },
+              30000,
+              50
+            ),
+          45000
+        )
+      : { status: 'NOT-DELIVERED', value: false, ms: null }
+    out.victimFolded = fold.status === 'ok' && fold.value === true
+    out.victimFoldMs = fold.ms
+    out.victimState = await timed(async () => {
+      const upd = await timed(() => a.update(), 20000)
+      return {
+        update: upd.status,
+        hash: upd.status === 'ok' ? ((await a.snapshotHash()) === out.hash0 ? 'unchanged' : 'CHANGED') : 'SKIPPED',
+        namedInSystem: (await a.db.system.get(named)) !== null,
+        appends: (await timed(() => timeAppends(a, 'g2m', 3), 60000)).status
+      }
+    }, 90000)
+    out.victim = out.victimState.status === 'ok' ? out.victimState.value : { status: out.victimState.status }
+  } catch (err) {
+    out.error = err && err.message ? err.message : String(err)
+  } finally {
+    out.rssEnd = rss()
+    out.errors = { victim: errorsOf(a), member: errorsOf(b) }
+    // The peers that the forged approval took down, by the error autobee
+    // reported. A Set with 1e9 requested tiers exceeds V8's limit
+    // (lib/promotions.js:137).
+    out.crashed = Object.entries(out.errors)
+      .filter(([, errs]) => errs.some((e) => /Set maximum size exceeded/.test(e)))
+      .map(([name]) => name)
+    unpair()
+    out.closed = (
+      await timed(async () => {
+        await b.close().catch(() => {})
+        await a.close().catch(() => {})
+      }, 30000)
+    ).status
+    console.log(`CHILD-RESULT ${JSON.stringify(out)}`)
+  }
+}
+
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [, , what, weight = '1000000000'] = process.argv
-  if (what !== 'huge-approval') {
-    console.error(`unknown child attack ${what}`)
+  const [, , what, arm = 'outsider', weight = '1000000000'] = process.argv
+  if (what !== 'huge-approval' || (arm !== 'outsider' && arm !== 'member')) {
+    console.error(`unknown child attack ${what} ${arm}`)
     process.exit(2)
   }
-  await childHugeApproval(Number(weight))
+  if (arm === 'member') await childHugeApprovalMember(Number(weight))
+  else await childHugeApprovalOutsider(Number(weight))
   process.exit(0)
 }

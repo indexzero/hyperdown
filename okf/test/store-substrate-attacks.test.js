@@ -32,8 +32,26 @@
 // - A7, G5: an outsider's backdated node that links one side of a
 //   concurrent pair.
 //
-// Not here: the member residuals and G44 (A5 member, A6 member, A7b, A8,
-// A9: T11 adopts them).
+// The residuals (T11). The last four tests measure what the product
+// configuration does NOT close, so SECURITY_MODEL can state it. A residual
+// test passes because the effect is the one the document names. It never
+// asserts a residual away.
+// - A5b, G2: a member's approval at weight 1e9 kills the peer that folds
+//   it, in a child process.
+// - A7b, G5: a member's backdated node flips the winner on every peer.
+// - A8, G44: an outsider wakeup flood opens one writer core per announced
+//   key, past autobee's untrusted cap, and the bytes persist.
+// - G32: a key that a member approves costs one flag per op, takes no rate
+//   token, and can grant more autobee writers.
+//
+// Not here: the member arm of A6 (G43). The forged witness is inert in
+// every arm, because a claim needs an approver with standing at least the
+// claimed weight (lib/witness.js:38-50), and at weight 0 nobody qualifies
+// (genesis only up to bootstrapWeight, lib/witness.js:47). A2 and G50
+// already prove that no key a member names rises above 0. Also not here:
+// the A9 missing-link variant of G44, which needs a raw oplog block that
+// autobee's own local flush gate refuses to send (lib/writers.js:641-664);
+// A8 measures the same cost through the documented wakeup protocol.
 //
 // Every wait has a deadline. Each test has a timeout. Each poll runs under
 // until(), each close under timed(), and every fold after the livelock
@@ -66,7 +84,11 @@ import {
   announce,
   deliveredTo,
   watchApply,
-  runChild
+  runChild,
+  duBytes,
+  freshKeys,
+  timeAppends,
+  storedCore
 } from './attack-helpers.js'
 
 // The tier an attacker asks for: indexer standing.
@@ -464,7 +486,7 @@ test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', 
 // must not take the test runner with it.
 // ---------------------------------------------------------------------------
 test('A5 G2: an outsider approval at weight 1e9 reaches no apply (child process)', { timeout: 2 * TIMEOUT }, async (t) => {
-  const run = await runChild(['huge-approval', '1000000000'], 180000)
+  const run = await runChild(['huge-approval', 'outsider', '1000000000'], 180000)
   const r = run.result
   await record(t, 'A5-G2-huge-approval-outsider', {
     trigger: 'outsider',
@@ -755,4 +777,421 @@ test('G50: no writer climbs, also when a member forges a higher-tier approval', 
     assert.deepEqual(p.heavier, [], `${name}: every node resolves at weight 0`)
     assert.deepEqual(p.carriers, [[cHex, true, false]], `${name}: only the forged node carries approvals`)
   }
+})
+
+// ===========================================================================
+// The residuals (T11). Each test below measures an attack that the product
+// configuration does NOT close, and pins the effect that
+// okf/SECURITY_MODEL.md states. okf cannot close any of them without
+// changing autobee: the mechanism of each one runs before or outside okf's
+// apply (autobee index.js:1374 resolveWeight, :1430 addNode, :1432-1441
+// approvals, lib/writers.js:719 wakeup).
+// ===========================================================================
+
+/** Every view key under `prefix` on one peer, sorted. */
+async function viewKeys(v, prefix) {
+  const out = []
+  for await (const { key } of v.scan(prefix)) out.push(key)
+  return out.sort()
+}
+
+/** `[seq, reason]` of every flag/rejected entry of writer `w`, sorted. */
+async function rejectionsOf(v, w) {
+  const out = []
+  for await (const { key, value } of v.scan(K.flagPrefix('rejected', w))) {
+    out.push([Number(key.slice(key.lastIndexOf('/') + 1)), value.reason])
+  }
+  return out.sort((x, y) => x[0] - y[0])
+}
+
+// ---------------------------------------------------------------------------
+// G2, the member arm (D-003 A5, member). An approval's weight is unbounded.
+// The peer that folds an approval at weight W builds one Set entry and one
+// digest slot per tier (lib/promotions.js:137, :144), so the cost is linear
+// in the number the attacker writes, and at 1e9 the Set exceeds V8's limit.
+// A member's plain node is not dropped: autobee has added the writer
+// (index.js:1359), and it applies the approvals of every node of the batch
+// before apply runs (index.js:1432-1441). So okf cannot filter it.
+//
+// It runs in a child process: the heap this exhausts must not take the test
+// runner with it. A member folds its own node before the drain flushes it
+// to the local core (index.js:818, then :824), so the first peer to pay is
+// the attacker itself.
+// ---------------------------------------------------------------------------
+test('A5b G2: a member approval at weight 1e9 kills the peer that folds it (residual, child process)', { timeout: 2 * TIMEOUT }, async (t) => {
+  const run = await runChild(['huge-approval', 'member', '1000000000'], 180000)
+  const r = run.result
+  await record(t, 'A5b-G2-huge-approval-member', {
+    trigger: 'member',
+    childExit: run.code,
+    childSignal: run.signal,
+    childMs: run.ms,
+    stderrTail: run.stderrTail || null,
+    result: r
+  })
+
+  assert.equal(run.code, 0, `the child exits cleanly (${run.stderrTail})`)
+  assert.ok(r, 'the child prints its result')
+  assert.equal(r.error ?? null, null, 'the child throws nothing')
+  assert.equal(r.synced, true, 'the member syncs the vault')
+  assert.equal(r.memberWritable, true, 'an indexer admitted the member (positive control)')
+  assert.ok(r.hash0, 'the peers converge before the attack')
+  // The measured effect: the peer that folds the forged approval dies with
+  // V8's Set limit, and its memory climbs while it builds the tiers.
+  assert.ok(
+    r.crashed.length >= 1,
+    `the forged approval kills the peer that folds it: crashed ${JSON.stringify(r.crashed)}, errors ${JSON.stringify(r.errors)}`
+  )
+  assert.ok(r.crashed.includes('member'), 'the member folds its own node first, so it dies first')
+  assert.ok(
+    r.rssEnd > r.rssStart,
+    `the cost is memory, linear in the weight (RSS ${r.rssStart} to ${r.rssEnd} MB)`
+  )
+
+  // The second arm: a weight the attacker itself survives. It shows that
+  // okf cannot filter such an approval. autobee applies it in _applyBatch
+  // (index.js:1432-1441) and the key lands in every peer's system, and no
+  // okf apply ever sees it. Every peer pays the tier walk per fold.
+  const low = await runChild(['huge-approval', 'member', '1000000'], 180000)
+  const l = low.result
+  await record(t, 'A5b-G2-member-approval-below-the-set-limit', {
+    trigger: 'member',
+    childExit: low.code,
+    childMs: low.ms,
+    stderrTail: low.stderrTail || null,
+    result: l
+  })
+
+  assert.equal(low.code, 0, `the child exits cleanly (${low.stderrTail})`)
+  assert.ok(l, 'the child prints its result')
+  assert.deepEqual(l.crashed, [], 'at 1e6 the attacker survives its own approval')
+  assert.equal(l.memberWritable, true, 'an indexer admitted the member (positive control)')
+  assert.ok(l.memberCoreLength > 0, 'the forged node reaches the attacker core')
+  assert.deepEqual(l.delivered, { a: true }, 'the victim holds the forged node (positive control)')
+  assert.equal(l.victimFolded, true, 'the victim folds the forged approval into its own system')
+  assert.equal(l.victim.namedInSystem, true, 'the named key becomes an autobee writer, with no okf op')
+})
+
+// ---------------------------------------------------------------------------
+// G5, the member arm (ab2-review/codex-B.out #3, D-003 A7b). One node,
+// backdated below a concurrent pair, linking only one side, with no system
+// hash, so every receiver sorts it into the middle (index.js:1377-1386,
+// lib/topo.js:168-179). Timestamps are the attacker's to choose: autobee
+// bounds only the future (MAX_FORWARD_TIME_DRIFT, lib/writers.js:15, :595),
+// never the past. okf's LWW register takes the last write in linearization
+// order, so the reorder picks the winner. The reorder is uniform, so the
+// peers still converge: it is a consistent rewrite, never a split.
+// ---------------------------------------------------------------------------
+test('A7b G5: a member backdated node flips the winner on every peer (residual)', { timeout: TIMEOUT }, async (t) => {
+  const a = quiet(await Bundle.init(await tmpDir('a7b-a')))
+  const b = quiet(await Bundle.join(await tmpDir('a7b-b'), a.key)) // a member
+  const s = quiet(await Bundle.join(await tmpDir('a7b-s'), a.key)) // the attacker, a member
+  const applied = { a: watchApply(a), b: watchApply(b), s: watchApply(s) }
+  let unpairAB = pair(a, b)
+  const unpairAS = pair(a, s)
+  let unpairBS = pair(b, s) // full mesh
+  t.after(async () => {
+    unpairAB()
+    unpairAS()
+    unpairBS()
+    await closeAll(a, b, s)
+  })
+  const sHex = hex(s.localKey)
+  const out = { trigger: 'member' }
+
+  await a.writers.add(b.localKey, { indexer: false })
+  await a.writers.add(s.localKey, { indexer: false })
+  out.bothAdmitted = await until(async () => {
+    await b.update()
+    await s.update()
+    return b.writable && s.writable
+  }, 20000)
+  const { tag: id } = await a.createConcept('conflict/target', 'note')
+  out.bothSawConcept = await until(async () => {
+    await b.update()
+    await s.update()
+    return (await b.val(K.cMeta(id))) !== undefined && (await s.val(K.cMeta(id))) !== undefined
+  }, 20000)
+
+  // the concurrent pair: b is cut off from every peer while both writes
+  // happen, so neither write links the other
+  unpairAB()
+  unpairBS()
+  await a.setField(id, 'status', ['from-a'])
+  await sleep(150)
+  await b.setField(id, 'status', ['from-b'])
+  const bLen = b.db.local.length
+  unpairAB = pair(a, b)
+  unpairBS = pair(b, s)
+  const hash0 = await converged([a, b, s], 25000)
+  const w0 = hash0 ? await a.val(K.cField(id, 'status')) : null
+  out.winnerBefore = w0 ? w0.values : null
+
+  // the attack: backdated below both writes, linking only b's write
+  const before = coreStats(a)
+  forgeNext(s, {
+    timestamp: Date.now() - 3600 * 1000,
+    links: [{ key: b.localKey, length: bLen }],
+    hash: null
+  })
+  const forged = await timed(() => s.createConcept('attacker-node', 'note'), 20000)
+  out.forgedAppend = forged.status
+  const attackLen = s.db.local.length
+  const peers = [
+    ['a', a],
+    ['b', b],
+    ['s', s]
+  ]
+  out.delivered = await deliveredTo(peers, [{ key: s.localKey, length: attackLen }])
+  out.hashAfter = await converged([a, b, s], 25000)
+  out.undoDelta = coreStats(a).undos - before.undos
+  out.winnerAfter = {}
+  out.applied = {}
+  for (const [name, v] of peers) {
+    const w = await v.val(K.cField(id, 'status'))
+    out.winnerAfter[name] = w ? w.values : null
+    out.applied[name] = applied[name].has(sHex)
+  }
+  out.errors = { victim: errorsOf(a), member: errorsOf(b), attacker: errorsOf(s) }
+  await record(t, 'A7b-G5-backdated-member', out)
+
+  assert.equal(out.bothAdmitted, true)
+  assert.equal(out.bothSawConcept, true)
+  assert.ok(hash0, 'the peers converge before the attack')
+  assert.ok(out.winnerBefore, 'the concurrent pair has a winner')
+  assert.equal(out.forgedAppend, 'ok')
+  assert.deepEqual(out.delivered, { a: true, b: true, s: true }, 'every peer holds the backdated node (positive control)')
+  // The measured effect: the member's node reaches apply on every peer,
+  // the reorder flips the winner there, and the peers still agree.
+  for (const name of ['a', 'b', 's']) {
+    assert.equal(out.applied[name], true, `${name}: a member's node reaches okf's apply`)
+    assert.notDeepEqual(
+      out.winnerAfter[name],
+      out.winnerBefore,
+      `${name}: the backdated node flips the winner (${JSON.stringify(out.winnerBefore)} to ${JSON.stringify(out.winnerAfter[name])})`
+    )
+    assert.deepEqual(out.winnerAfter[name], out.winnerAfter.a, `${name}: every peer picks the same new winner`)
+  }
+  assert.ok(out.undoDelta >= 1, `the node is sorted in, not taken at the tip (undos ${out.undoDelta})`)
+  assert.ok(out.hashAfter, 'the reorder is uniform: the peers still converge')
+  assert.deepEqual(out.errors, { victim: [], member: [], attacker: [] }, 'no autobee closes')
+})
+
+// ---------------------------------------------------------------------------
+// G44, owner-accepted at G1 (D-003 A8). An outsider that holds the vault
+// key announces N fresh writer keys over the wakeup protocol. A receiver
+// hints every announced key (autobee-wakeup/index.js:24-26), and each hint
+// opens and persists a writer core (index.js:878-893, lib/writers.js:67-89,
+// :239-294). autobee's untrusted cap does not apply: it is skipped while
+// the local writer is trusted (lib/writers.js:262), and with no isTrusted
+// or mostRecentTrusted hook every key is trusted (lib/trusted.js:30-32).
+// The announce runs before, and independently of, the optimistic filter, so
+// `optimistic: false` does not stop it.
+// ---------------------------------------------------------------------------
+test('A8 G44: an outsider wakeup flood opens one writer core per announced key (residual)', { timeout: 4 * TIMEOUT }, async (t) => {
+  const N = Number(process.env.OKF_FLOOD_N || 200)
+  const CAP = 128 // autobee's DEFAULT_MAX_UNTRUSTED_WRITERS (lib/writers.js:13)
+  const aDir = await tmpDir('a8-a')
+  const a = quiet(await Bundle.init(aDir))
+  const s = quiet(await Bundle.join(await tmpDir('a8-s'), a.key)) // holds the vault key only
+  const unpair = pair(a, s)
+  let aClosed = false
+  let sClosed = false
+  t.after(async () => {
+    unpair()
+    if (!sClosed) await closeAll(s)
+    if (!aClosed) await closeAll(a)
+  })
+  const out = { trigger: 'outsider', N, cap: CAP }
+
+  await a.createConcept('seed', 'note')
+  out.outsiderSynced = await until(async () => {
+    await s.update()
+    return (await s.val(K.seen(hex(a.localKey)))) !== undefined
+  }, 20000)
+  out.baselineAppendMs = await timeAppends(a, 'a8-base', 20)
+  await a.update()
+  const before = { ...coreStats(a), bytes: await duBytes(aDir) }
+
+  // the attack: one announce of N keys that belong to nobody
+  const flood = freshKeys(N)
+  out.announced = await announce(s, flood, 20000)
+  const reached = await timed(
+    () =>
+      until(
+        async () => {
+          await a.update()
+          return coreStats(a).opened - before.opened >= N
+        },
+        120000,
+        100
+      ),
+    150000
+  )
+  out.allOpened = reached.status === 'ok' && reached.value === true
+  out.openWaitMs = reached.ms
+  await sleep(1000)
+  await a.update()
+  const after = { ...coreStats(a), bytes: await duBytes(aDir) }
+  out.coresOpened = after.opened - before.opened
+  out.activeDelta = after.active - before.active
+  out.bytesDelta = after.bytes - before.bytes
+  const bench = await timed(() => timeAppends(a, 'a8-post', 20), 240000)
+  out.postAppendStatus = bench.status
+  out.postAppendMs = bench.value ?? null
+  out.slowdown =
+    out.postAppendMs && out.baselineAppendMs
+      ? Number((out.postAppendMs / out.baselineAppendMs).toFixed(2))
+      : null
+
+  // The reopen: no brick, and the flood's cores are still in the store. A
+  // sample of the announced keys is probed, because a key nobody announced
+  // is not stored at all (storedCore).
+  unpair()
+  await closeAll(s)
+  sClosed = true
+  const sample = flood.slice(0, 10).map(({ key }) => key)
+  out.closed = (await timed(() => a.close(), 60000)).status
+  aClosed = true
+  const reopen = await timed(async () => {
+    const again = quiet(await Bundle.open(aDir))
+    const upd = await timed(() => again.update(), 60000, 'reopen-update')
+    let stored = 0
+    for (const key of sample) if (await storedCore(again, key)) stored++
+    const closed = await timed(() => again.close(), 60000, 'reopen-close')
+    return { update: upd.status, stored, close: closed.status, errors: errorsOf(again) }
+  }, 180000)
+  out.reopen = { status: reopen.status, ms: reopen.ms, ...(reopen.value || {}) }
+  out.bytesAfterReopen = await duBytes(aDir)
+  out.before = { opened: before.opened, active: before.active, bytes: before.bytes }
+  out.after = { opened: after.opened, active: after.active, bytes: after.bytes }
+  out.errors = { victim: errorsOf(a), outsider: errorsOf(s) }
+  await record(t, 'A8-G44-wakeup-flood', out)
+
+  assert.equal(out.outsiderSynced, true, 'the outsider holds the vault key and replicates')
+  assert.equal(out.announced, true, 'the announce reaches a wakeup peer (positive control)')
+  // The measured effect: one core per announced key, past the untrusted
+  // cap, and bytes and cores that survive a reopen.
+  assert.equal(out.allOpened, true, 'every announced key opened a core within the deadline')
+  assert.equal(out.coresOpened, N, 'one writer core per announced key')
+  assert.ok(out.coresOpened > CAP, `the untrusted cap of ${CAP} does not bound the flood`)
+  assert.ok(out.activeDelta >= N, `every opened core stays active (${out.activeDelta})`)
+  assert.ok(out.bytesDelta > 0, `the flood persists bytes (${out.bytesDelta})`)
+  assert.equal(out.closed, 'ok', 'the victim closes')
+  // The cores, not the byte count, are the persistence claim. The storage
+  // engine rewrites its own files on close, so `bytesAfterReopen` is
+  // recorded and never compared: it can be below the pre-flood count.
+  assert.equal(out.reopen.stored, sample.length, 'every sampled core is still in the store after a reopen')
+  // Storage and open cores, never a brick: the vault still appends, and it
+  // still reopens and folds.
+  assert.equal(out.postAppendStatus, 'ok', 'the victim still appends within the deadline')
+  assert.equal(out.reopen.update, 'ok', 'the victim reopens and folds (no brick)')
+  assert.deepEqual(out.errors, { victim: [], outsider: [] }, 'no autobee closes')
+})
+
+// ---------------------------------------------------------------------------
+// G32 (ab2-review/scratch-B/s8-unmetered-flags.mjs, ported to the store
+// with a key that a member approves). A member's forged approval makes any
+// key an autobee writer at weight 0 (index.js:1432-1441, lib/system.js:
+// 66-93). That key has no gov/writer record, so okf rejects every op of it
+// `not-a-writer` (§8) before the rate check, which means its ops take no
+// token: the growth is unmetered. Each op costs one flag/rejected entry on
+// every peer, and changes no c/ key.
+//
+// Its governance ops also grant: core calls host.addWriter for every
+// AddWriter op it folds, before any check that can reject it (AD7, §8), so
+// a granted non-member can make more autobee writers at weight 0.
+// ---------------------------------------------------------------------------
+test('G32: a key that a member approves costs one flag per op, no rate token and no c/ change (residual)', { timeout: 2 * TIMEOUT }, async (t) => {
+  const OPS = 12 // content ops from the approved key
+  const GRANTS = 3 // AddWriter ops from the approved key
+  const a = quiet(await Bundle.init(await tmpDir('g32-a')))
+  const b = quiet(await Bundle.join(await tmpDir('g32-b'), a.key)) // a member
+  const s = quiet(await Bundle.join(await tmpDir('g32-s'), a.key)) // the approved key
+  const applied = { a: watchApply(a), b: watchApply(b), s: watchApply(s) }
+  const unpairAB = pair(a, b)
+  const unpairAS = pair(a, s)
+  const unpairBS = pair(b, s) // full mesh
+  t.after(async () => {
+    unpairAB()
+    unpairAS()
+    unpairBS()
+    await closeAll(a, b, s)
+  })
+  const sHex = hex(s.localKey)
+  const out = { trigger: 'member' }
+
+  await a.writers.add(b.localKey, { indexer: false })
+  assert.ok(await until(async () => (await b.update(), b.writable), 20000), 'b becomes writable')
+
+  // the setup: b's next node approves s, and autobee adds s at weight 0
+  forgeNext(b, { approvals: [{ key: s.localKey, weight: TIER }] })
+  out.carrierAppend = (await timed(() => b.createConcept('g32/carrier', 'note'), 20000)).status
+  out.granted = await until(async () => (await s.update(), s.writable), 20000)
+  out.hash0 = await converged([a, b, s], 25000)
+  const cBefore = await viewKeys(a, K.cRoot())
+
+  // the attack: OPS content ops and GRANTS AddWriter ops from a key okf
+  // never admitted
+  for (let i = 0; i < OPS; i++) {
+    await s.createConcept(`g32/junk/${i}`, 'note')
+  }
+  const grantKeys = freshKeys(GRANTS).map(({ key }) => key)
+  for (const key of grantKeys) await s.addWriter(key)
+  const attackLen = s.db.local.length
+  const peers = [
+    ['a', a],
+    ['b', b],
+    ['s', s]
+  ]
+  out.delivered = await deliveredTo(peers, [{ key: s.localKey, length: attackLen }])
+  out.converged = (await converged([a, b, s], 30000)) !== null
+  out.peers = {}
+  const cKeys = {} // the full key lists stay out of the recorded line
+  for (const [name, v] of peers) {
+    const granted = []
+    for (const key of grantKeys) {
+      granted.push({
+        system: (await v.db.system.get(key)) !== null,
+        sys: await sys(v, key),
+        govWriter: (await v.val(K.govWriter(hex(key)))) ?? null
+      })
+    }
+    cKeys[name] = await viewKeys(v, K.cRoot())
+    out.peers[name] = {
+      applied: applied[name].has(sHex),
+      flags: (await rejectionsOf(v, sHex)).map(([seq, reason]) => `${seq}:${reason}`).join(' '),
+      seen: (await v.val(K.seen(sHex))) ?? null,
+      rate: (await v.val(K.rate(sHex))) ?? null,
+      govWriter: (await v.val(K.govWriter(sHex))) ?? null,
+      cKeyCount: cKeys[name].length,
+      granted
+    }
+  }
+  out.cKeyCountBefore = cBefore.length
+  out.expectedFlags = Array.from({ length: OPS + GRANTS }, (_, i) =>
+    i < OPS ? `${i}:not-a-writer` : `${i}:policy-governance`
+  ).join(' ')
+  out.errors = { a: errorsOf(a), b: errorsOf(b), s: errorsOf(s) }
+  await record(t, 'G32-unmetered-flags-member-approved', out)
+
+  assert.equal(out.carrierAppend, 'ok')
+  assert.equal(out.granted, true, 'a member can make any key an autobee writer (positive control)')
+  assert.deepEqual(out.delivered, { a: true, b: true, s: true }, 'every peer holds the ops (positive control)')
+  assert.equal(out.converged, true, 'the peers converge')
+  for (const [name, p] of Object.entries(out.peers)) {
+    assert.equal(p.applied, true, `${name}: every op of the approved key reaches okf's apply`)
+    // The measured per-op cost: one flag per op, and nothing else.
+    assert.equal(p.flags, out.expectedFlags, `${name}: one flag per op, one per seq, with its reason`)
+    assert.equal(p.seen, OPS + GRANTS, `${name}: seen/ moves past every op`)
+    assert.equal(p.rate, null, `${name}: the ops take no rate token, so the growth is unmetered`)
+    assert.equal(p.govWriter, null, `${name}: okf membership comes only from gov/`)
+    assert.deepEqual(cKeys[name], cBefore, `${name}: no c/ key changes`)
+    for (const g of p.granted) {
+      assert.equal(g.system, true, `${name}: an AddWriter op of a non-member still grants its key`)
+      assert.deepEqual(g.sys, W0, `${name}: the granted key stands at weight 0`)
+      assert.equal(g.govWriter, null, `${name}: the granted key gets no okf membership`)
+    }
+  }
+  assert.deepEqual(out.errors, { a: [], b: [], s: [] }, 'no autobee closes')
 })
