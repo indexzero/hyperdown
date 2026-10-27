@@ -1,10 +1,14 @@
 // Store scope (okf SPEC §13, T4): encryptionKey end to end (§8) — writer
 // cores, system and view encrypted at rest; reopen-from-disk needs no key
-// (autobee lib/boot.js persists it in the local core's userData as
+// (autobee lib/boot.js:108-131 persists it in the local core's userData as
 // `autobee/encryption`); an invited peer holding the key replicates and
-// reads. autobee@2 moved encryption into autobee itself (lib/encryption.js,
-// per-view keys); its view encryption needs manifest-v3 cores, which okf
-// gets only with corestore >= 7.12 honouring the per-core manifestVersion.
+// reads. autobee@2.12.1 encrypts the cores itself (lib/encryption.js). It
+// asks for its system and view cores at manifest version 3
+// (index.js:213-221, lib/constants.js:3), and its view encryption refuses
+// a view core below version 3 (lib/encryption.js:83-86). corestore honours
+// that per-core manifestVersion from 7.12.6 on, so 7.12.6 is the floor
+// under the pin ^7.16.1 (okf/DEVIATIONS.md, "The pins, and the corestore
+// floor").
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
