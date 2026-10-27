@@ -757,9 +757,11 @@ test('T17: the in-process compact reports the plaintext face as a warning, on su
   await ctl.close()
 })
 
-test('T17: compact keeps a stage directory that it did not create, on success and on failure (G15)', async () => {
+test('T17, T18: compact refuses a stage directory that it did not create, keeps its contents and writes nothing (G15)', async () => {
   // compact removes only the stage that it created (the tests above). A
-  // stage directory that existed before is not compact's to remove.
+  // stage directory that existed before is not compact's to remove. compact
+  // creates its stage for this run only (T18), so it refuses a stage that
+  // exists, before it writes anything.
   const old = await Bundle.init(await tmpDir('stage-own-vault'))
   await seedSecret(old)
   /** Compact `old` into `<base>/out` with a stage directory that already holds keep.txt. */
@@ -774,12 +776,19 @@ test('T17: compact keeps a stage directory that it did not create, on success an
     } catch (err) {
       code = err.code
     }
-    return { code, kept: await readFile(join(base, 'out.compact-src', 'keep.txt'), 'utf8').catch((e) => e.code) }
+    return {
+      code,
+      kept: await readFile(join(base, 'out.compact-src', 'keep.txt'), 'utf8').catch((e) => e.code),
+      entries: await entries(base),
+      stage: await entries(join(base, 'out.compact-src'))
+    }
   }
-  assert.deepEqual(await attempt('stage-own-ok'), { code: 'ok', kept: 'kept\n' })
+  const refused = { code: 'COMPACT_STAGE_EXISTS', kept: 'kept\n', entries: ['out.compact-src'], stage: ['keep.txt'] }
+  assert.deepEqual(await attempt('stage-own-ok'), refused)
   // A concept at a reserved .okf- name fails the T13 check (COMPACT_FIDELITY).
+  // The refusal comes first.
   await old.createConcept('notes/.okf-state', 'note')
-  assert.deepEqual(await attempt('stage-own-fail'), { code: 'COMPACT_FIDELITY', kept: 'kept\n' })
+  assert.deepEqual(await attempt('stage-own-fail'), refused)
   await old.close()
 })
 

@@ -53,7 +53,7 @@
 // This module imports NO substrate (consistent with the rest of @auto-okf/
 // faces: "the substrate is injected"). The @auto-okf/store `Bundle.init` is
 // passed in as `opts.initBundle`; the CLI (okf/cli) wires the two together.
-import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, writeFile, rm } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, writeFile, rm } from 'node:fs/promises'
 import { join, dirname, basename, resolve, sep } from 'node:path'
 import { keyspace as K } from '@auto-okf/core'
 import { materialize } from './materialize.js'
@@ -76,9 +76,11 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *   vaultDir     (REQUIRED) storage directory for the fresh vault.
  *   stageDir     staging dir for the manifest-free, _rev-stripped bundle that
  *                is actually ingested (default `<vaultDir>.compact-src`). It
- *                holds plaintext. When this run creates it, compact removes
- *                it on success and on failure. compact never removes a
- *                stage directory that existed before the run.
+ *                holds plaintext. compact creates it for this run only, and
+ *                removes it on success and on failure. A stageDir that exists
+ *                throws COMPACT_STAGE_EXISTS before compact writes anything:
+ *                compact never writes into or removes a stage directory that
+ *                it did not create.
  *   force        proceed even though `flag/conflict` or `flag/pathcollision`
  *                is non-empty (SPEC §10 guardrail). Without it, compact
  *                REFUSES (throws COMPACT_REFUSED) so live conflicts are never
@@ -183,6 +185,9 @@ export async function compact(vault, opts = {}) {
     ['stage', stageDir],
     ['verification', `${verifyPrefix(stageDir)}XXXXXX`]
   ])
+  // compact creates its stage for this run only, so a stage path that exists
+  // is refused here, before the face step.
+  if (await lstat(stageDir).catch(() => null)) throw stageExistsError(stageDir)
 
   if (typeof vault.update === 'function') await vault.update()
 
@@ -217,12 +222,16 @@ export async function compact(vault, opts = {}) {
 
     // ---- 3. stage a manifest-free, _rev-stripped copy for ingest ----
     // The stage holds plaintext. compact creates it for this run, and the
-    // finally below removes it on success and on failure. It removes the
-    // stage only when this run created it: compact never removes a
-    // directory that it did not create. (mkdir returns undefined when the
-    // directory existed. It removes stageDir only, never a parent that
+    // finally below removes it on success and on failure. The mkdir of the
+    // stage is exclusive: when the stage appeared after the check above, it
+    // throws, and compact neither writes into nor removes a directory that
+    // it did not create. (It removes stageDir only, never a parent that
     // mkdir created, because the out-dir can be in that parent.)
-    ownStage = (await mkdir(stageDir, { recursive: true })) !== undefined
+    await mkdir(dirname(resolve(stageDir)), { recursive: true })
+    await mkdir(stageDir).catch((err) => {
+      throw err.code === 'EEXIST' ? stageExistsError(stageDir) : err
+    })
+    ownStage = true
     return await generateFromFace(vault, report, warnings, { stageDir, vaultDir, encryptionKey, sign, initBundle })
   } catch (err) {
     if (err !== null && typeof err === 'object' && err.warnings === undefined) err.warnings = warnings
@@ -439,6 +448,16 @@ async function verifyGeneration(newVault, faceDir, stageDir, ids) {
   } finally {
     await rm(verifyDir, { recursive: true, force: true })
   }
+}
+
+/** COMPACT_STAGE_EXISTS: compact creates its stage for this run only. */
+function stageExistsError(stageDir) {
+  return compactError(
+    'COMPACT_STAGE_EXISTS',
+    `the stage ${stageDir} exists. Compaction creates its stage for this run only, and it never writes into ` +
+      'or removes a directory that it did not create. A run that stopped can leave its stage, which holds ' +
+      'plaintext: examine it and remove it, or give another out-dir or stageDir'
+  )
 }
 
 /** The verification directory is this prefix plus the six characters that mkdtemp picks: a sibling of the stage. */
