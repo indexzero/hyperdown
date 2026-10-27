@@ -53,8 +53,8 @@
 // This module imports NO substrate (consistent with the rest of @auto-okf/
 // faces: "the substrate is injected"). The @auto-okf/store `Bundle.init` is
 // passed in as `opts.initBundle`; the CLI (okf/cli) wires the two together.
-import { mkdir, mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises'
-import { join, dirname, basename, resolve } from 'node:path'
+import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, writeFile, rm } from 'node:fs/promises'
+import { join, dirname, basename, resolve, sep } from 'node:path'
 import { keyspace as K } from '@auto-okf/core'
 import { materialize } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
@@ -135,6 +135,13 @@ const GENERATION_LOG_REL = 'log/generation.json'
  * compact closes the fresh vault and removes what it created there: vaultDir
  * itself when compact created it, else only the entries that it added.
  *
+ * Before it writes or removes anything, compact resolves its five areas: the
+ * predecessor directory, vaultDir, toDir, stageDir and the verification
+ * directory. It follows symlinks, and it resolves a path that does not exist
+ * yet through its nearest existing ancestor. Two areas that are equal or
+ * nested throw COMPACT_PATH_OVERLAP, with the two area names in `err.areas`
+ * (G49).
+ *
  * compact NEVER deletes the predecessor: it returns `predecessorPath` for the
  * operator to archive or destroy out-of-band (§10 step 5).
  */
@@ -167,6 +174,15 @@ export async function compact(vault, opts = {}) {
   // vault directory on init, so a nested staging dir would be wiped before
   // ingest ever reads it (proven under sslop/033).
   const stageDir = opts.stageDir || `${vaultDir}.compact-src`
+  // The path guard (G49): before compact writes or removes anything, no two
+  // of its five areas may be equal or nested.
+  await refuseOverlap([
+    ['predecessor', vault.dir],
+    ['out-dir', vaultDir],
+    ['face', toDir],
+    ['stage', stageDir],
+    ['verification', `${verifyPrefix(stageDir)}XXXXXX`]
+  ])
 
   if (typeof vault.update === 'function') await vault.update()
 
@@ -415,8 +431,7 @@ async function claimDir(dir) {
  * note that materialize wrote for it.
  */
 async function verifyGeneration(newVault, faceDir, stageDir, ids) {
-  const stage = resolve(stageDir)
-  const verifyDir = await mkdtemp(join(dirname(stage), `${basename(stage)}.verify-`))
+  const verifyDir = await mkdtemp(verifyPrefix(stageDir))
   try {
     const report = await materialize(newVault, verifyDir)
     const differences = await compareTrees(faceDir, verifyDir)
@@ -424,6 +439,85 @@ async function verifyGeneration(newVault, faceDir, stageDir, ids) {
   } finally {
     await rm(verifyDir, { recursive: true, force: true })
   }
+}
+
+/** The verification directory is this prefix plus the six characters that mkdtemp picks: a sibling of the stage. */
+function verifyPrefix(stageDir) {
+  return `${resolve(stageDir)}.verify-`
+}
+
+const AREA_LABEL = { verification: 'verification directory' }
+
+/**
+ * The path guard of compaction (G49). compact uses five areas: the
+ * predecessor directory, the out-dir (vaultDir), the face (toDir), the stage
+ * and the verification directory. `areas` is [[name, path]] in that order. A
+ * null path (a predecessor that has no directory) is no area. The guard
+ * resolves each path to its real location: it follows symlinks, and it
+ * resolves a path that does not exist yet through its nearest existing
+ * ancestor. The verification directory does not exist until step 6, so it
+ * resolves through the parent of the stage. Two areas that are equal, or of
+ * which one contains the other, throw COMPACT_PATH_OVERLAP. `err.areas`
+ * names the two. The guard writes nothing.
+ */
+async function refuseOverlap(areas) {
+  const resolved = []
+  for (const [name, path] of areas) {
+    if (path !== null && path !== undefined) resolved.push({ name, path, real: await realLocation(path) })
+  }
+  for (let i = 0; i < resolved.length; i++) {
+    for (let j = i + 1; j < resolved.length; j++) {
+      const how = overlap(resolved[i].real, resolved[j].real)
+      if (how === null) continue
+      const show = ({ name, path, real }) => `the ${AREA_LABEL[name] || name} ${path}${real === resolve(path) ? '' : ` (real path ${real})`}`
+      const err = compactError(
+        'COMPACT_PATH_OVERLAP',
+        `${show(resolved[i])} ${how} ${show(resolved[j])}. Compaction needs five separate areas: ` +
+          'the predecessor, the out-dir, the face, the stage and the verification directory. No area may equal or contain another'
+      )
+      err.areas = [resolved[i].name, resolved[j].name]
+      throw err
+    }
+  }
+}
+
+/**
+ * Where a write to `path` lands: its real path when it exists, else the real
+ * path of its nearest existing ancestor with the rest of `path` appended. A
+ * dangling symlink resolves through its target.
+ */
+async function realLocation(path) {
+  let head = resolve(path)
+  const rest = []
+  for (let links = 0; ; ) {
+    try {
+      return join(await realpath(head), ...rest)
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err
+    }
+    const target = await readlink(head).catch(() => null)
+    if (target !== null && links++ < 40) {
+      head = resolve(dirname(head), target)
+      continue
+    }
+    rest.unshift(basename(head))
+    head = dirname(head)
+  }
+}
+
+/**
+ * 'is', 'contains' or 'is inside' when real paths `a` and `b` overlap, else
+ * null. The comparison ignores case and Unicode normalization: a path that
+ * does not exist yet keeps the case that the caller gave, and the default
+ * macOS file system treats two such spellings as one directory.
+ */
+function overlap(a, b) {
+  const x = a.normalize('NFC').toLowerCase()
+  const y = b.normalize('NFC').toLowerCase()
+  if (x === y) return 'is'
+  if (y.startsWith(x.endsWith(sep) ? x : x + sep)) return 'contains'
+  if (x.startsWith(y.endsWith(sep) ? y : y + sep)) return 'is inside'
+  return null
 }
 
 /** The note that a materialize report wrote for each _id in `ids`: Map<_id, path>. */

@@ -1062,3 +1062,67 @@ test('T13: auto-okf compact prints every difference and every warning, and exits
   // No new vault, no stage and no verification directory remain. The face stays.
   assert.deepEqual(await entries(base), ['out.face', 'vault'])
 })
+
+// ---------- T18: guard every compaction path ----------
+
+/** A sha256 over every file under `root`, dot-files included: each path and its bytes. */
+async function treeHash(root) {
+  const h = createHash('sha256')
+  for (const rel of await listFiles(root)) {
+    h.update(`${rel}\0`)
+    h.update(await readFile(join(root, rel)))
+    h.update('\0')
+  }
+  return h.digest('hex')
+}
+
+test('T18: compact refuses a stage that equals, contains or aliases the predecessor, or equals the face, and the predecessor and face bytes stay unchanged (G49)', async () => {
+  // codex-D.out #2 and D-002 F06: a stage that equals or contains the
+  // predecessor or the face was removed by rm(stageDir) before compaction
+  // read it. Without that rm (T17), the staged notes still land in such a
+  // stage. compact resolves its five areas before it writes anything (the
+  // predecessor, the out-dir, the face, the stage and the verification
+  // directory), with symlinks followed, and refuses two areas that are
+  // equal or nested.
+  const base = await tmpDir('guard-stage')
+  const old = await Bundle.init(join(base, 'vault'))
+  await buildNonTrivial(old)
+  const face = join(base, 'face')
+  assert.equal((await materialize(old, face)).ok, true)
+  await symlink(old.dir, join(base, 'alias'))
+  // A stage that is a symlink in the predecessor to a directory outside it:
+  // the stage itself is outside, but the verification directory, a sibling
+  // of the stage, is in the predecessor.
+  await mkdir(join(base, 'elsewhere'))
+  await symlink(join(base, 'elsewhere'), join(old.dir, 'stage-link'))
+  const state = async () => ({
+    predecessor: await predecessorState(old),
+    vaultBytes: await treeHash(old.dir),
+    faceBytes: await treeHash(face),
+    entries: await entries(base)
+  })
+  const before = await state()
+
+  const cases = [
+    ['stage equal to the predecessor', { stageDir: old.dir }, ['predecessor', 'stage']],
+    ['stage above the predecessor', { stageDir: base }, ['predecessor', 'stage']],
+    ['stage equal to the face', { stageDir: face }, ['face', 'stage']],
+    ['stage a symlink alias of the predecessor', { stageDir: join(base, 'alias') }, ['predecessor', 'stage']],
+    ['face a symlink alias of the predecessor', { toDir: join(base, 'alias') }, ['predecessor', 'face']],
+    ['out-dir a symlink alias of the predecessor', { vaultDir: join(base, 'alias') }, ['predecessor', 'out-dir']],
+    ['verification directory in the predecessor', { stageDir: join(old.dir, 'stage-link') }, ['predecessor', 'verification']]
+  ]
+  const got = {}
+  for (const [i, [name, paths]] of cases.entries()) {
+    try {
+      const res = await compact(old, { initBundle: Bundle.init, toDir: face, vaultDir: join(base, `out-${i}`), ...paths })
+      await res.vault.close()
+      got[name] = 'ok'
+    } catch (err) {
+      got[name] = { code: err.code, areas: err.areas }
+    }
+  }
+  assert.deepEqual(got, Object.fromEntries(cases.map(([name, , areas]) => [name, { code: 'COMPACT_PATH_OVERLAP', areas }])))
+  assert.deepEqual(await state(), before, 'a refused compaction changed the predecessor, the face or the directory')
+  await old.close()
+})
