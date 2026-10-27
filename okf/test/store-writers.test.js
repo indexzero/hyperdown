@@ -2,10 +2,12 @@
 // autobee — §8 causal revocation (in-band clock rule, never
 // host.removeWriter positional), the seqAtRemoval cross-check on a
 // partitioned post-revocation op, the local revoked-append guard, and
-// cross-peer hash equality of the applied/rejected partition (I10).
+// cross-peer hash equality of the applied/rejected partition (I10). Also
+// isIndexer from gov/, and weight 0 for every writer (T5).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
+import { forgeNext, sys, linearized, carriers } from './attack-helpers.js'
 
 test('writer add/remove round trip: causal revocation, uniform on every peer', async (t) => {
   const a = await Bundle.init(await tmpDir('wr-a'))
@@ -197,15 +199,15 @@ test('isIndexer answers from gov/: a live gov/writer record with indexer true', 
   assert.equal(a2.isIndexer, true, 'genesis reopens as an indexer')
 })
 
-test('a writer added while genesis is offline sorts at 0 until genesis approves it', async (t) => {
-  // autobee@2: a grant's ceiling is capped at the resolved weight of the
-  // node that carries it (lib/system.js addWriter), and a writer's nodes
-  // sort at 0 until a peer whose standing reaches the tier approves it and
-  // the writer cites that approval (index.js _collectApprovals, append
-  // witness; lib/witness.js). Only genesis starts at 2 (bootstrapWeight).
-  const a = await Bundle.init(await tmpDir('climb-a'))
-  const b = await Bundle.join(await tmpDir('climb-b'), a.key)
-  const c = await Bundle.join(await tmpDir('climb-c'), a.key)
+test('every writer stands at weight 0 on every peer, and no honest node carries approvals or a witness', async (t) => {
+  // T5 acceptance: bootstrapWeight 0 and every grant at weight 0. Nobody
+  // has standing, so no peer collects an approval (autobee index.js:1255),
+  // no append cites a witness (index.js:1546-1553), and nobody climbs.
+  // b admits c while genesis is offline, so a grant carried by a
+  // non-genesis indexer is covered too.
+  const a = await Bundle.init(await tmpDir('w0-a'))
+  const b = await Bundle.join(await tmpDir('w0-b'), a.key)
+  const c = await Bundle.join(await tmpDir('w0-c'), a.key)
   let unpairAB = pair(a, b)
   const unpairBC = pair(b, c)
   t.after(async () => {
@@ -215,80 +217,45 @@ test('a writer added while genesis is offline sorts at 0 until genesis approves 
     await b.close()
     await c.close()
   })
-  const sys = async (v, w) => {
-    await v.update()
-    const rec = await v.db.system.get(w.localKey)
-    return rec ? { weight: rec.weight, maxWeight: rec.maxWeight } : null
-  }
+  const W0 = { weight: 0, maxWeight: 0, isRemoved: false }
 
-  // genesis admits b as an okf indexer, then goes offline before it
-  // appends again, so it never approves b
+  await a.createConcept('w0/a0', 'note')
   await a.writers.add(b.localKey, { indexer: true })
   assert.ok(await until(async () => (await b.update(), b.writable)), 'b writable')
-  assert.deepEqual(await sys(b, b), { weight: 0, maxWeight: 2 }, 'b: ceiling 2, sorts at 0')
-  unpairAB()
+  unpairAB() // genesis goes offline
 
-  // b (an okf indexer at autobee weight 0) admits c while genesis is offline
   await b.writers.add(c.localKey, { indexer: false })
-  assert.ok(await until(async () => (await c.update(), c.writable)), 'c writable at once')
-  const c0 = await c.createConcept('climb/c0', 'note')
-  await b.createConcept('climb/b0', 'note')
-  assert.ok(
-    await until(async () => {
-      await b.update()
-      await c.update()
-      return (await b.val(K.cMeta(c0.tag))) !== undefined
-    })
-  )
-  // the carrier (b's node) sorted at 0, so c's ceiling is capped at 0, and
-  // no online peer has the standing to approve either of them
+  assert.ok(await until(async () => (await c.update(), c.writable)), 'c writable')
+  const c0 = await c.createConcept('w0/c0', 'note')
+  await b.createConcept('w0/b0', 'note')
+  assert.ok(await until(async () => (await b.update(), (await b.val(K.cMeta(c0.tag))) !== undefined)))
   for (const v of [b, c]) {
-    assert.deepEqual(await sys(v, c), { weight: 0, maxWeight: 0 }, 'c: capped at the carrier')
-    assert.deepEqual(await sys(v, b), { weight: 0, maxWeight: 2 }, 'b: still 0')
+    for (const w of [a, b, c]) assert.deepEqual(await sys(v, w.localKey), W0, 'weight 0 while genesis is offline')
   }
-  const c1 = await c.createConcept('climb/c1', 'note')
-  await until(async () => (await b.update(), (await b.val(K.cMeta(c1.tag))) !== undefined))
-  assert.equal((await sys(b, c)).weight, 0, 'no climb while genesis is offline')
 
-  // genesis returns, folds b's and c's ops, and appends: autobee adds
-  // approvals for both pending promotions to that append
+  // genesis returns and appends; then b and c append again
   unpairAB = pair(a, b)
-  assert.ok(await until(async () => (await a.update(), (await a.val(K.cMeta(c1.tag))) !== undefined)))
-  const a1 = await a.createConcept('climb/a1', 'note')
-  assert.ok(
-    await until(async () => {
-      await b.update()
-      await c.update()
-      return (await c.val(K.cMeta(a1.tag))) !== undefined
-    }),
-    'b and c fold the approving append'
-  )
-  // each cites the approval (a witness) on its next append, and climbs
-  await b.createConcept('climb/b2', 'note')
-  await c.createConcept('climb/c2', 'note')
+  assert.ok(await until(async () => (await a.update(), (await a.val(K.cMeta(c0.tag))) !== undefined)))
+  const a1 = await a.createConcept('w0/a1', 'note')
+  assert.ok(await until(async () => (await c.update(), (await c.val(K.cMeta(a1.tag))) !== undefined)))
+  await b.createConcept('w0/b1', 'note')
+  await c.createConcept('w0/c1', 'note')
   assert.ok(await converged([a, b, c]), 'all three converge')
+
   for (const v of [a, b, c]) {
-    assert.deepEqual(await sys(v, b), { weight: 2, maxWeight: 2 }, 'b climbed')
-    assert.deepEqual(await sys(v, c), { weight: 2, maxWeight: 2 }, 'c climbed')
+    for (const w of [a, b, c]) assert.deepEqual(await sys(v, w.localKey), W0, 'genesis and every member at weight 0')
+    const nodes = await linearized(v)
+    assert.ok(nodes.length >= 8, `every op is linearized (${nodes.length} nodes)`)
+    assert.deepEqual(
+      nodes.filter((n) => n.weight !== 0),
+      [],
+      'every node resolves at weight 0'
+    )
+    assert.deepEqual(await carriers(v), [], 'no honest node carries approvals or a witness')
   }
 })
 
-/**
- * Append one op from `v` whose oplog node carries a hand-built approvals
- * entry. autobee normally fills `approvals` itself, only for pending
- * promotions (index.js _collectApprovals); here the list is forged.
- */
-async function appendWithForgedApproval(v, key, weight, path) {
-  const collect = v.db._collectApprovals
-  v.db._collectApprovals = async () => [{ key, weight }]
-  try {
-    return await v.createConcept(path, 'note')
-  } finally {
-    v.db._collectApprovals = collect
-  }
-}
-
-test('a hand-built approval adds an autobee writer apply never granted; core holds its ops', async (t) => {
+test('a forged approval from genesis adds an autobee writer apply never granted, at weight 0; core holds its ops', async (t) => {
   const a = await Bundle.init(await tmpDir('appr-a'))
   const s = await Bundle.join(await tmpDir('appr-s'), a.key)
   const unpair = pair(a, s)
@@ -297,19 +264,20 @@ test('a hand-built approval adds an autobee writer apply never granted; core hol
     await a.close()
     await s.close()
   })
+  const aHex = a.localKey.toString('hex')
   const sHex = s.localKey.toString('hex')
   const { tag: seed } = await a.createConcept('appr/seed', 'note')
   assert.ok(await until(async () => (await s.update(), (await s.val(K.cMeta(seed))) !== undefined)))
   assert.equal(s.writable, false)
 
-  // genesis (standing 2) appends a node whose approvals name s
-  await appendWithForgedApproval(a, s.localKey, 2, 'appr/carrier')
+  // genesis (weight 0) appends a node whose approvals name s. Decision 5:
+  // the test forges the node through the local writer's appendLocal.
+  forgeNext(a, { approvals: [{ key: s.localKey, weight: 2 }] })
+  await a.createConcept('appr/carrier', 'note')
   assert.ok(await until(async () => (await s.update(), s.writable)), 'the approval alone makes s writable')
   for (const v of [a, s]) {
-    await v.update()
-    const rec = await v.db.system.get(s.localKey)
-    assert.equal(rec.isRemoved, false)
-    assert.equal(rec.maxWeight, 2, 'ceiling 2 from a weight-2 carrier')
+    // the ceiling is capped at the carrier's weight, 0 (autobee lib/system.js:75)
+    assert.deepEqual(await sys(v, s.localKey), { weight: 0, maxWeight: 0, isRemoved: false })
     assert.equal(await v.val(K.govWriter(sHex)), undefined, 'okf never admitted s')
   }
 
@@ -324,13 +292,18 @@ test('a hand-built approval adds an autobee writer apply never granted; core hol
     assert.ok(await v.val(K.hold(sHex, c0.seq)), 'content op held under hold/')
     assert.equal(await v.val(K.cMeta(c0.tag)), undefined, 'no c/ effect (I10)')
     assert.deepEqual(await v.val(K.flagRejected(sHex, g1.seq)), { reason: 'policy-governance' })
+    // the grant hint is at weight 0, so s's appends cite no witness and s
+    // stays at 0 (autobee index.js:1546-1553)
+    assert.equal((await sys(v, s.localKey)).weight, 0, 's never climbs')
+    assert.deepEqual(
+      (await carriers(v)).map((n) => [n.writer, n.approvals, n.witness]),
+      [[aHex, true, false]],
+      'the forged node is the only node with approvals or a witness'
+    )
   }
-  // s's first plain append cited the approval as a witness, so its nodes
-  // sort at weight 2, level with genesis
-  assert.equal((await a.db.system.get(s.localKey)).weight, 2)
 })
 
-test('a hand-built approval from a member at weight 0 also adds the key, at ceiling 0', async (t) => {
+test('a forged approval from a member at weight 0 also adds the key, at weight 0', async (t) => {
   const a = await Bundle.init(await tmpDir('appr0-a'))
   const b = await Bundle.join(await tmpDir('appr0-b'), a.key)
   const s = await Bundle.join(await tmpDir('appr0-s'), a.key)
@@ -346,12 +319,12 @@ test('a hand-built approval from a member at weight 0 also adds the key, at ceil
   const sHex = s.localKey.toString('hex')
   await a.writers.add(b.localKey, { indexer: false }) // a plain okf writer
   assert.ok(await until(async () => (await b.update(), b.writable)))
-  assert.equal((await b.db.system.get(b.localKey)).weight, 0, 'b has not climbed')
+  assert.equal((await sys(b, b.localKey)).weight, 0, 'b stands at weight 0')
 
-  await appendWithForgedApproval(b, s.localKey, 2, 'appr0/carrier')
+  forgeNext(b, { approvals: [{ key: s.localKey, weight: 2 }] })
+  await b.createConcept('appr0/carrier', 'note')
   assert.ok(await until(async () => (await s.update(), s.writable)), 'still makes s writable')
-  const rec = await b.db.system.get(s.localKey)
-  assert.equal(rec.maxWeight, 0, 'capped at the weight-0 carrier')
+  assert.equal((await sys(b, s.localKey)).maxWeight, 0, 'capped at the weight-0 carrier')
   const c0 = await s.createConcept('appr0/from-s', 'note')
   assert.ok(await converged([a, b, s]), 'peers converge')
   for (const v of [a, b, s]) {

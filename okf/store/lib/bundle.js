@@ -12,9 +12,11 @@
 // on 2026-10-23 — a STANDALONE multiwriter Hyperbee on hyperbee2 2.20 +
 // hypercore 11; NO autobase), on corestore 7.16:
 // - `new Autobee(store, key, { apply, open, close, update, encryptionKey,
-//   encrypted, keyPair, optimistic, fastForward, ackThreshold, ... })`;
-//   `optimistic` defaults true (index.js: `handlers.optimistic !== false`).
-//   The Bundle also sets `fastForward: false` and `ackThreshold: Infinity`
+//   encrypted, keyPair, optimistic, fastForward, ackThreshold,
+//   bootstrapWeight, ... })`; `optimistic` defaults true (index.js:
+//   `handlers.optimistic !== false`). `bootstrapWeight` defaults to 2
+//   (index.js:49) and is not in the README. The Bundle also sets
+//   `fastForward: false`, `ackThreshold: Infinity` and `bootstrapWeight: 0`
 //   (see the constructor call).
 // - apply receives `(nodes, view, host)`, and only nodes with a non-empty
 //   value (index.js _applyBatch); node = `{ key, value, length, optimistic,
@@ -27,17 +29,19 @@
 //   isIndexer ? 2 : 1 })` / `removeWriter(key)` / `ackWriter()` (a no-op
 //   in v2) / `removeable(key)` / `interrupt(reason)` /
 //   `createAnchor(key, length)` / `genesis` — adapted below (HostAdapter),
-//   which exposes only addWriter.
+//   which exposes only addWriter, and always at weight 0.
 // - instance: db.key, db.id, db.discoveryKey, db.local, db.view (read-only
 //   snapshot), db.writable, db.isIndexer, append(buf|[bufs],{optimistic}),
-//   update()/updated()/flush(), replicate(isInitiator|stream).
+//   update()/updated()/flush(), replicate(isInitiator|stream). db.isIndexer
+//   means a ceiling (maxWeight) of 2 or more (lib/writers.js:352-354,
+//   :532), so it is always false here: Bundle.isIndexer reads gov/ instead.
 // - db.close() closes the corestore it was handed (index.js _close): we
 //   hand it the per-generation namespace SESSION; the root corestore is closed
 //   by Bundle.close() (corestore index.js _close: closing a session never
 //   closes the root; closing the root closes every session).
-// - genesis: autobee auto-adds the bootstrap writer on its first node at
-//   `bootstrapWeight` (default 2) and it stands at that weight at once
-//   (index.js _processBatch; lib/witness.js currentWeight), and for a
+// - genesis: autobee adds the bootstrap writer on its first node at
+//   `bootstrapWeight` (index.js:1411-1413). The Bundle passes 0, so genesis
+//   stands at weight 0 like every other writer (see HostAdapter). For a
 //   creator the vault key IS the creator's local writer key (lib/boot.js),
 //   so metadata.genesisKey === db.key on every peer and core's §8 genesis
 //   indexer seeding agrees with autobee's.
@@ -250,6 +254,10 @@ export class Bundle extends EventEmitter {
       // apply; autobee@2 still defaults this to true but marks it a TODO
       // to flip, so it stays explicit.
       optimistic: true,
+      // Weight 0 for every writer: autobee adds genesis on its first node
+      // at this weight (index.js:1411-1413), not at the default 2
+      // (index.js:49). HostAdapter grants every other writer at 0.
+      bootstrapWeight: 0,
       // I2/I3: every peer folds every op through its own apply under the
       // pinned config. autobee@2 would otherwise fast-forward onto a view
       // head another writer stamped, trusting every writer by default
@@ -803,37 +811,40 @@ class HostAdapter {
   }
 
   addWriter(key) {
-    // UNIFORM CEILING 2 (deviation from §8's literal `weight: 1`, recorded
-    // in DEVIATIONS.md). Core passes { isIndexer, weight: 1 }; both are
-    // overridden here, which is the entire point of this adapter.
+    // WEIGHT 0 FOR EVERY WRITER. Core passes { isIndexer, weight: 1 } (§8's
+    // literal grant). This adapter overrides both and grants { weight: 0 }.
+    // With `bootstrapWeight: 0` (the constructor call), genesis stands at 0
+    // too. What that means on autobee@2.12.1:
+    // - The grant records the key at weight 0 with ceiling (maxWeight) 0
+    //   (lib/apply-calls.js:33-41, lib/system.js:66-92). isIndexer only
+    //   selects the default weight (lib/apply-calls.js:33), so the adapter
+    //   does not pass it. A grant at 0 opens no promotion request
+    //   (lib/system.js:78, lib/promotions.js:111-113).
+    // - Order: nodes sort by weight, then timestamp, then writer key, then
+    //   length (lib/topo.js:168-179). Every weight is 0, so nodes sort by
+    //   timestamp, then key.
+    // - No approval: an append collects approvals only when its writer has
+    //   a standing above 0 (index.js:1250-1255, :1555). The standing is the
+    //   writer's current weight (index.js:1223-1226, lib/witness.js:8-12).
+    // - No witness: an append cites one only when the writer's grant hint
+    //   is heavier than its current weight (index.js:1546-1553). A grant
+    //   through this host sets no hint (lib/system.js:76-77: no anchor).
+    // - No climb: a witness raises a weight only when the approver it cites
+    //   has a standing of at least the claimed weight (lib/witness.js:19-51).
+    //   Genesis qualifies only up to bootstrapWeight (lib/witness.js:47),
+    //   and every other writer stands at 0, so no claim above 0 verifies.
+    // So no resolved weight depends on a node's position (the G1 livelock
+    // mechanism). autobee's isIndexer is always false (see the header), and
+    // Bundle.isIndexer reads gov/.
     //
-    // On autobee@2.12.1 `weight` is a ceiling, not the sort weight:
-    // - the carrier cap: the grant's ceiling is capped at the resolved
-    //   weight of the node that carries it (lib/system.js addWriter), so a
-    //   writer admitted by a member still at 0 gets ceiling 0;
-    // - the climb: the writer's nodes sort at 0 until a peer whose
-    //   standing reaches the requested tier puts an approval on its next
-    //   non-optimistic append, and the writer's next append cites it as a
-    //   witness (index.js _collectApprovals and append; lib/witness.js).
-    //   An approval also lifts a capped ceiling, up to the requested tier
-    //   and the approver's standing.
-    // Genesis alone starts at 2 (index.js _processBatch: bootstrapWeight).
+    // A member can still forge a node with approvals. autobee then adds
+    // each named key at weight 0, because the carrier's weight caps the
+    // grant (index.js:1432-1441, lib/system.js:75). okf membership still
+    // comes only from gov/, which core decides.
     //
-    // Why 2 still: it is genesis's weight, so every member can climb to
-    // where genesis stands and, once there, approve the next member.
-    // Members at 2 stay above strangers (unknown or optimistic writers),
-    // who sort at 0 and cannot sort before a heavier node they do not
-    // link (lib/topo.js cmp). The 1.0.10 reason, comparators that split
-    // peers on mixed weights, is fixed in v2 (lib/topo.js isOrderedBefore
-    // is `cmp() < 0`), so the weights a climb mixes order the same on
-    // every peer. "Uniform" now means a uniform ceiling.
-    //
-    // autobee drops the indexer bit (apply-calls.js passes only weight),
-    // and its isIndexer getter now means ceiling >= 2 (lib/writers.js); §8
-    // governance authority is decided from gov/ by core, never from
-    // autobee state. Returned, not fire-and-forget: core awaits it, and an
-    // un-awaited grant can miss autobee's system flush.
-    return this.host.addWriter(key, { isIndexer: true, weight: 2 })
+    // Returned, not fire-and-forget: core awaits it, and an un-awaited
+    // grant can miss autobee's system flush.
+    return this.host.addWriter(key, { weight: 0 })
   }
 }
 

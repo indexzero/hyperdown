@@ -1,0 +1,164 @@
+// Test-only attacker toolkit for the substrate attack suite
+// (store-substrate-attacks.test.js) and the writer tests. Adopted from the
+// T1 spike (D-003) without its configuration switch: the product has one
+// substrate configuration (store/lib/bundle.js), so every helper runs
+// against it.
+//
+// What an attacker may do here (decision 5): a test wraps the local
+// writer's `appendLocal` to forge the fields an honest client never sets:
+// approvals, a witness, a timestamp, a link set. That is a malicious
+// CLIENT, not a modified autobee. The forged node is a legal oplog node,
+// and every peer that reads it runs stock autobee@2.12.1. Nothing else
+// here changes autobee behaviour: the other helpers only read. Product
+// code never does any of this.
+//
+// Vaults live under the store tests' temp root (store-helpers.js tmpDir).
+import { mkdir, appendFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
+import { Bundle, K, tmpDir, pair, until, sleep, converged } from './store-helpers.js'
+
+export { Bundle, K, tmpDir, pair, until, sleep, converged }
+
+// Keys are Buffers in this workspace (corestore/hypercore on node).
+export const hex = (k) => Buffer.from(k).toString('hex')
+
+/**
+ * Forge the next local append of `v`. Pass any of `approvals`, `witness`,
+ * `timestamp`, `links` and `hash`. An absent field keeps what the honest
+ * client would send. One append only: the wrapper removes itself.
+ *
+ * `hash: null` matters for a reorder attack. autobee appends a node at the
+ * tip with no sort when the node's hash equals the receiver's system hash
+ * and the node links every head (autobee index.js:1377-1384).
+ */
+export function forgeNext(v, over = {}) {
+  const w = v.db.writers
+  const orig = w.appendLocal
+  w.appendLocal = function (value, t, batch, links, optimistic, witness, approvals, hash, drift) {
+    w.appendLocal = orig
+    return orig.call(
+      this,
+      value,
+      'timestamp' in over ? over.timestamp : t,
+      batch,
+      'links' in over ? over.links : links,
+      'optimistic' in over ? over.optimistic : optimistic,
+      'witness' in over ? over.witness : witness,
+      'approvals' in over ? over.approvals : approvals,
+      'hash' in over ? over.hash : hash,
+      drift
+    )
+  }
+}
+
+// Bundle re-emits autobee's `error` event, and an EventEmitter 'error' with
+// no listener crashes the process. An attack that makes a peer's own
+// autobee close must be a RECORDED result, not a dead test run.
+const ERRORS = new WeakMap()
+
+/** Attach an error sink to a vault. Returns the vault. */
+export function quiet(v) {
+  const errs = []
+  ERRORS.set(v, errs)
+  v.on('error', (e) => errs.push(e && e.message ? e.message : String(e)))
+  return v
+}
+
+/** Every error a vault emitted since `quiet()`. */
+export const errorsOf = (v) => ERRORS.get(v) || []
+
+/** autobee's system record for one writer key, or null. */
+export async function sys(v, key) {
+  await v.update()
+  const r = await v.db.system.get(key)
+  return r ? { weight: r.weight, maxWeight: r.maxWeight, isRemoved: r.isRemoved } : null
+}
+
+/**
+ * Every node in `v`'s linearized order (autobee index.js:1758-1760,
+ * lib/topo.js:38-54), as `{ writer, length, weight, approvals, witness }`.
+ * `weight` is the resolved weight autobee pinned for the node, and
+ * `approvals` / `witness` say whether the node carries the field.
+ */
+export async function linearized(v) {
+  await v.update()
+  const nodes = await v.db.replay()
+  return nodes
+    .filter((n) => n !== null)
+    .map((n) => ({
+      writer: hex(n.key),
+      length: n.length,
+      weight: n.weight,
+      approvals: !!(n.approvals && n.approvals.length),
+      witness: !!n.witness
+    }))
+}
+
+/** The linearized nodes of `v` that carry approvals or a witness. */
+export async function carriers(v) {
+  return (await linearized(v)).filter((n) => n.approvals || n.witness)
+}
+
+/**
+ * Bound any step. Resolves `{ status: 'ok' | 'TIMEOUT' | 'ERROR', ms,
+ * value, error }`, so a stall or a crash is a RESULT and never a hung test.
+ */
+export async function timed(fn, ms, label = '') {
+  const t0 = Date.now()
+  let timer = null
+  const bomb = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ status: 'TIMEOUT' }), ms)
+  })
+  try {
+    const out = await Promise.race([
+      Promise.resolve()
+        .then(fn)
+        .then(
+          (value) => ({ status: 'ok', value }),
+          (error) => ({ status: 'ERROR', error: error && error.message ? error.message : error })
+        ),
+      bomb
+    ])
+    return { ...out, ms: Date.now() - t0, label }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** autobee counters of one vault: reorders undone and nodes applied. */
+export function coreStats(v) {
+  return { undos: v.db.stats.undos, applies: v.db.stats.applies }
+}
+
+/**
+ * Record one attack result. It goes to the test's diagnostics as
+ * `ATTACK-RESULT {json}`, and is appended to the JSON-lines file at
+ * `$OKF_ATTACK_RECORD` when that is set.
+ */
+export async function record(t, attack, data) {
+  const line = JSON.stringify({ attack, ...data })
+  t.diagnostic(`ATTACK-RESULT ${line}`)
+  if (process.env.OKF_ATTACK_RECORD) {
+    await mkdir(dirname(process.env.OKF_ATTACK_RECORD), { recursive: true })
+    await appendFile(process.env.OKF_ATTACK_RECORD, line + '\n')
+  }
+}
+
+/**
+ * Close a vault, open the same directory again, and time one update. This
+ * is the "permanent brick on reopen" check: a peer that cannot reopen, or
+ * whose first fold after a reopen never returns, is bricked.
+ */
+export async function reopenCheck(vault, dir, ms = 20000) {
+  const first = await timed(() => vault.close(), ms, 'close')
+  if (first.status !== 'ok') return { status: first.status, ms: first.ms, update: null, error: 'close' }
+  const out = await timed(async () => {
+    const again = quiet(await Bundle.open(dir))
+    const upd = await timed(() => again.update(), ms, 'reopen-update')
+    const hash = upd.status === 'ok' ? await again.snapshotHash() : null
+    // A bricked peer can also hang in close(): bound that too.
+    const closed = await timed(() => again.close(), ms, 'reopen-close')
+    return { update: upd.status, updateMs: upd.ms, hash, close: closed.status, errors: errorsOf(again) }
+  }, ms * 2)
+  return { status: out.status, ms: out.ms, ...(out.value || {}), error: out.error }
+}
