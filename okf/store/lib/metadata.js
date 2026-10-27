@@ -45,12 +45,11 @@ const HEX64 = /^[0-9a-f]{64}$/
 const HEX = /^[0-9a-f]+$/
 
 // limits/rate defaults mirror @auto-okf/core lib/apply.js DEFAULTS exactly
-// (§3 limits; §8 rate — unackedCeiling 64 and holdMax 512 are spec-pinned,
-// defaultCeiling is the spec-silent admitted-writer ceiling pinned here
-// and in core).
+// (§3 limits; §8 rate — defaultCeiling, the only rate setting, is the
+// spec-silent admitted-writer ceiling pinned here and in core).
 export const METADATA_DEFAULTS = {
   limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
-  rate: { defaultCeiling: 1024, unackedCeiling: 64, holdMax: 512 },
+  rate: { defaultCeiling: 1024 },
   schemaVersion: 1,
   encrypted: false,
   predecessorKey: null,
@@ -118,7 +117,7 @@ export function validateMetadata(meta) {
   validateGenerationChain(meta)
   for (const [group, keys] of [
     ['limits', ['maxOpBytes', 'maxPathBytes', 'maxPathDepth']],
-    ['rate', ['defaultCeiling', 'unackedCeiling', 'holdMax']]
+    ['rate', ['defaultCeiling']]
   ]) {
     for (const k of keys) {
       const v = meta[group] && meta[group][k]

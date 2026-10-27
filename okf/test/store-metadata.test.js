@@ -3,7 +3,7 @@
 // constant and the §10 generation-chain fields), the appendOnly constant is
 // immutable (unrepresentable off and refused at open when tampered), and
 // the per-generation writer namespace derives deterministically from the
-// predecessor fields.
+// predecessor fields. The rate group holds defaultCeiling only (T6c).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFile, readFile } from 'node:fs/promises'
@@ -21,6 +21,7 @@ import {
   pair,
   until
 } from './store-helpers.js'
+import { validateMetadata, applyConfig } from '../store/index.js'
 
 test('vault metadata is deterministic and identical across peers', async (t) => {
   const dirA = await tmpDir('meta-a')
@@ -81,6 +82,42 @@ test('appendOnly is immutable: unrepresentable off, refused when tampered', asyn
   doc.appendOnly = false
   await writeFile(path, JSON.stringify(doc))
   await assert.rejects(() => Bundle.open(dir), /appendOnly/)
+})
+
+test('a vault of this release writes rate with defaultCeiling as its only key', async (t) => {
+  const dir = await tmpDir('meta-rate')
+  const v = await Bundle.init(dir)
+  await v.close()
+
+  // the pinned document on disk
+  const path = join(dir, METADATA_FILE)
+  const onDisk = JSON.parse(await readFile(path, 'utf8'))
+  assert.deepEqual(onDisk.rate, { defaultCeiling: 1024 })
+
+  // it validates: loadMetadata and a reopen accept it as written
+  assert.deepEqual(await loadMetadata(path), onDisk)
+  const reopened = await Bundle.open(dir)
+  t.after(() => reopened.close())
+  assert.deepEqual(reopened.metadata.rate, { defaultCeiling: 1024 })
+
+  // core gets the same rate slice
+  assert.deepEqual(applyConfig(reopened.metadata).rate, { defaultCeiling: 1024 })
+})
+
+test('validateMetadata accepts a version 2 document whose rate holds only defaultCeiling', () => {
+  const doc = {
+    version: 2,
+    genesisKey: 'a'.repeat(64),
+    appendOnly: true,
+    generation: ROOT_GENERATION,
+    predecessorKey: null,
+    predecessorCheckpoint: null,
+    limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
+    rate: { defaultCeiling: 1024 },
+    schemaVersion: 1,
+    encrypted: false
+  }
+  assert.equal(validateMetadata(doc), doc)
 })
 
 test('a mismatched invite is refused (metadata is convergence-relevant)', async (t) => {
