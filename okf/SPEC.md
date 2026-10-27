@@ -506,8 +506,16 @@ saga is the cautionary tale). The rules are frozen:
   not strictly precede it is rejected (reason `revoked`).
   `host.removeWriter` is NEVER called — every node must keep linearizing on
   every peer so the clock rule can run uniformly. A substrate removal
-  would stop the writer's nodes before apply (autobee@2.12.1
-  `lib/system.js:108-114`, `:242-251`, `index.js:1447`). The revoked
+  would stop the writer's ordinary nodes, the nodes without the
+  optimistic bit, before apply (autobee@2.12.1 `lib/system.js:108-114`,
+  `:246-250`, `index.js:1447`). It is not a complete apply filter.
+  `canApply` returns true for a node with the optimistic bit before it
+  reads the removal record (`lib/system.js:242-245`). The store's
+  `optimistic: false` does not close that path for a removed writer.
+  autobee applies the option only to its filter at `index.js:1357-1359`.
+  A writer with a system record stays added there, also after a removal
+  (`lib/writers.js:526-530`). `_processBatch` then passes the node's own
+  bit to `canApply` (`index.js:1415`, `:1447`). The revoked
   writer's own store refuses further local appends. The claimed clock is
   cross-checked against unforgeable position: `gov/removed/<key>` also records
   `seqAtRemoval` = the revocation clock's entry for the removed writer,

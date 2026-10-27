@@ -360,9 +360,18 @@ and then autobee closes (`index.js:669-690`). So the store checks
 **`host.removeWriter` is never called.** SPEC §8 revocation is causal, in
 okf's apply. A removal at the substrate records the writer as removed
 (`lib/apply-calls.js:49-52`, `lib/system.js:108-114`). Then `canApply` is
-false for its nodes (`lib/system.js:242-251`, `index.js:1447`), and they
-reach no apply. The §8 clock rule needs every node of a revoked writer to
-reach apply on every peer. So `HostAdapter` exposes only `addWriter`. A
+false for its ordinary nodes, the nodes without the optimistic bit
+(`lib/system.js:246-250`, `index.js:1447`), and they reach no apply. A
+node with the optimistic bit is the exception. `canApply` returns true
+for it before it reads the removal record (`lib/system.js:242-245`). The
+constructor option `optimistic: false` does not close that path for a
+removed writer. autobee applies the option only to its filter at
+`index.js:1357-1359`. A writer with a system record stays added there,
+also when removed (`lib/writers.js:526-530`). `_processBatch` then passes
+the node's own bit to `canApply` (`index.js:1415`, `:1447`). So a
+substrate removal is not a complete apply filter. The §8 clock rule needs
+every node of a revoked writer to reach apply on every peer. So
+`HostAdapter` exposes only `addWriter`. A
 revoked member stays an autobee writer (G34 in `SECURITY_MODEL.md`).
 
 **Genesis, the vault key and the stored encryption key.** A creator passes
