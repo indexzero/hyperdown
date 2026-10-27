@@ -67,13 +67,13 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry non-default invites; when `<dir>` is already pinned the key is optional (reopen + reprint keys) |
 | `add-writer <dir> <writer-key> [--indexer]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8) |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
-| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. `--force-mirror` restores unconditional mirroring |
+| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
 | `ingest <dir> <bundle-dir> [paths…]` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9). Trailing bundle-relative paths restrict the scan to exactly those concept files (ADR-001 — concurrent-writer politeness; the shell expands globs): a named path that does not exist, escapes the bundle root, or is not a `.md` file exits 1 naming the path, with zero ops appended. Zero paths = full scan, unchanged. `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default) |
 | `watch <dir> <bundle-dir> [--swarm]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also joins the vault's hyperswarm topic for replication; `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
 | `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
-| `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted. The fresh vault is encrypted only with `--encryption-key <hex64>`: compaction never carries a key over |
+| `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted. The fresh vault is encrypted only with `--encryption-key <hex64>`: compaction never carries a key over. An encrypted vault needs `--encryption-key`: without it, `compact` refuses (`COMPACT_ENCRYPTION_KEY_REQUIRED`, exit 1), and no flag makes an unencrypted copy. The face holds the vault's contents as plaintext, and for an encrypted vault `compact` prints a `warning:` line that names it (see [Encryption and plaintext](#encryption-and-plaintext)) |
 | `resolve <dir> <id> --keep <revHash> [--supersede <h>…] [--text <s>]` | resolve open body conflicts on `<id>`: pin the head to `--keep`, clearing the cited `flag/conflict` entries (§5). `--supersede` is repeatable |
 | `undelete <dir> <id>` | restore a tombstoned concept (writes the `flag/undelete` audit, §8) |
 
@@ -115,6 +115,33 @@ $ mkdir ./scratch && auto-okf materialize ./vault ./scratch
 An empty scratch dir that fills on materialize is proof the content is in
 the log — everything that appears came from it.
 
+## Encryption and plaintext
+
+A vault made with `--encryption-key` is encrypted at rest. Two rules make
+sure that its contents never become plaintext without a word:
+
+- **Compaction never drops encryption.** `compact` of an encrypted vault
+  needs `--encryption-key <hex64>` for the fresh vault. Without it, `compact`
+  refuses with `COMPACT_ENCRYPTION_KEY_REQUIRED` and exits 1, before it
+  creates or writes anything. No flag makes an unencrypted copy. Compaction
+  never carries a key over, so you name the key of the new generation: the
+  same key or a new one.
+- **A plaintext write is announced.** `materialize` is the plaintext export.
+  For an encrypted vault it prints this line on stderr, where `<dir>` is the
+  bundle directory. The exit code does not change.
+
+  ```
+  warning: <dir>: now holds the contents of an encrypted vault as plaintext
+  ```
+
+  `compact` prints the same warning for its face (`<out-dir>.face`, or
+  `--face <dir>`). It prints it also when the compaction fails after it
+  wrote the face.
+
+The face is the plaintext artifact that compaction leaves on purpose: it
+holds the live contents of the vault as plaintext. Keep it as safe as the
+key, or destroy it out-of-band.
+
 ## Exit codes
 
 `0` success · `1` operational error (including a governance op that apply
@@ -135,8 +162,9 @@ per command) and exits 0.
   issuing peer is not a confirmed indexer, apply rejects the op
   (`flag/rejected`, reason `policy-governance`) and the command exits 1 with
   the reason.
-- The encryption key is only needed at `init`/`join`; the store pins the
-  encrypted bit in vault metadata so a reopen needs no key.
+- The encryption key is needed at `init`/`join`, and at `compact` of an
+  encrypted vault, for the fresh vault. The store pins the encrypted bit in
+  vault metadata, so a reopen needs no key.
 - A single body may not exceed `maxOpBytes` — 65,536 bytes; `ingest` refuses
   an oversize file by name (exit 1, siblings unaffected) — split the document
   into smaller linked concepts.
@@ -153,8 +181,11 @@ vaults on disk: init→materialize produces a bundle; a hand-authored file
 ingests to the expected ops; path-scoped ingest folds only the named files;
 `status` reports the five per-file states read-only; add-writer/remove-writer round trip; `wanted`
 lists an unresolved link; `flags` lists a seeded conflict; `compact` refuses
-on an open conflict and succeeds after `resolve`; `undelete` restores a
-tombstone; `watch` ingests a foreground edit and exits cleanly on SIGINT.
+on an open conflict and succeeds after `resolve`; `compact` refuses an
+encrypted vault without `--encryption-key`, and with a key makes an
+encrypted vault whose raw blocks lack the plaintext; `materialize` and
+`compact` warn when they write an encrypted vault as plaintext; `undelete`
+restores a tombstone; `watch` ingests a foreground edit and exits cleanly on SIGINT.
 
 ## License
 
