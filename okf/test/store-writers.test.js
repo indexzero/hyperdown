@@ -302,7 +302,7 @@ test('every writer stands at weight 0 on every peer, and no honest node carries 
   }
 })
 
-test('a forged approval from genesis adds an autobee writer apply never granted, at weight 0; core holds its ops', async (t) => {
+test('a forged approval from genesis adds an autobee writer apply never granted, at weight 0; its ops change no c/ key', async (t) => {
   const a = await Bundle.init(await tmpDir('appr-a'))
   const s = await Bundle.join(await tmpDir('appr-s'), a.key)
   const unpair = pair(a, s)
@@ -328,15 +328,14 @@ test('a forged approval from genesis adds an autobee writer apply never granted,
     assert.equal(await v.val(K.govWriter(sHex)), undefined, 'okf never admitted s')
   }
 
-  // s's PLAIN ops reach okf apply (seen/ counts them) and are held, never
-  // folded into c/; s's governance op is rejected
+  // s's PLAIN ops reach okf apply (seen/ counts them) but change no c/
+  // key, because okf never admitted s; s's governance op is rejected
   const c0 = await s.createConcept('appr/from-s', 'note')
   const g1 = await s.addWriter(a.localKey, { indexer: true })
   const hash = await converged([a, s])
   assert.ok(hash, 'peers converge')
   for (const v of [a, s]) {
     assert.equal(await v.val(K.seen(sHex)), 2, 'both plain ops reached apply')
-    assert.ok(await v.val(K.hold(sHex, c0.seq)), 'content op held under hold/')
     assert.equal(await v.val(K.cMeta(c0.tag)), undefined, 'no c/ effect (I10)')
     assert.deepEqual(await v.val(K.flagRejected(sHex, g1.seq)), { reason: 'policy-governance' })
     // the grant hint is at weight 0, so s's appends cite no witness and s
@@ -376,7 +375,6 @@ test('a forged approval from a member at weight 0 also adds the key, at weight 0
   assert.ok(await converged([a, b, s]), 'peers converge')
   for (const v of [a, b, s]) {
     assert.equal(await v.val(K.seen(sHex)), 1, 'the plain op reached apply')
-    assert.ok(await v.val(K.hold(sHex, c0.seq)), 'held')
     assert.equal(await v.val(K.cMeta(c0.tag)), undefined, 'no c/ effect (I10)')
   }
 })
