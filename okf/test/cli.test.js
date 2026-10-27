@@ -924,6 +924,50 @@ test('T18: auto-okf compact checks its paths before it opens the predecessor, so
   assert.deepEqual(await entries(base), ['alias', 'staged.compact-src', 'used', 'vault'])
 })
 
+test('T18: auto-okf compact normalizes a trailing slash on each path argument, and refuses the nested layout that the slash made (s1.mjs I, G19)', async () => {
+  // scratch-D/s1.mjs scenario I, ported to the plain compact path: an
+  // out-dir given as `<out-dir>/` put the face at `<out-dir>/.face` and the
+  // stage at `<out-dir>/.compact-src`, in the new vault, whose Corestore
+  // clears its directory. The generation came out empty. A slash names the
+  // same directory, so the CLI normalizes it.
+  const base = await tmpDir('guard-slash')
+  const storage = join(base, 'vault')
+  const v = await Bundle.init(storage)
+  const id = await seedSecret(v)
+  await v.close()
+
+  // <dir>/ and <out-dir>/: the face is <out-dir>.face, beside the new vault.
+  const out = join(base, 'out')
+  const r = await cli(['compact', `${storage}/`, `${out}/`])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  assert.match(r.stdout, new RegExp(`^compacted ${storage} -> ${out} \\(generation `, 'm'))
+  assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
+  assert.ok(!(await entries(out)).some((e) => e === '.face' || e === '.compact-src'), 'the face or the stage is in the new vault')
+  // --face <dir>/ names the same face as --face <dir>.
+  const face = join(base, 'face')
+  const f = await cli(['compact', storage, join(base, 'out2'), '--face', `${face}/`])
+  assert.equal(f.code, 0, f.stdout + f.stderr)
+  assert.match(f.stdout, new RegExp(`^hydrated face: +${face}$`, 'm'))
+  assert.deepEqual(await entries(base), ['face', 'out', 'out.face', 'out2', 'vault'])
+  for (const dir of [out, join(base, 'out2')]) {
+    const nu = await Bundle.open(dir)
+    try {
+      assert.equal(await headText(nu, id), SECRET, `${dir} lost the concept`)
+    } finally {
+      await nu.close()
+    }
+  }
+
+  // The nested layout that the slash made, given by hand, is refused by
+  // name, and the storage does not change.
+  const before = await bytesOf({ vault: storage, out, face })
+  const nested = await cli(['compact', storage, join(base, 'out3'), '--face', join(base, 'out3', '.face')])
+  assert.equal(nested.code, 1, nested.stdout + nested.stderr)
+  assert.match(nested.stderr, /^auto-okf compact: COMPACT_PATH_OVERLAP: the out-dir \S+ contains the face /m)
+  assert.deepEqual(await bytesOf({ vault: storage, out, face }), before)
+  assert.deepEqual(await entries(base), ['face', 'out', 'out.face', 'out2', 'vault'])
+})
+
 test('undelete restores a tombstoned concept', async () => {
   const base = await tmpDir('undelete')
   const storage = join(base, 'vault')

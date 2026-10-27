@@ -1164,3 +1164,36 @@ test('T18: compact refuses a pinned or non-empty out-dir by name before it write
   assert.deepEqual(await state(), before, 'a refused compaction changed the predecessor, an out-dir or the directory')
   await old.close()
 })
+
+test('T18: compact normalizes a trailing slash on toDir, vaultDir and stageDir, and refuses a stage in the out-dir (s1.mjs I, G19)', async () => {
+  // scratch-D/s1.mjs scenario I: with vaultDir `<out>/`, the default stage
+  // `${vaultDir}.compact-src` was `<out>/.compact-src`, in the new vault.
+  const base = await tmpDir('guard-slash-lib')
+  const old = await Bundle.init(join(base, 'vault'))
+  await buildNonTrivial(old)
+  const out = join(base, 'out')
+  const res = await compact(old, { initBundle: Bundle.init, toDir: `${join(base, 'face')}/`, vaultDir: `${out}/` })
+  assert.equal(res.ok, true)
+  assert.equal(res.vaultDir, out)
+  assert.deepEqual(res.counts, { walked: 3, staged: 3, ingested: 3 })
+  await res.vault.close()
+  // A stageDir with a slash is the same stage, and compact removes it.
+  const res2 = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'face2'), vaultDir: join(base, 'out2'), stageDir: `${join(base, 'stage')}/` })
+  assert.equal(res2.ok, true)
+  await res2.vault.close()
+  assert.deepEqual(await entries(base), ['face', 'face2', 'out', 'out2', 'vault'])
+  assert.ok(!(await entries(out)).includes('.compact-src'), 'the stage was in the new vault')
+
+  // The nested stage that the slash made, given by hand, is refused by name.
+  const before = { predecessor: await predecessorState(old), entries: await entries(base) }
+  await assert.rejects(
+    () => compact(old, { initBundle: Bundle.init, toDir: join(base, 'face3'), vaultDir: join(base, 'out3'), stageDir: join(base, 'out3', '.compact-src') }),
+    (err) => {
+      assert.equal(err.code, 'COMPACT_PATH_OVERLAP', err.stack)
+      assert.deepEqual(err.areas, ['out-dir', 'stage'])
+      return true
+    }
+  )
+  assert.deepEqual({ predecessor: await predecessorState(old), entries: await entries(base) }, before)
+  await old.close()
+})

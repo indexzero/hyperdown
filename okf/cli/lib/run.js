@@ -695,8 +695,12 @@ async function cmdFlags({ args, flags }) {
 }
 
 async function cmdCompact({ args, flags }) {
-  const { dir, outDir } = args
-  const faceDir = flags.face || `${outDir}.face`
+  // Each path argument names the same directory with or without a trailing
+  // slash (G19). resolve() drops the slash, so the default face
+  // `<out-dir>.face` is a sibling of the out-dir, never in it.
+  const dir = resolve(args.dir)
+  const outDir = resolve(args.outDir)
+  const faceDir = resolve(flags.face || `${outDir}.face`)
   // compact runs the path guard before it writes anything. The CLI runs it
   // first, before it opens the predecessor: an open and a close of a vault
   // rewrite files in its storage, so a refusal here leaves the predecessor's

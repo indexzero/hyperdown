@@ -152,7 +152,7 @@ const GENERATION_LOG_REL = 'log/generation.json'
  * operator to archive or destroy out-of-band (§10 step 5).
  */
 export async function compact(vault, opts = {}) {
-  const { toDir, vaultDir, force = false, encryptionKey, sign } = opts
+  const { force = false, encryptionKey, sign } = opts
   if (opts.keyPair !== undefined) {
     throw compactError(
       'COMPACT_KEYPAIR_REFUSED',
@@ -164,8 +164,8 @@ export async function compact(vault, opts = {}) {
   if (typeof initBundle !== 'function') {
     throw compactError('COMPACT_NO_INITBUNDLE', 'opts.initBundle (@auto-okf/store Bundle.init) is required')
   }
-  if (!toDir) throw compactError('COMPACT_NO_TODIR', 'opts.toDir is required')
-  if (!vaultDir) throw compactError('COMPACT_NO_VAULTDIR', 'opts.vaultDir is required')
+  if (!opts.toDir) throw compactError('COMPACT_NO_TODIR', 'opts.toDir is required')
+  if (!opts.vaultDir) throw compactError('COMPACT_NO_VAULTDIR', 'opts.vaultDir is required')
   // A key is never carried over, and no option makes an unencrypted copy of
   // an encrypted vault. materialize is the plaintext export.
   if (vault.metadata.encrypted === true && (encryptionKey === undefined || encryptionKey === null)) {
@@ -176,8 +176,14 @@ export async function compact(vault, opts = {}) {
         'materialize is the plaintext export'
     )
   }
-  // The path guard, before compact writes or removes anything.
-  const { stageDir } = await guardCompactPaths({ predecessorDir: vault.dir, toDir, vaultDir, stageDir: opts.stageDir })
+  // The path guard, before compact writes or removes anything. From here on,
+  // compact uses the normalized paths that it returns.
+  const { toDir, vaultDir, stageDir } = await guardCompactPaths({
+    predecessorDir: vault.dir,
+    toDir: opts.toDir,
+    vaultDir: opts.vaultDir,
+    stageDir: opts.stageDir
+  })
 
   if (typeof vault.update === 'function') await vault.update()
 
@@ -217,7 +223,7 @@ export async function compact(vault, opts = {}) {
     // throws, and compact neither writes into nor removes a directory that
     // it did not create. (It removes stageDir only, never a parent that
     // mkdir created, because the out-dir can be in that parent.)
-    await mkdir(dirname(resolve(stageDir)), { recursive: true })
+    await mkdir(dirname(stageDir), { recursive: true })
     await mkdir(stageDir).catch((err) => {
       throw err.code === 'EEXIST' ? stageExistsError(stageDir) : err
     })
@@ -235,7 +241,12 @@ export async function compact(vault, opts = {}) {
  * The path guard of compaction (T18). compact() runs it before it writes or
  * removes anything. A caller that must refuse before it opens the
  * predecessor runs it first too: the CLI does, because an open and a close
- * of a vault rewrite files in its storage. It writes nothing. In order:
+ * of a vault rewrite files in its storage. It writes nothing.
+ *
+ * First it normalizes toDir, vaultDir and stageDir with path.resolve (G19):
+ * a path names the same directory with or without a trailing slash, so the
+ * default stage `<vaultDir>.compact-src` is a sibling of vaultDir, never in
+ * it. Then, in order:
  *
  *   - the five areas (predecessorDir, vaultDir, toDir, the stage and the
  *     verification directory) must be separate: COMPACT_PATH_OVERLAP (G49);
@@ -243,26 +254,26 @@ export async function compact(vault, opts = {}) {
  *     (G16);
  *   - the stage must not exist: COMPACT_STAGE_EXISTS.
  *
- * Returns { stageDir }: the stage that compact uses (default
- * `<vaultDir>.compact-src`).
+ * Returns the normalized { toDir, vaultDir, stageDir } that compact uses.
  */
 export async function guardCompactPaths({ predecessorDir = null, toDir, vaultDir, stageDir }) {
   // Staging MUST live OUTSIDE vaultDir: `new Corestore(vaultDir)` clears the
   // vault directory on init, so a nested staging dir would be wiped before
   // ingest ever reads it (proven under sslop/033).
-  const stage = stageDir || `${vaultDir}.compact-src`
+  const paths = { toDir: resolve(toDir), vaultDir: resolve(vaultDir) }
+  paths.stageDir = stageDir ? resolve(stageDir) : `${paths.vaultDir}.compact-src`
   await refuseOverlap([
     ['predecessor', predecessorDir],
-    ['out-dir', vaultDir],
-    ['face', toDir],
-    ['stage', stage],
-    ['verification', `${verifyPrefix(stage)}XXXXXX`]
+    ['out-dir', paths.vaultDir],
+    ['face', paths.toDir],
+    ['stage', paths.stageDir],
+    ['verification', `${verifyPrefix(paths.stageDir)}XXXXXX`]
   ])
-  await refuseUsedOutDir(vaultDir)
+  await refuseUsedOutDir(paths.vaultDir)
   // compact creates its stage for this run only, and step 3 creates it
   // exclusively.
-  if (await lstat(stage).catch(() => null)) throw stageExistsError(stage)
-  return { stageDir: stage }
+  if (await lstat(paths.stageDir).catch(() => null)) throw stageExistsError(paths.stageDir)
+  return paths
 }
 
 /** Everything after the stage is created: the staged copy, the fresh vault, its ingest, its check and its generation entry. */
