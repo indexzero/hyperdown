@@ -1,5 +1,10 @@
 # DELIVERY — auto-okf v1
 
+This file records the auto-okf v1 milestone of 2026-07-14: its gates,
+counts, PR stack and open items as they stood then. The store now runs on
+autobee@2.12.1, writes vault metadata version 2 and opens no other version
+(see [store/README.md](store/README.md)).
+
 ## Bottom line
 
 **Shipped.** All four gates pass, verified from an independent clean clone
@@ -108,7 +113,10 @@ bugs** the internal Fable→Opus chain missed (`OKF-P3-faces-codex-review.md`).
 
 ## Known caveats (documented)
 
-autobee is experimental; port mappings + the uniform-writer-weight and
-optimistic-ack findings are in `DEVIATIONS.md`. The append-only guarantee
-means nothing dies before an epoch cycle (mistakes and secrets included) —
-epoch cycling is also the redaction mechanism. C1 is the one real scale limit.
+autobee is experimental. Each autobee@2.12.1 behaviour that okf relies on
+is in `DEVIATIONS.md` ("Substrate behaviour that okf relies on"), with its
+source. The substrate attacks that okf cannot close without changing
+autobee are residuals in `SECURITY_MODEL.md`. The append-only guarantee
+means nothing dies before a generation cycle (mistakes and secrets
+included) — the generation cycle is also the redaction mechanism. C1 is
+the one real scale limit.
