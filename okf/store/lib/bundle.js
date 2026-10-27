@@ -447,21 +447,27 @@ export class Bundle extends EventEmitter {
 
   /**
    * No append starts once close() begins: append() refuses with
-   * VAULT_CLOSED. Every append that started before close() settles before
-   * close() resolves (G11):
-   * - First each one hands its node to autobee (the append chain). autobee's
-   *   close sets _interrupting (index.js:392), and the drain then pulls in
-   *   no more local nodes (index.js:797, :1580). So a db.append still in
-   *   flight would resolve with its node only in memory.
-   * - Then autobee closes. An append whose node is still not in the local
-   *   core then fails VAULT_CLOSED_BEFORE_DURABLE, and its op is not
-   *   written (see _durable() and _lengthAfterClose()). close() does not
-   *   wait for such a node.
+   * VAULT_CLOSED. close() waits for no append before it closes autobee.
+   * Every append that started before close() settles before close()
+   * resolves (G11). The order:
+   * 1. autobee closes. This step waits for no append. A db.append can wait
+   *    for a drain that waits for a block that no peer sends, such as a
+   *    reorder that reads an absent block (index.js:1575, :645,
+   *    lib/topo.js:78, :181-182; G3-P3 F01). Only autobee's close ends that
+   *    read: its teardown closes its corestore session, which closes the
+   *    cores, and then it awaits the drain (index.js:391-452, :442, :446).
+   *    So each db.append in flight settles.
+   * 2. Every append settles. No append now waits for autobee or the
+   *    network. An append that has not handed autobee its node sees
+   *    _closing and fails VAULT_CLOSED_BEFORE_DURABLE (see _append()). An
+   *    append whose node autobee holds decides in _durable() from the
+   *    length of the local core after the close (_lengthAfterClose()).
+   * 3. The root corestore closes. _lengthAfterClose() reads through it, so
+   *    it closes only after step 2.
    */
   async close() {
     this._closing = true
     this._wakeAckWaiters() // release any append blocked in the ack gate
-    await this._appendChain // settles, it never rejects (see append())
     if (this.swarmInstance && this._onConnection) {
       this.swarmInstance.off('connection', this._onConnection)
       this._onConnection = null
@@ -473,9 +479,9 @@ export class Bundle extends EventEmitter {
     }
     // db.close() closes the generation SESSION (autobee _close); the root
     // corestore — which the Bundle owns either way — closes after it.
-    if (this.db) await this.db.close()
-    await Promise.all(this._appending) // before the root store closes
-    await this.store.close()
+    if (this.db) await this.db.close() // step 1
+    await Promise.all(this._appending) // step 2: the append chain too
+    await this.store.close() // step 3
   }
 
   // ---------- reads ----------
@@ -573,7 +579,10 @@ export class Bundle extends EventEmitter {
    *    offline/bulk writing.
    *
    * Close (G11): an append that starts after close() begins fails with
-   * VAULT_CLOSED. close() waits for every append that started before it.
+   * VAULT_CLOSED. close() closes autobee first, and then it waits for every
+   * append that started before it. Such an append returns only if its node
+   * is in the local core. Otherwise it fails VAULT_CLOSED_BEFORE_DURABLE,
+   * and its op is not written (see close() and _append()).
    *
    * The chain serializes the appends only until autobee holds each node.
    * The wait for the local core runs outside it, so the next append can
@@ -673,34 +682,68 @@ export class Bundle extends EventEmitter {
     return this._closedLength
   }
 
+  /**
+   * close() closes autobee without waiting for an append (see close()).
+   * Once close() begins, an append hands autobee no node:
+   * - It checks _closing before it reads autobee, after the gates, and
+   *   just before db.append, with no await between that check and
+   *   db.append.
+   * - A read of the closing autobee can fail.
+   * Each such end is VAULT_CLOSED_BEFORE_DURABLE. No node of the append
+   * exists then, so its op is not written. err.seq is the position of the
+   * op, or null if it took none.
+   *
+   * If autobee closes during db.append, the append returns its seq, and
+   * _durable() decides from the length of the local core after the close.
+   * So no tag is returned for a node that is not in the local core.
+   */
   async _append(type, payload, { backpressure } = {}) {
     await this.ready()
-    this._assertWritable() // fail fast, before any gate waits
-    const bp = backpressure === undefined ? this._backpressure : normalizeBackpressure(backpressure)
-    this._nextSeq = this._nextPosition() // the gates count positions
-    if (bp) {
-      this._trackAcks = true
-      await this._admit(bp)
+    let seq = null
+    let buf
+    try {
+      this._assertOpen(seq) // an append queued behind one that close() cut
+      this._assertWritable() // fail fast, before any gate waits
+      const bp = backpressure === undefined ? this._backpressure : normalizeBackpressure(backpressure)
+      this._nextSeq = this._nextPosition() // the gates count positions
+      if (bp) {
+        this._trackAcks = true
+        await this._admit(bp)
+      }
+      seq = this._nextPosition()
+      this._assertOpen(seq) // close() releases the gates
+      // §8 app-level containment: once this peer's own revocation record is
+      // in the view, any new local op is uniformly rejected 'revoked' by
+      // every peer's apply — refuse the append instead of growing the log
+      // with dead ops. (Mirrors core's exact rule: actual-seq cross-check
+      // first, claimed-clock strict precedence second.)
+      await this._guardRevoked(payload.clock, seq)
+      const op = { ...payload }
+      if (op.clock === undefined) op.clock = await this.clock(seq)
+      if (op.at === undefined) op.at = Date.now() // §3: informational only
+      buf = encodeOp(type, op) // may throw on a bad payload: seq not yet burned
+      // Again after the awaits above: a fold can take the grant away.
+      this._assertWritable()
+      this._assertOpen(seq) // no await from here to db.append
+    } catch (err) {
+      throw this._closing ? closedBeforeDurableError(seq) : err
     }
-    const seq = this._nextPosition()
-    // §8 app-level containment: once this peer's own revocation record is
-    // in the view, any new local op is uniformly rejected 'revoked' by
-    // every peer's apply — refuse the append instead of growing the log
-    // with dead ops. (Mirrors core's exact rule: actual-seq cross-check
-    // first, claimed-clock strict precedence second.)
-    await this._guardRevoked(payload.clock, seq)
-    const op = { ...payload }
-    if (op.clock === undefined) op.clock = await this.clock(seq)
-    if (op.at === undefined) op.at = Date.now() // §3: informational only
-    const buf = encodeOp(type, op) // may throw on a bad payload: seq not yet burned
-    // Again after the awaits above: a fold can take the grant away.
-    this._assertWritable()
     // Appends are serialized (append()), so the seq moves only once
     // autobee holds the node. A plain append: autobee runs with
     // optimistic: false.
-    await this.db.append(buf)
+    try {
+      await this.db.append(buf)
+    } catch (err) {
+      if (!this._closing) throw err
+      // autobee closed during db.append: _durable() decides (see above)
+    }
     this._nextSeq = seq + 1
     return { seq, tag: makeTag(this.db.local.key, seq) }
+  }
+
+  /** Once close() begins, no append hands autobee a node (see _append()). */
+  _assertOpen(seq) {
+    if (this._closing) throw closedBeforeDurableError(seq)
   }
 
   /**
@@ -1051,10 +1094,12 @@ function closedError() {
   return vaultError('VAULT_CLOSED', 'the vault is closing or closed, so no new append starts')
 }
 
+/** `seq` is the position of the op, or null if close() cut it before it took one. */
 function closedBeforeDurableError(seq) {
+  const node = seq === null ? 'the node of the op' : `the node at position ${seq}`
   const err = vaultError(
     'VAULT_CLOSED_BEFORE_DURABLE',
-    `the vault closed before the node at position ${seq} reached the local core; the op is not written`
+    `the vault closed before ${node} reached the local core; the op is not written`
   )
   err.seq = seq
   return err

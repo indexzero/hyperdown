@@ -1,5 +1,6 @@
 // T10, G11 (the close race): an append returns { seq, tag } only for a node
-// that is in the local core, and close() waits for the append chain.
+// that is in the local core. close() closes autobee first, and then it waits
+// for every append to settle (G3-P3 F01).
 //
 // autobee's close sets _interrupting (index.js:392). The drain then stops
 // (index.js:797), and _flushLocal pulls in no more local nodes
@@ -14,6 +15,12 @@
 // local core. A close() before that fails it VAULT_CLOSED_BEFORE_DURABLE: the
 // node lives only in autobee's memory (lib/writers.js:732-755), so it never
 // lands after a reopen.
+//
+// close() does not wait for an append before it closes autobee. A db.append
+// can wait for a drain that only autobee's close ends: a reorder that reads a
+// block that the peer does not hold (G3-P3 F01). So an append that has not
+// handed autobee its node when close() begins fails
+// VAULT_CLOSED_BEFORE_DURABLE, and its op is not written.
 //
 // The first test is the port of ab2-review/scratch-A/s9-close-race.mjs. It
 // is adapted to admit before writing: the creator is the genesis writer, so
@@ -61,7 +68,7 @@ test('G11 (s9): a close during an append returns no tag for a node that is missi
   assert.deepEqual(lost, [], `no tag for a node that is missing after the reopen (ok ${ok}, rejected ${rejected})`)
 })
 
-test('close() resolves only after every in-flight append has settled, and each node is in the core after a reopen', { timeout: 60000 }, async (t) => {
+test('close() resolves only after every in-flight append has settled: each append that returned is in the core after a reopen, and each queued append fails VAULT_CLOSED_BEFORE_DURABLE', { timeout: 60000 }, async (t) => {
   const N = 8
   const dir = await tmpDir('close-settles')
   const a = await Bundle.init(dir)
@@ -81,26 +88,79 @@ test('close() resolves only after every in-flight append has settled, and each n
       )
     )
   }
+  // Append 0 has returned. Append 1 runs, and appends 2 to N - 1 wait in the
+  // append chain. close() closes autobee before it waits for them.
+  assert.equal((await outcomes[0]).seq, 0)
   await a.close()
   assert.equal(settled.size, N, 'every append that started before close() settled before close() resolved')
   const results = await Promise.all(outcomes)
+  for (let i = 2; i < N; i++) {
+    assert.equal(results[i].code, 'VAULT_CLOSED_BEFORE_DURABLE', `append ${i} was still queued, so close() cut it`)
+    assert.equal(results[i].seq, null, `append ${i} took no position`)
+  }
+  const returned = results.filter((r) => !(r instanceof Error))
+  const failed = results.filter((r) => r instanceof Error)
   assert.deepEqual(
-    results.map((r) => (r instanceof Error ? r.message : 'returned')),
-    Array(N).fill('returned'),
-    'close() lets each append that started before it complete'
+    failed.map((e) => e.code),
+    Array(failed.length).fill('VAULT_CLOSED_BEFORE_DURABLE'),
+    'each append that close() cut fails by that name'
   )
   assert.deepEqual(
-    results.map((r) => r.seq),
-    [...Array(N).keys()],
-    'the seqs are the positions 0 to N - 1'
+    returned.map((r) => r.seq),
+    [...Array(returned.length).keys()],
+    'the seqs that returned are the positions 0 to k - 1'
   )
 
   const a2 = await Bundle.open(dir)
   t.after(() => a2.close())
-  assert.equal(a2.db.local.length, N, 'the local core holds every node')
-  for (const r of results) {
+  assert.equal(a2.db.local.length, returned.length, 'the local core holds the node of each append that returned, and no other node')
+  for (const r of returned) {
     assert.notEqual(await a2.val(K.cMeta(r.tag)), undefined, `the concept of tag ${r.tag} is in the view`)
   }
+})
+
+test('close() during an append that waits in the ack gate, before db.append, fails it VAULT_CLOSED_BEFORE_DURABLE, and no node of it reaches the core', { timeout: 60000 }, async (t) => {
+  // The ack gate of backpressure (see Bundle.append()) holds the append in
+  // _append, before it hands autobee its node. close() releases the gate.
+  // autobee is then closing or closed, so the append hands it no node.
+  const adir = await tmpDir('gate-close-a')
+  const a = await Bundle.init(adir, { backpressure: { maxInflight: 1, ackTimeout: 60000 } })
+  const b = await Bundle.join(await tmpDir('gate-close-b'), a.key)
+  const unAB = pair(a, b)
+  let a2 = null
+  t.after(async () => {
+    unAB()
+    if (a2) await a2.close()
+    await a.close() // a no-op once the test has closed it
+    await b.close()
+  })
+  await a.writers.add(b.localKey)
+  const { tag: id } = await a.createConcept('n/x', 'note')
+  assert.ok(await until(async () => (await b.update(), b.writable && (await b.val(K.cMeta(id))) !== undefined)))
+  await b.setField(id, 'title', ['b0']) // its clock cites position 1 of a
+  assert.ok(
+    await until(async () => (await a.update(), (await a.val(K.seen(hex(b.localKey)))) === 1)),
+    'a folds b0, which acks position 1'
+  )
+  unAB() // no later ack reaches a
+  const A2 = await a.setField(id, 'title', ['a2'])
+  assert.equal(A2.seq, 2, 'one op past the ack is admitted')
+
+  const T = a.setField(id, 'title', ['T']).then(
+    (r) => ({ r }),
+    (e) => ({ e })
+  )
+  const before = await Promise.race([T.then(() => 'settled'), sleep(500).then(() => 'waiting')])
+  assert.equal(before, 'waiting', 'T waits in the ack gate, because no peer acks position 2')
+  await a.close()
+  const res = await T
+  assert.equal(res.r, undefined, 'no tag for T')
+  assert.equal(res.e.code, 'VAULT_CLOSED_BEFORE_DURABLE')
+  assert.equal(res.e.seq, 3)
+
+  a2 = await Bundle.open(adir)
+  assert.equal(a2.db.local.length, 3, 'the local core holds no node of T')
+  assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['a2'], 'T is not in the view')
 })
 
 test('an append that starts after close() begins fails with VAULT_CLOSED, and nothing reaches the local core', { timeout: 60000 }, async (t) => {
@@ -207,5 +267,112 @@ test('an append that waits behind a missing link fails VAULT_CLOSED_BEFORE_DURAB
     await v.update()
     assert.equal(await v.val(K.flagRejected(bHex, 2)), undefined)
     assert.deepEqual((await v.val(K.cField(id, 'title'))).values, ['V'])
+  }
+})
+
+test('close() returns while an append waits for a drain that reads an absent block, and the append fails VAULT_CLOSED_BEFORE_DURABLE (G3-P3 F01)', { timeout: 60000 }, async (t) => {
+  // The port of the D-039 probe probe-close-reorder.mjs. a folds b0, and then
+  // a writes a node that links b0. a closes and loses its stored copy of b0.
+  // It keeps its boot record, its system and its view. a reopens with b
+  // offline. c sends c0, which c made before b0, so autobee reorders, and the
+  // reorder reads b0 and waits for it (lib/topo.js:78, :181-182). An append
+  // of a then waits for that drain (index.js:1575, :645). Only autobee's close
+  // cancels the read.
+  const DEADLINE = 5000
+  const adir = await tmpDir('reorder-close-a')
+  const a = await Bundle.init(adir)
+  const b = await Bundle.join(await tmpDir('reorder-close-b'), a.key)
+  const c = await Bundle.join(await tmpDir('reorder-close-c'), a.key)
+  const bHex = hex(b.localKey)
+  const unpairs = []
+  let a2 = null
+  let closing = null
+  t.after(async () => {
+    for (const un of unpairs) un()
+    if (a2) {
+      // If close() stays pending, the documented db.close() cancels the read
+      // (D-039 F01), so that the test ends. After the fix it is a no-op.
+      await a2.db.close()
+      await (closing || a2.close())
+    }
+    await a.close() // a no-op once the test has closed it
+    await b.close()
+    await c.close()
+  })
+  const unAB = pair(a, b)
+  const unAC = pair(a, c)
+  unpairs.push(unAB, unAC)
+  await a.writers.add(b.localKey)
+  await a.writers.add(c.localKey)
+  const { tag: id } = await a.createConcept('n/x', 'note')
+  assert.ok(
+    await until(
+      async () => (
+        await b.update(),
+        await c.update(),
+        (await b.val(K.cMeta(id))) !== undefined && (await c.val(K.cMeta(id))) !== undefined
+      )
+    )
+  )
+  unAB()
+  unAC()
+  await sleep(50)
+  await c.setField(id, 'title', ['c0'])
+  await sleep(100) // c0 comes before b0 in the order
+  await b.setField(id, 'title', ['b0'])
+  const unAB2 = pair(a, b)
+  unpairs.push(unAB2)
+  assert.ok(await until(async () => (await a.update(), (await a.val(K.seen(bHex))) === 1)), 'a folds b0')
+  const A3 = await a.setField(id, 'checkpoint', ['a3']) // it links b0
+  assert.equal(A3.seq, 3)
+  await a.update()
+  await sleep(50)
+  await a.update()
+  unAB2()
+  await a.close()
+  {
+    // a loses its stored copy of b0 (hypercore clear(), documented)
+    const store = new Corestore(adir)
+    const core = store.get({ key: b.localKey, active: false })
+    await core.ready()
+    assert.ok(await core.has(0))
+    await core.clear(0, 1)
+    assert.equal(await core.has(0), false)
+    await core.close()
+    await store.close()
+  }
+
+  a2 = await Bundle.open(adir)
+  assert.equal(a2.db.local.length, 4, 'the local core holds the four nodes of a')
+  assert.equal(await a2.val(K.seen(bHex)), 1, 'the view of a still holds b0')
+  unpairs.push(pair(a2, c)) // c sends c0, and the reorder waits for b0
+  {
+    const cCore = a2.store.get({ key: c.localKey, active: false })
+    await cCore.ready()
+    assert.ok(await until(() => cCore.has(0)), 'a holds c0')
+    await cCore.close()
+  }
+  const appending = a2.setField(id, 'title', ['late']).then(
+    (r) => ({ r }),
+    (e) => ({ e })
+  )
+  const before = await Promise.race([appending.then(() => 'settled'), sleep(300).then(() => 'waiting')])
+  assert.equal(before, 'waiting', 'the append waits for the drain, and the drain waits for b0')
+
+  closing = a2.close().then(() => 'closed')
+  const outcome = await Promise.race([closing, sleep(DEADLINE).then(() => 'pending')])
+  assert.equal(outcome, 'closed', `close() returns within ${DEADLINE} ms`)
+  const res = await appending
+  assert.equal(res.r, undefined, 'no tag for the waiting append')
+  assert.equal(res.e.code, 'VAULT_CLOSED_BEFORE_DURABLE')
+  assert.equal(res.e.seq, 4)
+  {
+    // The op never landed: the local core of a still holds four nodes.
+    const store = new Corestore(adir)
+    const core = store.get({ key: a2.localKey, active: false })
+    await core.ready()
+    assert.equal(core.length, 4)
+    await core.close()
+    await store.close()
   }
 })
