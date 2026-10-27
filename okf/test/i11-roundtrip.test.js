@@ -745,6 +745,29 @@ test('T15: a hand-written body that ends in a newline keeps it through ingest an
   await v.close()
 })
 
+test("T15: the new vault takes the predecessor's pinned limits, so a path deeper than the default survives (G26)", async () => {
+  // The predecessor pins maxPathDepth 100, and holds a concept at depth 70.
+  // The default is 64. A new vault with the default limits rejects that
+  // path (depth-exceeded), so the concept is lost and the T13 check fails.
+  const limits = { maxOpBytes: 400000, maxPathBytes: 2048, maxPathDepth: 100 }
+  const old = await Bundle.init(await tmpDir('fid-lim-vault'), { metadata: { limits } })
+  assert.deepEqual(old.metadata.limits, limits)
+  const deep = Array.from({ length: 70 }, (_, i) => `d${i}`).join('/')
+  const { tag } = await old.createConcept(deep, 'note')
+  await old.createConcept('notes/a', 'note')
+  const before = await predecessorState(old)
+  const base = await tmpDir('fid-lim')
+  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.counts, { walked: 2, staged: 2, ingested: 2 })
+  assert.deepEqual(res.warnings, [])
+  assert.deepEqual(res.vault.metadata.limits, old.metadata.limits)
+  assert.equal((await liveConcepts(res.vault)).get(tag).path, deep)
+  assert.deepEqual(await predecessorState(old), before, 'compaction changed the predecessor')
+  await old.close()
+  await res.vault.close()
+})
+
 test('T13: a note with truncated frontmatter YAML fails compaction with COMPACT_FIDELITY, and the parse warning surfaces (G27)', async () => {
   // compact materializes its own face, and materialize never writes a
   // truncated note. So the fixture is a face directory that already holds

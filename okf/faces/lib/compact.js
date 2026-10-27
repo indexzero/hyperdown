@@ -9,7 +9,7 @@
 //      (@auto-okf/store derives writer cores under a per-generation corestore
 //      namespace keyed by the predecessor fields — §10/N2, so adoption of
 //      the predecessor's mint-shaped ids never deadlocks `mint-collision-
-//      risk`);
+//      risk`). The fresh vault pins the predecessor's `limits` (§3);
 //   3. ingest the bundle into the fresh vault with `_id` ADOPTION (§6/§9:
 //      an incoming `_id` unknown to the fresh vault is authoritative on
 //      create, so identity lineage survives the generation);
@@ -215,8 +215,11 @@ export async function compact(vault, opts = {}) {
   const outDir = await claimDir(vaultDir)
   let newVault = null
   try {
+    // The fresh vault pins the predecessor's limits (§3). Every note in the
+    // face fitted them, and the fresh vault's apply checks each op against
+    // them.
     newVault = await initBundle(vaultDir, {
-      metadata: { predecessorKey, predecessorCheckpoint },
+      metadata: { predecessorKey, predecessorCheckpoint, limits: { ...vault.metadata.limits } },
       ...(keyPair !== undefined ? { keyPair } : {}),
       ...(encryptionKey !== undefined ? { encryptionKey } : {})
     })
