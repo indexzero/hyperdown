@@ -7,7 +7,9 @@
 // left the link paired and dead: no handshake, no replication, both ways.
 //
 // The later tests cover a header that is bad, late or too long, a link id
-// that registers again, and a graceful close (G45 to G48).
+// that registers again, and a graceful close (G45 to G48). They also cover
+// a pending socket that buffers too much or waits too long, and a FIN from
+// both sides of a link (D-045 F01, F02).
 //
 // No step depends on a fixed sleep. Each send waits until the hub has read
 // the bytes, each step waits until the hub has registered or paired the
@@ -158,6 +160,72 @@ test('a FIN before pairing: the pending socket leaves pending and closes', async
     await send(second, header('L', 1))
     await waitFor(() => fx.hub.pending.get('L')?.side === 1, 'side 1 to register')
     assert.equal(fx.hub.links.has('L'), false, 'side 1 paired with the ended socket')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// D-045 F02. A pending socket buffers what it sends, up to a byte limit.
+// The bytes glued to its header count. A buffer of exactly the limit
+// waits. A socket that buffers more is destroyed at once, and the hub logs
+// it. Its pending entry goes, so a later socket for the link does not pair
+// with it. The hub does not pause the socket, because a paused socket
+// hides its FIN.
+test('pending limit: a pending socket that buffers more than the limit is destroyed and logged, and leaves pending', async () => {
+  const fx = await openHub({ pendingMaxBytes: 64, pendingTimeoutMs: 60000 })
+  try {
+    const first = await connect(fx)
+    await send(first, header('L', 0) + 'x'.repeat(16))
+    await waitFor(() => fx.hub.pending.get('L')?.socket === first.hubEnd, 'side 0 to register')
+    await send(first, 'y'.repeat(48))
+    assert.equal(first.hubEnd.destroyed, false, 'the hub destroyed a buffer of exactly the limit')
+    assert.equal(fx.hub.pending.get('L')?.socket, first.hubEnd, 'a buffer of exactly the limit left pending')
+
+    await send(first, 'z')
+    await waitFor(() => first.hubEnd.destroyed, 'the hub to destroy the socket over the limit')
+    assert.equal(fx.hub.pending.has('L'), false, 'the socket over the limit is still pending')
+    assert.ok(
+      fx.logs.includes('link L side 0 destroyed while pending: it buffered more than 64 bytes'),
+      'the hub did not log the socket over the limit'
+    )
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// D-045 F02. A pending socket waits for its partner until a deadline. A
+// socket with no partner by then is destroyed, and the hub logs it. Its
+// pending entry goes. The header deadline is longer than the wait, so the
+// header deadline cannot be what closes it. The log line shows that the
+// socket was pending.
+test('pending deadline: a pending socket with no partner in time is destroyed and logged, and leaves pending', async () => {
+  const fx = await openHub({ pendingTimeoutMs: 100, headerTimeoutMs: 60000 })
+  try {
+    const late = await connect(fx)
+    await send(late, header('L', 0) + 'handshake')
+    await waitFor(() => late.hubEnd.destroyed, 'the hub to destroy the socket with no partner')
+    assert.equal(fx.hub.pending.has('L'), false, 'the socket with no partner is still pending')
+    assert.ok(
+      fx.logs.includes('link L side 0 destroyed while pending: no partner within 100ms'),
+      'the hub did not log the socket with no partner'
+    )
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// D-045 F02. Pairing stops the pending deadline. Each chunk waits 1 s in
+// the fault queue, which is longer than the deadline, so a delivery shows
+// that the deadline did not destroy the paired link.
+test('pending deadline: a socket that pairs in time outlives the deadline', async () => {
+  const fx = await openHub({ profile: LATENCY, pendingTimeoutMs: 500 })
+  try {
+    const [a, b] = await pair(fx, 'L')
+    await send(a, 'ping')
+    await waitFor(() => b.got === 'ping', 'the paired link to deliver after the pending deadline')
+    assert.equal(a.hubEnd.destroyed || b.hubEnd.destroyed, false, 'the pending deadline closed a paired socket')
+    const dropped = fx.logs.filter((line) => line.includes('destroyed while pending'))
+    assert.deepEqual(dropped, [], 'the hub logged a paired socket as pending')
   } finally {
     await closeHub(fx)
   }

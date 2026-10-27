@@ -167,15 +167,27 @@ export class FaultHub {
    *   within this time is destroyed. Default 10000 ms.
    * @param opts.headerMaxBytes a header line longer than this, with or
    *   without its newline, is destroyed. Default 1024 bytes.
+   * @param opts.pendingTimeoutMs a socket that has no partner within this
+   *   time after its header line is destroyed. Default 30000 ms.
+   * @param opts.pendingMaxBytes a socket that waits for its partner and
+   *   buffers more than this is destroyed. The bytes after its header line
+   *   count. Default 1048576 bytes (1 MiB).
    */
-  constructor(rng, defaultProfile, log = () => {}, { headerTimeoutMs = 10000, headerMaxBytes = 1024 } = {}) {
+  constructor(
+    rng,
+    defaultProfile,
+    log = () => {},
+    { headerTimeoutMs = 10000, headerMaxBytes = 1024, pendingTimeoutMs = 30000, pendingMaxBytes = 1048576 } = {}
+  ) {
     this.rng = rng
     this.defaultProfile = defaultProfile
     this.log = log
     this.headerTimeoutMs = headerTimeoutMs
     this.headerMaxBytes = headerMaxBytes
+    this.pendingTimeoutMs = pendingTimeoutMs
+    this.pendingMaxBytes = pendingMaxBytes
     this.conns = new Set() // every accepted socket, from accept to close
-    this.pending = new Map() // linkId -> { side, socket, chunks, detach }
+    this.pending = new Map() // linkId -> { side, socket, chunks, bytes, detach }
     this.links = new Map() // linkId -> { a2b, b2a, sockets, epoch }
     this.profiles = new Map() // linkId -> profile override
     this.epochs = new Map() // linkId -> connection epoch counter
@@ -301,19 +313,35 @@ export class FaultHub {
   // defers 'end', so after a FIN it would never close and would stay
   // pending, and the next socket for the link would pair with it. The
   // socket is half-open, so after its FIN the hub ends it, and it closes.
+  //
+  // The wait has a deadline and the buffer has a byte limit, as the header
+  // phase has. A socket that misses either is destroyed, the hub logs it,
+  // and its pending entry goes. The hub never pauses a pending socket to
+  // limit its buffer, because a paused socket hides its FIN.
   _wait(link, side, socket, rest) {
-    const entry = { side, socket, chunks: [rest], detach: null }
-    const onData = (chunk) => entry.chunks.push(chunk)
+    const entry = { side, socket, chunks: [], bytes: 0, detach: null }
     const onGone = () => {
       entry.detach()
       entry.chunks = []
       if (this.pending.get(link) === entry) this.pending.delete(link)
     }
+    const drop = (reason) => {
+      onGone()
+      this.log(`link ${link} side ${side} destroyed while pending: ${reason}`)
+      socket.destroy()
+    }
+    const onData = (chunk) => {
+      entry.chunks.push(chunk)
+      entry.bytes += chunk.length
+      if (entry.bytes > this.pendingMaxBytes) drop(`it buffered more than ${this.pendingMaxBytes} bytes`)
+    }
     const onEnd = () => {
       onGone()
       socket.end()
     }
+    const timer = setTimeout(() => drop(`no partner within ${this.pendingTimeoutMs}ms`), this.pendingTimeoutMs)
     entry.detach = () => {
+      clearTimeout(timer)
       socket.off('data', onData)
       socket.off('end', onEnd)
       socket.off('close', onGone)
@@ -322,6 +350,7 @@ export class FaultHub {
     socket.once('end', onEnd)
     socket.once('close', onGone)
     this.pending.set(link, entry)
+    onData(rest)
   }
 
   /** Hard partition: sever both directions of a link. */
@@ -347,6 +376,7 @@ export class FaultHub {
     // This also destroys each pending socket, and each socket that has not
     // sent its header line yet. Otherwise server.close() waits for them.
     for (const socket of [...this.conns]) socket.destroy()
+    for (const entry of this.pending.values()) entry.detach()
     this.pending.clear()
     await new Promise((r) => this.server.close(r))
   }
