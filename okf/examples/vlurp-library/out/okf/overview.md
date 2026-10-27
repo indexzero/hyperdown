@@ -18,3 +18,4 @@ self-describing: an `index.md` per directory and a root `log.md` narrate it.
 OKF is deliberately small. It says nothing about storage, transport, or
 merge — only about the shape of the emitted tree — so any producer can write
 a conformant bundle and any consumer can read one.
+

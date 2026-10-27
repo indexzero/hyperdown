@@ -119,6 +119,10 @@ export function emitFrontmatter(pairs) {
  *   ---\n<frontmatter>---\n            (frontmatter always present: type is
  *                                        required, so pairs is non-empty)
  *   \n<body>\n                          (only when body is non-empty)
+ *
+ * The file newline after the body is always written, also when the body
+ * itself ends in '\n'. So the body bytes are never merged with it, and
+ * parseNote gets the body back exactly.
  */
 export function renderNote(pairs, body) {
   let out = ''
@@ -126,8 +130,7 @@ export function renderNote(pairs, body) {
     out += '---\n' + emitFrontmatter(pairs) + '---\n'
   }
   if (body !== undefined && body !== null && body !== '') {
-    out += (out === '' ? '' : '\n') + body
-    if (!out.endsWith('\n')) out += '\n'
+    out += (out === '' ? '' : '\n') + body + '\n'
   }
   return out
 }
@@ -136,9 +139,14 @@ export function renderNote(pairs, body) {
  * Parse one concept note into { fm, body, warnings }. `fm` is null when the
  * file has no frontmatter block, else the plain-object YAML parse. The body
  * is the text after the closing '---' with the single leading blank
- * separator line and the single trailing file newline removed — the exact
- * inverse of renderNote for any body not itself ending in '\n' (ingest
- * canonicalizes bodies to no trailing newline; see the README).
+ * separator line and the single trailing file newline removed.
+ *
+ * For every body and every non-empty `pairs`, this is the exact inverse of
+ * renderNote: parseNote(renderNote(pairs, body)).body === body, also when
+ * the body ends in one or more '\n' (G25). A hand-written note that ends in
+ * one newline, such as '---\ntype: note\n---\n\nbody text\n', parses to the
+ * body 'body text': that one newline is the file newline. A note that ends
+ * in two newlines parses to a body that ends in one.
  */
 export function parseNote(text) {
   const warnings = []

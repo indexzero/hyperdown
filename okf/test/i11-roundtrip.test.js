@@ -15,7 +15,7 @@ import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
-import { materialize, compact, createIngestWatcher, readView, readLog } from '../faces/index.js'
+import { materialize, compact, createIngestWatcher, readView, readLog, parseNote, renderNote } from '../faces/index.js'
 import { compareTrees } from '../faces/lib/verify.js'
 import { keyspace as K } from '../core/index.js'
 
@@ -658,15 +658,91 @@ test('T13: an oversize note fails compaction with COMPACT_FIDELITY, and the over
   await old.close()
 })
 
-test('T13: a body of "text\\n\\n" fails compaction with COMPACT_FIDELITY (G25)', async () => {
-  // The stage parse and the ingest parse each strip one trailing newline.
-  // T15 makes it pass.
+test('T15: a body of "text\\n\\n" round-trips byte for byte and passes the T13 check (G25)', async () => {
+  // codex-D.out #9. renderNote ends every body with one file newline, and
+  // parseNote removes exactly that one. So the face, the stage and the
+  // ingest all keep the two trailing newlines of the body.
   const old = await Bundle.init(await tmpDir('fid-nl-vault'))
   const { tag } = await old.createConcept('notes/blank', 'note')
   await old.setBody(tag, null, 'text\n\n')
-  const err = await expectFidelityFailure(old, await tmpDir('fid-nl'))
-  assert.deepEqual(err.differences, [{ path: 'notes/blank.md', kind: 'differs' }])
+  const base = await tmpDir('fid-nl')
+  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.counts, { walked: 1, staged: 1, ingested: 1 })
+  assert.deepEqual(res.warnings, [])
+  assert.equal((await liveConcepts(res.vault)).get(tag).headText, 'text\n\n')
+  const face = await readFile(join(base, 'face', 'notes', 'blank.md'), 'utf8')
+  assert.ok(face.endsWith('\ntype: note\n---\n\ntext\n\n\n'), JSON.stringify(face))
+  const staged = await readFile(join(base, 'out.compact-src', 'notes', 'blank.md'), 'utf8')
+  assert.equal(staged, face.replace(/^_rev: .*\n/m, ''), 'the stage changed the bytes of the note')
   await old.close()
+  await res.vault.close()
+})
+
+// ---------- T15: body bytes and limits survive compaction ----------
+
+test('T15: parseNote inverts renderNote for every body, trailing newlines included (G25)', () => {
+  const pairs = [['type', 'note']]
+  const bodies = ['', 'text', 'text\n', 'text\n\n', 'text\n\n\n', '\n', '\n\n', '\ntext', '\n\ntext\n\n', 'a\n\nb\n', 'a\r\n']
+  for (const body of bodies) {
+    assert.deepEqual(parseNote(renderNote(pairs, body)), { fm: { type: 'note' }, body, warnings: [] }, JSON.stringify(body))
+  }
+  // The layout: the frontmatter block, one blank separator line, the body,
+  // and one file newline. A body without a trailing newline keeps the bytes
+  // it had before T15. An empty body writes the frontmatter block only.
+  assert.equal(renderNote(pairs, 'text'), '---\ntype: note\n---\n\ntext\n')
+  assert.equal(renderNote(pairs, 'text\n'), '---\ntype: note\n---\n\ntext\n\n')
+  assert.equal(renderNote(pairs, 'text\n\n'), '---\ntype: note\n---\n\ntext\n\n\n')
+  assert.equal(renderNote(pairs, ''), '---\ntype: note\n---\n')
+})
+
+test('T15: a hand-written note with one trailing newline parses and ingests as before', async () => {
+  // parseNote does not change in T15. It removes the blank separator line
+  // and one file newline, so the body of this note is 'body text'. The
+  // ordinary ingest stores that body, and materialize writes the note back
+  // with the same bytes, plus the _id and _rev lines.
+  const text = '---\ntype: note\n---\n\nbody text\n'
+  assert.deepEqual(parseNote(text), { fm: { type: 'note' }, body: 'body text', warnings: [] })
+  const dir = await tmpDir('hand-one')
+  await writeTree(dir, new Map([['notes/hand.md', text]]))
+  const v = await Bundle.init(await tmpDir('hand-one-vault'))
+  const w = await createIngestWatcher(v, dir, { watch: false })
+  const ops = await w.ingestFile('notes/hand.md')
+  await w.close()
+  assert.deepEqual(
+    ops.map((o) => [o.type, o.payload.text]),
+    [['create-concept', undefined], ['set-body', 'body text']]
+  )
+  const [concept] = (await liveConcepts(v)).values()
+  assert.equal(concept.headText, 'body text')
+  const out = await tmpDir('hand-one-out')
+  await materialize(v, out)
+  const back = await readFile(join(out, 'notes', 'hand.md'), 'utf8')
+  assert.equal(back.replace(/^_id: .*\n_rev: .*\n/m, ''), text)
+  await v.close()
+})
+
+test('T15: a hand-written body that ends in a newline keeps it through ingest and materialize (G25)', async () => {
+  // The file ends in two newlines: one is the file newline, and one is the
+  // body's. The ingest stores 'body text\n'. materialize writes the file
+  // newline after it, so the note comes back with the same bytes, and a
+  // second ingest of those bytes changes nothing.
+  const text = '---\ntype: note\n---\n\nbody text\n\n'
+  assert.equal(parseNote(text).body, 'body text\n')
+  const dir = await tmpDir('hand-two')
+  await writeTree(dir, new Map([['notes/hand.md', text]]))
+  const v = await Bundle.init(await tmpDir('hand-two-vault'))
+  const w = await createIngestWatcher(v, dir, { watch: false })
+  await w.ingestFile('notes/hand.md')
+  await w.close()
+  const [concept] = (await liveConcepts(v)).values()
+  assert.equal(concept.headText, 'body text\n')
+  const out = await tmpDir('hand-two-out')
+  await materialize(v, out)
+  const back = await readFile(join(out, 'notes', 'hand.md'), 'utf8')
+  assert.equal(back.replace(/^_id: .*\n_rev: .*\n/m, ''), text)
+  assert.equal(parseNote(back).body, concept.headText, 'the materialized note parses to another body')
+  await v.close()
 })
 
 test('T13: a note with truncated frontmatter YAML fails compaction with COMPACT_FIDELITY, and the parse warning surfaces (G27)', async () => {
