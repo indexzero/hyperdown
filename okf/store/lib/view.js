@@ -4,21 +4,24 @@
 // and the unit suite runs against) over the real hyperbee2 view autobee
 // hands apply, converting string keys/values to buffers at the boundary.
 //
-// hyperbee2 surface, verified against the installed source
-// (node_modules/hyperbee2@2.20.1, the version autobee 2.12.1 resolves;
-// first verified on 2.10.3 under autobee 1.0.10, unchanged since for every
-// call below; upstream https://github.com/holepunchto/hyperbee2). autobee@2
-// also passes fast-forward candidate views and checkouts through `open`
-// (index.js openView), so this adapter stays a stateless wrapper:
-// - `await bee.get(key)` — key MUST be a Buffer (index.js get() binary-
-//   searches with b4a.compare); resolves to a finalized key pointer
-//   `{ seq, key, value, ... }` or null, value a Buffer.
-// - `bee.write()` — returns a WriteBatch (lib/write.js) with
-//   `tryPut(key, value)` / `tryDelete(key)` / `await flush()`; keys and
-//   values are buffers.
-// - `bee.createReadStream(options)` — a RangeStream (lib/ranges.js) that
-//   DOES support range iteration: `{ gt, gte, lt, lte, reverse, limit }`,
-//   keys in byte order (b4a.compare), limit -1 = unlimited. This matches
+// hyperbee2 surface, verified against the installed source of
+// hyperbee2@2.20.1, the version that autobee@2.12.1 resolves (autobee
+// package.json:29; upstream https://github.com/holepunchto/hyperbee2).
+// autobee opens both db.view and its working view through `open` (autobee
+// index.js:93-94, :127-128, lib/apply-view.js:8-10), so this adapter stays
+// a stateless wrapper:
+// - `await bee.get(key)` (hyperbee2 index.js:346) — key MUST be a Buffer
+//   (get() binary-searches with b4a.compare, index.js:363); resolves to a
+//   finalized key pointer `{ seq, key, value, ... }` or null, value a
+//   Buffer.
+// - `bee.write()` (hyperbee2 index.js:151) — returns a WriteBatch
+//   (lib/write.js) with `tryPut(key, value)` / `tryDelete(key)` /
+//   `await flush()` (lib/write.js:46, :51, :84); keys and values are
+//   buffers.
+// - `bee.createReadStream(options)` (hyperbee2 index.js:211) — a
+//   RangeStream (lib/ranges.js) that DOES support range iteration:
+//   `{ gt, gte, lt, lte, reverse, limit }`, keys in byte order
+//   (b4a.compare), limit -1 = unlimited. This matches
 //   core's MemView contract exactly (classic hyperbee's richer
 //   createReadStream signature is NOT assumed anywhere).
 //

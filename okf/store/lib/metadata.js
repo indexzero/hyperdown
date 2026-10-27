@@ -75,10 +75,11 @@ export function generationId(predecessorKey, predecessorCheckpoint) {
 /**
  * Build a complete, validated metadata document. `genesisKey` (hex string
  * or 32-byte Buffer) is required — it is both the §8 genesis indexer and
- * the vault (bootstrap) key: autobee derives the creator's vault key from
- * the creator's local writer core (autobee@1.0.10 lib/boot.js: with no key
- * and no keyPair, `result.key = result.local.key`), so the two coincide by
- * construction on every peer.
+ * the vault (bootstrap) key: a creator passes autobee no key, and autobee
+ * then takes the key of the creator's local writer core as the vault key
+ * (autobee@2.12.1 lib/boot.js:65-89: with no key, and no `referrer` in the
+ * user data of the local core, `result.key = result.local.key` at :86), so
+ * the two coincide by construction on every peer.
  */
 export function createMetadata(input = {}) {
   if (input.appendOnly !== undefined && input.appendOnly !== true) {
