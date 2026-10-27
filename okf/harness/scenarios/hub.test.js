@@ -261,6 +261,24 @@ test('hub.close() returns while a connection has not sent its header line', asyn
   }
 })
 
+// A FIN before the header line closes the connection at once. The hub's
+// sockets are half-open, so the hub ends the socket itself. The header
+// deadline is longer than the wait, so the deadline cannot be what closes
+// this client.
+test('a FIN before the header line: the hub closes the socket at once', async () => {
+  const fx = await openHub({ headerTimeoutMs: 60000 })
+  try {
+    const partial = await connect(fx)
+    await send(partial, '{"link":"L",')
+    partial.socket.end()
+    await waitFor(() => partial.hubEnd.destroyed, 'the hub to close its end')
+    await waitFor(() => partial.closed, 'the client to close')
+    assert.equal(fx.hub.pending.size, 0, 'a partial header registered')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
 // G45. A link id that registers again while it is paired destroys its old
 // pair first. So after cut(), no byte from the first pair reaches the
 // other side. This is the probe scratch-E/hub-rereg.mjs as a test.
@@ -323,6 +341,32 @@ test('graceful close: a latency-only link delivers its final payload after end()
     await waitFor(() => b.closed, 'side 1 to close')
     assert.equal(b.gotAtEnd, 'final', 'what side 1 got before its end')
     assert.ok(fx.logs.includes('L#1 0->1 ended (peer-end)'), 'the hub did not log the graceful end')
+  } finally {
+    await closeHub(fx)
+  }
+})
+
+// G46, D-045 F01. Both sides send a final payload and then a FIN, while
+// each payload still waits in its fault queue. A FIN from one side ends
+// only the direction from that side. The hub keeps writing to that side
+// until the queue toward it drains, so each side gets the other's payload
+// before its end.
+test('graceful close: when both sides end with a payload in each fault queue, both payloads arrive', async () => {
+  const fx = await openHub({ profile: LATENCY })
+  try {
+    const [a, b] = await pair(fx, 'L')
+    await send(a, 'a-final')
+    await send(b, 'b-final')
+    assert.equal(a.got + b.got, '', 'a payload left the hub before both FINs, so the test did not fill both queues')
+    a.socket.end()
+    b.socket.end()
+    await waitFor(() => a.hubEnd.readableEnded && b.hubEnd.readableEnded, 'the hub to read the end of both sides')
+    await waitFor(() => a.closed && b.closed, 'both sides to close')
+    assert.equal(a.gotAtEnd, 'b-final', 'what side 0 got before its end')
+    assert.equal(b.gotAtEnd, 'a-final', 'what side 1 got before its end')
+    await waitFor(() => a.hubEnd.destroyed && b.hubEnd.destroyed, 'the hub to close both ends of the link')
+    assert.ok(fx.logs.includes('L#1 0->1 ended (peer-end)'), 'the hub did not log the graceful end of 0->1')
+    assert.ok(fx.logs.includes('L#1 1->0 ended (peer-end)'), 'the hub did not log the graceful end of 1->0')
   } finally {
     await closeHub(fx)
   }

@@ -36,10 +36,12 @@ class FaultDirection {
 
     from.on('data', (chunk) => this._enqueue(chunk))
     from.on('error', () => {})
-    // A FIN from the source is a graceful close. The bytes already in the
-    // queue still go out, and then the destination gets a FIN. A close with
-    // no FIN before it (a reset, an error or a destroy) drops the queue at
-    // once, as cut() and kill-mid-frame do.
+    // A FIN from the source is a graceful close of this direction only. The
+    // bytes already in the queue still go out, and then the destination
+    // gets a FIN. The hub's sockets are half-open, so the FIN does not end
+    // the hub's writes to the source: the other direction still drains its
+    // own queue into it. A close with no FIN before it (a reset, an error
+    // or a destroy) drops the queue at once, as cut() and kill-mid-frame do.
     from.once('end', () => {
       this._ending = true
       this._endIfDrained()
@@ -119,6 +121,7 @@ class FaultDirection {
   }
 
   // After the source's FIN, end the destination when the queue is empty.
+  // A socket closes when both of its directions have ended.
   _endIfDrained() {
     if (!this._ending || this._ended || this._destroyed || this._queue.length) return
     this._ended = true
@@ -176,7 +179,11 @@ export class FaultHub {
     this.links = new Map() // linkId -> { a2b, b2a, sockets, epoch }
     this.profiles = new Map() // linkId -> profile override
     this.epochs = new Map() // linkId -> connection epoch counter
-    this.server = net.createServer((socket) => this._onConnection(socket))
+    // Half-open sockets: a FIN from a client does not end the hub's writes
+    // to that client. A paired direction ends its destination only after
+    // its own queue drains (FaultDirection). The hub ends an unpaired
+    // socket itself when it reads its FIN (_onConnection, _wait).
+    this.server = net.createServer({ allowHalfOpen: true }, (socket) => this._onConnection(socket))
   }
 
   async listen() {
@@ -195,8 +202,8 @@ export class FaultHub {
   // The header phase lasts from accept until the header line arrives. It
   // has a deadline and a size limit. A connection that misses either, or
   // sends a bad header, ends alone: the hub logs it and destroys only that
-  // socket. `conns` holds every socket until it closes, so close() finds
-  // a socket in any phase.
+  // socket. A FIN before the header line ends the socket. `conns` holds
+  // every socket until it closes, so close() finds a socket in any phase.
   _onConnection(socket) {
     socket.setNoDelay(true)
     socket.on('error', () => {})
@@ -208,7 +215,12 @@ export class FaultHub {
     const stop = () => {
       clearTimeout(timer)
       socket.off('data', onData)
+      socket.off('end', onEnd)
       socket.off('close', stop)
+    }
+    const onEnd = () => {
+      stop()
+      socket.end()
     }
     const reject = (reason) => {
       stop()
@@ -232,6 +244,7 @@ export class FaultHub {
       this._register(header.link, header.side, socket, buf.subarray(nl + 1))
     }
     socket.on('data', onData)
+    socket.once('end', onEnd)
     socket.once('close', stop)
     timer = setTimeout(() => reject(`no header line within ${this.headerTimeoutMs}ms`), this.headerTimeoutMs)
   }
@@ -286,7 +299,8 @@ export class FaultHub {
   // initiator sends its first handshake message at once, so the link would
   // pair dead. The listener also keeps the socket flowing: a paused socket
   // defers 'end', so after a FIN it would never close and would stay
-  // pending, and the next socket for the link would pair with it.
+  // pending, and the next socket for the link would pair with it. The
+  // socket is half-open, so after its FIN the hub ends it, and it closes.
   _wait(link, side, socket, rest) {
     const entry = { side, socket, chunks: [rest], detach: null }
     const onData = (chunk) => entry.chunks.push(chunk)
@@ -295,13 +309,17 @@ export class FaultHub {
       entry.chunks = []
       if (this.pending.get(link) === entry) this.pending.delete(link)
     }
+    const onEnd = () => {
+      onGone()
+      socket.end()
+    }
     entry.detach = () => {
       socket.off('data', onData)
-      socket.off('end', onGone)
+      socket.off('end', onEnd)
       socket.off('close', onGone)
     }
     socket.on('data', onData)
-    socket.once('end', onGone)
+    socket.once('end', onEnd)
     socket.once('close', onGone)
     this.pending.set(link, entry)
   }
