@@ -643,19 +643,65 @@ test('T14: the stage refuses a manifest path that leads out of the face, and wri
   await old.close()
 })
 
-test('T13: an oversize note fails compaction with COMPACT_FIDELITY, and the oversize warning surfaces (G26)', async () => {
-  // scratch-D/s7.mjs: the predecessor pins maxOpBytes 400000, and the ingest
-  // checks a body against DEFAULT_LIMITS. T15 makes it pass.
+test('T15: a 100 KB body under a pinned maxOpBytes of 400000 survives compaction, and the new limit matches (G26)', async () => {
+  // scratch-D/s7.mjs. The new vault pins the predecessor's limits, and the
+  // compaction import checks a body against the new vault's maxOpBytes, not
+  // DEFAULT_LIMITS. So the 100 KB body is not refused.
   const old = await Bundle.init(await tmpDir('fid-big-vault'), { metadata: { limits: { maxOpBytes: 400000 } } })
   const a = await old.createConcept('big/report', 'note')
   await old.setBody(a.tag, null, 'x'.repeat(100000))
   const b = await old.createConcept('small/note', 'note')
   await old.setBody(b.tag, null, 'ok')
-  const err = await expectFidelityFailure(old, await tmpDir('fid-big'))
-  assert.ok(err.differences.some((d) => d.kind === 'missing' && d.path === 'big/report.md'), JSON.stringify(err.differences))
-  assert.deepEqual(err.counts, { walked: 2, staged: 2, ingested: 1 })
-  assert.ok(err.warnings.some((w) => w.kind === 'oversize' && w.path === 'big/report.md'), JSON.stringify(err.warnings))
+  const before = await predecessorState(old)
+  const base = await tmpDir('fid-big')
+  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.counts, { walked: 2, staged: 2, ingested: 2 })
+  assert.deepEqual(res.warnings, [])
+  assert.equal(res.vault.metadata.limits.maxOpBytes, 400000)
+  assert.deepEqual(res.vault.metadata.limits, old.metadata.limits)
+  const live = await liveConcepts(res.vault)
+  assert.equal(live.get(a.tag).headText, 'x'.repeat(100000))
+  assert.equal(live.get(b.tag).headText, 'ok')
+  assert.deepEqual(await predecessorState(old), before, 'compaction changed the predecessor')
   await old.close()
+  await res.vault.close()
+})
+
+test("T15: the ingest preflight checks a body against the vault's own maxOpBytes, in the ordinary ingest and in the compaction import (G26)", async () => {
+  // The preflight refuses a body before apply does (ADR-005), so it uses
+  // the limit that apply uses: the vault's pinned maxOpBytes.
+  const ingestOne = async (name, maxOpBytes, bodyBytes, compaction) => {
+    const dir = await tmpDir(`pre-${name}`)
+    await writeTree(dir, new Map([[`${name}.md`, `---\ntype: note\n---\n\n${'x'.repeat(bodyBytes)}\n`]]))
+    const v = await Bundle.init(await tmpDir(`pre-${name}-vault`), { metadata: { limits: { maxOpBytes } } })
+    const w = await createIngestWatcher(v, dir, { watch: false })
+    const oversize = []
+    w.on('oversize', (e) => oversize.push(e))
+    const ops = await w.ingestFile(`${name}.md`, { compaction })
+    await w.close()
+    await v.update()
+    const id = await v.val(K.path(name))
+    const headText = id === undefined ? undefined : (await liveConcepts(v)).get(id).headText
+    await v.close()
+    const body = headText === undefined ? 'none' : headText === 'x'.repeat(bodyBytes) ? 'whole' : 'changed'
+    return { oversize, ops: ops.map((o) => o.type), body }
+  }
+  for (const compaction of [false, true]) {
+    // A vault that pins 400000 takes a 100 KB body. DEFAULT_LIMITS (65536) refused it.
+    assert.deepEqual(await ingestOne(`wide-${compaction}`, 400000, 100000, compaction), {
+      oversize: [],
+      ops: ['create-concept', 'set-body'],
+      body: 'whole'
+    })
+    // A vault that pins 2000 refuses a 3000-byte body by name, with its own
+    // limit, and appends no op. DEFAULT_LIMITS let it through to apply.
+    assert.deepEqual(await ingestOne(`tight-${compaction}`, 2000, 3000, compaction), {
+      oversize: [{ path: `tight-${compaction}.md`, bytes: 3000, limit: 2000 }],
+      ops: [],
+      body: 'none'
+    })
+  }
 })
 
 test('T15: a body of "text\\n\\n" round-trips byte for byte and passes the T13 check (G25)', async () => {
@@ -845,10 +891,13 @@ test('T13: auto-okf compact reports the counts and the fidelity check on success
 })
 
 test('T13: auto-okf compact prints every difference and every warning, and exits 1 on COMPACT_FIDELITY', async () => {
+  // The fixture is a concept at a reserved .okf- name: the stage does not
+  // stage it, and warns. An oversize note was the fixture until T15. Now
+  // the new vault pins the predecessor's limits, so a note that the
+  // predecessor holds is never oversize in compaction.
   const base = await tmpDir('fid-cli-fail')
-  const v = await Bundle.init(join(base, 'vault'), { metadata: { limits: { maxOpBytes: 400000 } } })
-  const a = await v.createConcept('big/report', 'note')
-  await v.setBody(a.tag, null, 'x'.repeat(100000))
+  const v = await Bundle.init(join(base, 'vault'))
+  await v.createConcept('notes/.okf-state', 'note')
   await v.createConcept('.drafts/idea', 'note')
   await v.createConcept('small/note', 'note')
   await v.update()
@@ -858,13 +907,13 @@ test('T13: auto-okf compact prints every difference and every warning, and exits
   const r = await cli(['compact', join(base, 'vault'), join(base, 'out')])
   assert.equal(r.code, 1, r.stdout + r.stderr)
   assert.match(r.stderr, /COMPACT_FIDELITY/)
-  for (const line of ['missing big/report.md', 'missing big/index.md', 'differs index.md']) {
+  for (const line of ['missing notes/.okf-state.md', 'missing notes/index.md', 'differs index.md']) {
     assert.ok(r.stderr.includes(line), `stderr must name '${line}':\n${r.stderr}`)
   }
   // The dot-path concept is walked, staged and ingested, so no difference names it (T14).
   assert.ok(!r.stderr.includes('.drafts'), r.stderr)
-  assert.match(r.stderr, /^warning: big\/report\.md: body is 100000 bytes; maxOpBytes is 65536; not ingested$/m)
-  assert.match(r.stderr, /^notes: +3 walked, 3 staged, 2 ingested$/m)
+  assert.match(r.stderr, /^warning: notes\/\.okf-state\.md: a reserved \.okf- dot-file name; not staged$/m)
+  assert.match(r.stderr, /^notes: +3 walked, 2 staged, 2 ingested$/m)
   // No new vault and no verification directory remain. The face and the stage stay.
   assert.deepEqual(await entries(base), ['out.compact-src', 'out.face', 'vault'])
 })

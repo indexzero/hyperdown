@@ -216,8 +216,8 @@ export async function compact(vault, opts = {}) {
   let newVault = null
   try {
     // The fresh vault pins the predecessor's limits (§3). Every note in the
-    // face fitted them, and the fresh vault's apply checks each op against
-    // them.
+    // face fitted them, and the fresh vault's apply and the ingest preflight
+    // check each op against them.
     newVault = await initBundle(vaultDir, {
       metadata: { predecessorKey, predecessorCheckpoint, limits: { ...vault.metadata.limits } },
       ...(keyPair !== undefined ? { keyPair } : {}),

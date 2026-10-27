@@ -30,7 +30,7 @@ import { EventEmitter } from 'node:events'
 import { watch } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, sep } from 'node:path'
-import { keyspace as K, canonical, DEFAULT_LIMITS } from '@auto-okf/core'
+import { keyspace as K, canonical } from '@auto-okf/core'
 import { parseNote, yamlToValues } from './yaml.js'
 import {
   rootRegistry,
@@ -56,8 +56,10 @@ const RESERVED_FRONTMATTER = new Set(['_id', '_rev'])
  * Create (and start) the ingest watcher for `dir`.
  *
  * `vault` must expose the @auto-okf/store read surface (`val`, `scan`,
- * `update`) and the content-op helpers (`createConcept`, `setField`,
- * `addTag`, `remTag`, `setBody`, `setPath`, `deleteConcept`). Options:
+ * `update`), its pinned `metadata.limits` (the oversize preflight reads
+ * `maxOpBytes` there), and the content-op helpers (`createConcept`,
+ * `setField`, `addTag`, `remTag`, `setBody`, `setPath`, `deleteConcept`).
+ * Options:
  *
  *   confirmDelete   async (id, relPath) => boolean — the §9 deletion guard
  *                   (default ON: WITHOUT a handler, DeleteConcept is NEVER
@@ -262,10 +264,13 @@ export class IngestWatcher extends EventEmitter {
       // §9 oversize preflight (ADR-005): a body that would exceed the §3
       // maxOpBytes limit is refused HERE, by name, before any op for this
       // file is appended — apply's oversize-op reject stays as defense in
-      // depth. The file stays pending; sibling files are unaffected.
+      // depth. The file stays pending; sibling files are unaffected. The
+      // limit is the vault's pinned maxOpBytes, the one that apply checks,
+      // for the ordinary ingest and for the compaction import alike (G26).
+      const limit = this.vault.metadata.limits.maxOpBytes
       const bodyBytes = Buffer.byteLength(nfc(body), 'utf8')
-      if (bodyBytes > DEFAULT_LIMITS.maxOpBytes) {
-        this.emit('oversize', { path: rel, bytes: bodyBytes, limit: DEFAULT_LIMITS.maxOpBytes })
+      if (bodyBytes > limit) {
+        this.emit('oversize', { path: rel, bytes: bodyBytes, limit })
         return []
       }
 
