@@ -115,6 +115,9 @@ export function validateMetadata(meta) {
     throw new Error('metadata.appendOnly must be exactly true (§8 append-only guarantee)')
   }
   validateGenerationChain(meta)
+  // limits and rate are closed groups. applyConfig hands each one whole to
+  // createApply, so every key in them is a key of this version: version 2
+  // has one shape, and a key outside it is refused, never carried.
   for (const [group, keys] of [
     ['limits', ['maxOpBytes', 'maxPathBytes', 'maxPathDepth']],
     ['rate', ['defaultCeiling']]
@@ -123,6 +126,11 @@ export function validateMetadata(meta) {
       const v = meta[group] && meta[group][k]
       if (!Number.isInteger(v) || v < 0) {
         throw new TypeError(`metadata.${group}.${k} must be a non-negative integer`)
+      }
+    }
+    for (const k of Object.keys(meta[group])) {
+      if (!keys.includes(k)) {
+        throw new TypeError(`metadata.${group}.${k} is not a metadata version ${METADATA_VERSION} field`)
       }
     }
   }

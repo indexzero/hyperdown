@@ -3,7 +3,8 @@
 // constant and the §10 generation-chain fields), the appendOnly constant is
 // immutable (unrepresentable off and refused at open when tampered), and
 // the per-generation writer namespace derives deterministically from the
-// predecessor fields. The rate group holds defaultCeiling only (T6c).
+// predecessor fields. The rate group holds defaultCeiling only (T6c), and
+// limits and rate refuse a key that version 2 does not define.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFile, readFile } from 'node:fs/promises'
@@ -118,6 +119,29 @@ test('validateMetadata accepts a version 2 document whose rate holds only defaul
     encrypted: false
   }
   assert.equal(validateMetadata(doc), doc)
+})
+
+test('limits and rate are closed: a key that metadata version 2 does not define is refused', async (t) => {
+  // no input can add a key to either group
+  assert.throws(
+    () => createMetadata({ genesisKey: 'a'.repeat(64), rate: { extra: 1 } }),
+    /metadata\.rate\.extra is not a metadata version 2 field/
+  )
+  assert.throws(
+    () => createMetadata({ genesisKey: 'a'.repeat(64), limits: { extra: 1 } }),
+    /metadata\.limits\.extra is not a metadata version 2 field/
+  )
+
+  // a document on disk with an added rate key does not load or open
+  const dir = await tmpDir('meta-closed')
+  const v = await Bundle.init(dir)
+  await v.close()
+  const path = join(dir, METADATA_FILE)
+  const doc = JSON.parse(await readFile(path, 'utf8'))
+  doc.rate.extra = 1
+  await writeFile(path, JSON.stringify(doc))
+  await assert.rejects(() => loadMetadata(path), /metadata\.rate\.extra is not a metadata version 2 field/)
+  await assert.rejects(() => Bundle.open(dir), /metadata\.rate\.extra is not a metadata version 2 field/)
 })
 
 test('a mismatched invite is refused (metadata is convergence-relevant)', async (t) => {
