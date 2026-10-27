@@ -36,8 +36,12 @@
 // configuration does NOT close, so SECURITY_MODEL can state it. A residual
 // test passes because the effect is the one the document names. It never
 // asserts a residual away.
-// - A5b, G2: a member's approval at weight 1e9 kills the peer that folds
-//   it, in a child process.
+// - A5b, G2: a member's approval at weight 1e9 kills the SENDER that folds
+//   it first, in a child process. That is the sender's drain order, not a
+//   bound on the attack.
+// - A5c, G2: the same approval from a client that folds nothing. The block
+//   is durable in the attacker's core, the victim holds it (proved), and
+//   the victim dies folding it. In a child process.
 // - A7b, G5: a member's backdated node flips the winner on every peer.
 // - A8, G44: an outsider wakeup flood opens one writer core per announced
 //   key, past autobee's untrusted cap, and the bytes persist.
@@ -48,10 +52,15 @@
 // every arm, because a claim needs an approver with standing at least the
 // claimed weight (lib/witness.js:38-50), and at weight 0 nobody qualifies
 // (genesis only up to bootstrapWeight, lib/witness.js:47). A2 and G50
-// already prove that no key a member names rises above 0. Also not here:
-// the A9 missing-link variant of G44, which needs a raw oplog block that
-// autobee's own local flush gate refuses to send (lib/writers.js:641-664);
-// A8 measures the same cost through the documented wakeup protocol.
+// already prove that no key a member names rises above 0.
+//
+// Also not here: the A9 missing-link variant of G44. autobee's own local
+// flush gate refuses to flush a node whose links are missing
+// (lib/writers.js:641-664), so a wrapped appendLocal cannot send that
+// dependency graph. forgeRawNode can (the D-003 spike measured it that
+// way), and SECURITY_MODEL states the trigger and its retained waits from
+// the source (lib/writers.js:603-615, :673-678, :706, :719). A8 measures
+// the announce cost of G44 through the documented wakeup protocol.
 //
 // Every wait has a deadline. Each test has a timeout. Each poll runs under
 // until(), each close under timed(), and every fold after the livelock
@@ -814,11 +823,16 @@ async function rejectionsOf(v, w) {
 // before apply runs (index.js:1432-1441). So okf cannot filter it.
 //
 // It runs in a child process: the heap this exhausts must not take the test
-// runner with it. A member folds its own node before the drain flushes it
-// to the local core (index.js:818, then :824), so the first peer to pay is
-// the attacker itself.
+// runner with it.
+//
+// This test covers the SENDER only. A member that appends through autobee
+// folds its own node before the drain flushes it to the local core
+// (index.js:818, then :824), so at 1e9 the attacker dies first and its node
+// never leaves its core. That is a property of the sender's drain order,
+// never a bound on the attack: "A5c G2" below sends the same approval from
+// a client that folds nothing, proves delivery, and measures the victim.
 // ---------------------------------------------------------------------------
-test('A5b G2: a member approval at weight 1e9 kills the peer that folds it (residual, child process)', { timeout: 2 * TIMEOUT }, async (t) => {
+test('A5b G2: a member approval at weight 1e9 kills the sender that folds it first (residual, child process)', { timeout: 2 * TIMEOUT }, async (t) => {
   const run = await runChild(['huge-approval', 'member', '1000000000'], 180000)
   const r = run.result
   await record(t, 'A5b-G2-huge-approval-member', {
@@ -870,6 +884,66 @@ test('A5b G2: a member approval at weight 1e9 kills the peer that folds it (resi
   assert.deepEqual(l.delivered, { a: true }, 'the victim holds the forged node (positive control)')
   assert.equal(l.victimFolded, true, 'the victim folds the forged approval into its own system')
   assert.equal(l.victim.namedInSystem, true, 'the named key becomes an autobee writer, with no okf op')
+})
+
+// ---------------------------------------------------------------------------
+// G2, the member arm through a client that folds nothing (D-038 F01). The
+// adversary of this model appends arbitrary bytes to its own core
+// (SECURITY_MODEL.md "The adversaries"). Such a client runs no part of
+// autobee's drain, so the order that saves the sender in "A5b G2" (fold at
+// index.js:818, flush at :824) does not apply to it: forgeRawNode writes
+// the approval block to the attacker's core, where it is durable at once
+// and replicates.
+//
+// The victim is genesis, on stock autobee. The arm proves DELIVERY first,
+// and only then states a failure: a victim that never got the block proves
+// nothing. The victim then folds the approval in _applyBatch
+// (index.js:1432-1441), system.flush walks one tier per unit of weight
+// (lib/system.js:424, lib/promotions.js:137, :144) and dies above V8's Set
+// limit. okf cannot filter any of it: no okf apply runs for that node.
+//
+// It runs in a child process. The reopen can die inside Bundle.open, where
+// the boot drain folds the stored block (index.js:620, then :818) before a
+// caller can attach an error listener, so the child reports that case
+// instead of losing the run.
+// ---------------------------------------------------------------------------
+test('A5c G2: a member client that folds nothing delivers the weight 1e9 approval, and the victim dies (residual, child process)', { timeout: 4 * TIMEOUT }, async (t) => {
+  const run = await runChild(['huge-approval', 'member-raw', '1000000000'], 300000)
+  const r = run.result
+  await record(t, 'A5c-G2-huge-approval-member-raw', {
+    trigger: 'member',
+    childExit: run.code,
+    childSignal: run.signal,
+    childMs: run.ms,
+    stderrTail: run.stderrTail || null,
+    result: r
+  })
+
+  assert.equal(run.code, 0, `the child exits cleanly (${run.stderrTail})`)
+  assert.ok(r, 'the child prints its result')
+  assert.equal(r.error ?? null, null, 'the child throws nothing')
+  assert.equal(r.memberWritable, true, 'an indexer admitted the member (positive control)')
+  assert.ok(r.hash0, 'the peers converge before the attack')
+  // The sender pays nothing for the write itself: the block is in its core
+  // before any fold.
+  assert.equal(r.rawAppend, 'ok', 'the raw block reaches the attacker core')
+  assert.ok(r.memberCoreLength >= 1, `the attacker core holds the block (length ${r.memberCoreLength})`)
+  // The positive control, before every claim below it.
+  assert.deepEqual(r.delivered, { a: true }, 'the victim holds the attack block (positive control)')
+  // The measured effect on a delivered victim: it dies folding the
+  // approval, and it appends no more.
+  assert.deepEqual(r.crashed, ['victim'], `only the victim dies: errors ${JSON.stringify(r.errors)}`)
+  assert.equal(r.victimCrashed, true, 'the victim dies with V8 Set maximum size exceeded')
+  assert.equal(r.victimAppends, 'ERROR', 'the victim appends no more after the fold')
+  assert.ok(r.rssAfterFold > r.rssStart, `the cost is memory (RSS ${r.rssStart} to ${r.rssAfterFold} MB)`)
+  // The reopen is no repair. Either the boot drain folds the stored block
+  // again and the peer dies inside open, or the peer reopens with the
+  // attack core still in its store. Both were measured, so neither branch
+  // is asserted away.
+  assert.ok(
+    r.reopen && (r.reopen.verdict === 'CRASH-ON-OPEN' || r.reopen.attackCoreStored === true),
+    `the attack survives the reopen: ${JSON.stringify(r.reopen)}`
+  )
 })
 
 // ---------------------------------------------------------------------------

