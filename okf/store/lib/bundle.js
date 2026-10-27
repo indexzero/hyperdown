@@ -13,11 +13,11 @@
 // hypercore 11; NO autobase), on corestore 7.16:
 // - `new Autobee(store, key, { apply, open, close, update, encryptionKey,
 //   encrypted, keyPair, optimistic, fastForward, ackThreshold,
-//   bootstrapWeight, ... })`; `optimistic` defaults true (index.js:
-//   `handlers.optimistic !== false`). `bootstrapWeight` defaults to 2
-//   (index.js:49) and is not in the README. The Bundle also sets
-//   `fastForward: false`, `ackThreshold: Infinity` and `bootstrapWeight: 0`
-//   (see the constructor call).
+//   bootstrapWeight, ... })`. `optimistic` defaults to true (index.js:95,
+//   README.md:81). `bootstrapWeight` defaults to 2 (index.js:49) and is not
+//   in the README. The Bundle sets `optimistic: false`, `fastForward:
+//   false`, `ackThreshold: Infinity` and `bootstrapWeight: 0` (see the
+//   constructor call).
 // - apply receives `(nodes, view, host)`, and only nodes with a non-empty
 //   value (index.js _applyBatch); node = `{ key, value, length, optimistic,
 //   timestamp, links, weight, witness, approvals, ... }` (lib/writers.js
@@ -31,10 +31,11 @@
 //   `createAnchor(key, length)` / `genesis` — adapted below (HostAdapter),
 //   which exposes only addWriter, and always at weight 0.
 // - instance: db.key, db.id, db.discoveryKey, db.local, db.view (read-only
-//   snapshot), db.writable, db.isIndexer, append(buf|[bufs],{optimistic}),
-//   update()/updated()/flush(), replicate(isInitiator|stream). db.isIndexer
-//   means a ceiling (maxWeight) of 2 or more (lib/writers.js:352-354,
-//   :532), so it is always false here: Bundle.isIndexer reads gov/ instead.
+//   snapshot), db.writable, db.isIndexer, append(buf|[bufs]) (the Bundle
+//   never asks for an optimistic node), update()/updated()/flush(),
+//   replicate(isInitiator|stream). db.isIndexer means a ceiling (maxWeight)
+//   of 2 or more (lib/writers.js:352-354, :532), so it is always false
+//   here: Bundle.isIndexer reads gov/ instead.
 // - db.close() closes the corestore it was handed (index.js _close): we
 //   hand it the per-generation namespace SESSION; the root corestore is closed
 //   by Bundle.close() (corestore index.js _close: closing a session never
@@ -46,15 +47,22 @@
 //   so metadata.genesisKey === db.key on every peer and core's §8 genesis
 //   indexer seeding agrees with autobee's.
 //
-// §8 optimistic onboarding on autobee@2 (recorded in DEVIATIONS.md): every
-// optimistic node reaches apply, and autobee itself records it in its
-// system once applied, recording the writer as removed unless apply
-// granted it (index.js _applyBatch → lib/system.js ackWriter). There is
-// nothing for the store to ack: host.ackWriter is a no-op in v2
-// (lib/apply-calls.js) and nobody calls it. core's hold buffer (hold/ +
-// flag/optimistic) is the only VIEW-effect gate: a held op takes effect
-// only when an indexer-authored AddWriter linearizes and core folds the
-// hold range (§8).
+// Admission comes before the first write. With `optimistic: false`,
+// autobee applies a node only from a writer it has added, or from a removed
+// writer that a later node still links (index.js:1357-1364). It drops any
+// other node before _applyBatch: the node reaches no apply, its approvals
+// add no writer (index.js:1432-1441), and the system records nothing. A
+// plain node from a writer autobee has not added stops earlier, in that
+// writer's _next (lib/writers.js:613-615). autobee still reads such a node,
+// checks its links and resolves its weight before the drop
+// (lib/writers.js:177-206, :547-618), and an outsider still reaches the
+// wakeup protocol (G44, which the owner accepted as a residual).
+// So a joiner writes only after an indexer's AddWriter op has linearized
+// and core has granted its key (HostAdapter). Until then db.writable is
+// false (index.js:196-198, lib/writers.js:208-216), and append() refuses
+// with VAULT_NOT_WRITABLE (see _assertWritable). core still has its hold/
+// buffer. Only a key that autobee added without an okf grant (a member
+// forged an approval that names it) can put an op there now.
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
@@ -250,10 +258,13 @@ export class Bundle extends EventEmitter {
       encryptionKey: this._opts.encryptionKey || null,
       encrypted,
       keyPair: this._opts.keyPair,
-      // §8 optimistic onboarding needs every optimistic node to reach
-      // apply; autobee@2 still defaults this to true but marks it a TODO
-      // to flip, so it stays explicit.
-      optimistic: true,
+      // No optimistic nodes from writers autobee has not added. With this
+      // false (read at index.js:95, where the default is true), autobee
+      // drops such a node before _applyBatch (index.js:1357-1364), so an
+      // outsider puts no op and no approval into apply (AD2). A writer
+      // writes only after an indexer's AddWriter has linearized and core
+      // granted it (HostAdapter). See the header.
+      optimistic: false,
       // Weight 0 for every writer: autobee adds genesis on its first node
       // at this weight (index.js:1411-1413), not at the default 2
       // (index.js:49). HostAdapter grants every other writer at 0.
@@ -551,9 +562,9 @@ export class Bundle extends EventEmitter {
     return run
   }
 
-  async _append(type, payload, { optimistic = false, backpressure } = {}) {
+  async _append(type, payload, { backpressure } = {}) {
     await this.ready()
-    if (!optimistic) this._assertWritable() // fail fast, before any gate waits
+    this._assertWritable() // fail fast, before any gate waits
     const bp = backpressure === undefined ? this._backpressure : normalizeBackpressure(backpressure)
     if (bp) {
       this._trackAcks = true
@@ -571,16 +582,16 @@ export class Bundle extends EventEmitter {
     if (op.at === undefined) op.at = Date.now() // §3: informational only
     const buf = encodeOp(type, op) // may throw on a bad payload: seq not yet burned
     // Again after the awaits above: a fold can take the grant away.
-    if (!optimistic) this._assertWritable()
+    this._assertWritable()
     // Appends are serialized (append()), so the seq moves only once the
-    // node is in.
-    await this.db.append(buf, { optimistic })
+    // node is in. A plain append: autobee runs with optimistic: false.
+    await this.db.append(buf)
     this._nextSeq = seq + 1
     return { seq, tag: makeTag(this.db.local.key, seq) }
   }
 
   /**
-   * Refuse a plain append unless autobee has added this writer and not
+   * Refuse an append unless autobee has added this writer and not
    * removed it: `db.writable` (autobee index.js:196-198, lib/writers.js:
    * 208-216). autobee's own append refuses only a removed writer
    * (index.js:1531-1533). A writer it never added gets past that, fails
@@ -710,25 +721,25 @@ export class Bundle extends EventEmitter {
     })
   }
 
-  // Content-op conveniences (thin over append()). `optimistic` and
-  // `backpressure` are append options; everything else rides the payload.
+  // Content-op conveniences (thin over append()). `backpressure` is the
+  // one append option; everything else rides the payload.
   createConcept(path, type, opts = {}) {
-    const { optimistic, backpressure, id, ...rest } = opts
+    const { backpressure, id, ...rest } = opts
     return this.append(
       'create-concept',
       { path, type, ...(id !== undefined ? { id } : {}), ...rest },
-      { optimistic, backpressure }
+      { backpressure }
     )
   }
 
   setField(id, key, value, opts = {}) {
-    const { optimistic, backpressure, ...rest } = opts
-    return this.append('set-field', { id, key, value, ...rest }, { optimistic, backpressure })
+    const { backpressure, ...rest } = opts
+    return this.append('set-field', { id, key, value, ...rest }, { backpressure })
   }
 
   addTag(id, value, opts = {}) {
-    const { optimistic, backpressure, ...rest } = opts
-    return this.append('add-tag', { id, value, ...rest }, { optimistic, backpressure })
+    const { backpressure, ...rest } = opts
+    return this.append('add-tag', { id, value, ...rest }, { backpressure })
   }
 
   /**
@@ -744,36 +755,36 @@ export class Bundle extends EventEmitter {
     const tags = Object.keys(els)
       .filter((t) => els[t] === v)
       .sort()
-    const { optimistic, backpressure, ...rest } = opts
-    return this.append('rem-tag', { id, value: v, tags, ...rest }, { optimistic, backpressure })
+    const { backpressure, ...rest } = opts
+    return this.append('rem-tag', { id, value: v, tags, ...rest }, { backpressure })
   }
 
   setBody(id, base, text, opts = {}) {
-    const { optimistic, backpressure, ...rest } = opts
-    return this.append('set-body', { id, base, text, ...rest }, { optimistic, backpressure })
+    const { backpressure, ...rest } = opts
+    return this.append('set-body', { id, base, text, ...rest }, { backpressure })
   }
 
   setPath(id, path, opts = {}) {
-    const { optimistic, backpressure, ...rest } = opts
-    return this.append('set-path', { id, path, ...rest }, { optimistic, backpressure })
+    const { backpressure, ...rest } = opts
+    return this.append('set-path', { id, path, ...rest }, { backpressure })
   }
 
   deleteConcept(id, opts = {}) {
-    const { optimistic, backpressure, ...rest } = opts
-    return this.append('delete-concept', { id, ...rest }, { optimistic, backpressure })
+    const { backpressure, ...rest } = opts
+    return this.append('delete-concept', { id, ...rest }, { backpressure })
   }
 
   undeleteConcept(id, opts = {}) {
-    const { optimistic, backpressure, ...rest } = opts
-    return this.append('undelete-concept', { id, ...rest }, { optimistic, backpressure })
+    const { backpressure, ...rest } = opts
+    return this.append('undelete-concept', { id, ...rest }, { backpressure })
   }
 
   resolveConflict(id, keep, opts = {}) {
-    const { optimistic, backpressure, supersede = [], text, ...rest } = opts
+    const { backpressure, supersede = [], text, ...rest } = opts
     return this.append(
       'resolve-conflict',
       { id, keep, supersede, ...(text !== undefined ? { text } : {}), ...rest },
-      { optimistic, backpressure }
+      { backpressure }
     )
   }
 

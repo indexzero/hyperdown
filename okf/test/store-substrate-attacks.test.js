@@ -1,31 +1,39 @@
-// Store scope (T5): the substrate attacks that weight 0 closes, adopted
-// from the T1 spike (D-003, ATTACKS.md configuration (b)) as assertions
-// against the one product configuration: optimistic: true,
-// bootstrapWeight: 0, and every okf grant at weight 0.
+// Store scope (T5, T7): the substrate attacks that the product
+// configuration closes, adopted from the T1 spike (D-003) as assertions.
+// The one product configuration: optimistic: false, bootstrapWeight: 0,
+// and every okf grant at weight 0.
 //
-// With nobody at a weight above 0, nobody has standing. No peer collects
-// an approval (autobee index.js:1254-1255), no claim above 0 verifies
-// (lib/witness.js:33-51), and so no resolved weight can depend on a node's
-// own position, which is the livelock's mechanism.
-//
+// Weight 0 (T5). With nobody at a weight above 0, nobody has standing. No
+// peer collects an approval (autobee index.js:1254-1255), no claim above 0
+// verifies (lib/witness.js:33-51), and so no resolved weight can depend on
+// a node's own position, which is the livelock's mechanism.
 // - A2, G4: a key that a member names in a forged approval stays at 0.
-// - A3 and A4, G1: a forged approval plus a forged witness, driven by a
-//   member (s4) or by strangers only (s5). Every peer folds within its
-//   deadline.
+// - A3, G1: a forged approval plus a forged witness, driven by a member
+//   (s4). Every peer folds within its deadline.
 // - G35: no peer collects an approval, with more than 32 promotions
 //   pending.
 // - G50: no writer climbs, also when a member forges a higher-tier
 //   approval for another member.
 //
-// Not here: A1 self-admission and the outsider arms of A5 and A7 (T7 adopts
-// them with optimistic: false), and the member residuals and G44 (A5
-// member, A6, A7b, A8, A9: T11 adopts them).
+// optimistic: false (T7). autobee drops every node of a writer it has not
+// added before _applyBatch (index.js:1357-1364), so an outsider puts no op
+// and no approval into apply. Each outsider test sends its forged node,
+// announces the outsider's core so that the victim fetches it (the
+// positive control: the victim holds the block), and then asserts three
+// things on every peer: no outsider node reaches okf's apply, update()
+// returns within its deadline, and the view hash does not change. Every
+// honest op runs before the attack, so the hash before the attack is the
+// hash that must stay.
+// - A4, G1: the livelock driven by strangers only (s5).
+//
+// Not here: the member residuals and G44 (A5 member, A6 member, A7b, A8,
+// A9: T11 adopts them).
 //
 // Every wait has a deadline. Each test has a timeout. Each poll runs under
 // until(), each close under timed(), and every fold after the livelock
 // heal, where a livelock stalls, runs under timed(). A stall therefore
-// fails an assertion and never hangs the run. At weight 2 the A3 and A4
-// folds give TIMEOUT.
+// fails an assertion and never hangs the run. At weight 2 the A3 fold gave
+// TIMEOUT.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -47,7 +55,11 @@ import {
   timed,
   coreStats,
   record,
-  reopenCheck
+  reopenCheck,
+  outsiderAppend,
+  announce,
+  holds,
+  watchApply
 } from './attack-helpers.js'
 
 // The tier an attacker asks for: indexer standing.
@@ -63,6 +75,45 @@ async function closeAll(...vaults) {
 /** `[writer, approvals, witness]` of each carrier node, sorted. */
 async function carrierRows(v) {
   return (await carriers(v)).map((n) => [n.writer, n.approvals, n.witness]).sort()
+}
+
+/**
+ * Read the outsider claims on each peer `[name, vault, appliedSet]`, each
+ * step under a deadline: does update() return, is the view hash still
+ * `hash0`, which outsider keys reached okf's apply (watchApply), which
+ * have a seen/ entry, and which does autobee's system record.
+ */
+async function outsiderRows(peers, outsiders, hash0) {
+  const rows = {}
+  for (const [name, v, applied] of peers) {
+    const upd = await timed(() => v.update(), 20000)
+    const hash = await timed(() => v.snapshotHash(), 20000)
+    const row = {
+      update: upd.status,
+      hash: hash.status !== 'ok' ? hash.status : hash.value === hash0 ? 'unchanged' : 'CHANGED',
+      applied: [],
+      seen: [],
+      system: []
+    }
+    for (const key of outsiders) {
+      if (applied.has(hex(key))) row.applied.push(hex(key))
+      if ((await v.val(K.seen(hex(key)))) !== undefined) row.seen.push(hex(key))
+      if ((await v.db.system.get(key)) !== null) row.system.push(hex(key))
+    }
+    rows[name] = row
+  }
+  return rows
+}
+
+/** The three outsider claims, on every peer. */
+function assertOutsiderShut(rows) {
+  for (const [name, r] of Object.entries(rows)) {
+    assert.equal(r.update, 'ok', `${name}: update() returns within the deadline`)
+    assert.equal(r.hash, 'unchanged', `${name}: the view hash does not change`)
+    assert.deepEqual(r.applied, [], `${name}: no outsider node reaches apply`)
+    assert.deepEqual(r.seen, [], `${name}: no outsider op is counted in seen/`)
+    assert.deepEqual(r.system, [], `${name}: autobee records no outsider key`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +192,8 @@ test('A2 G4: a key that a member names in a forged approval stays at weight 0', 
 // weight 2, N resolved to 2 only if the carrier's climb k sorted before it,
 // and N at 2 sorted before k. No fixpoint, so apply never returned.
 // ---------------------------------------------------------------------------
-async function livelock(t, { driver }) {
+async function livelock(t) {
+  const driver = 'member'
   const aDir = await tmpDir(`ll-${driver}-a`)
   const a = quiet(await Bundle.init(aDir)) // genesis
   const c1 = quiet(await Bundle.join(await tmpDir(`ll-${driver}-c1`), a.key)) // the carrier
@@ -161,25 +213,12 @@ async function livelock(t, { driver }) {
 
   const { tag: seed } = await a.createConcept('seed', 'note')
   out.carrierSynced = await until(async () => (await c1.update(), (await c1.val(K.cMeta(seed))) !== undefined), 20000)
-  if (driver === 'member') {
-    await a.writers.add(c1.localKey, { indexer: false })
-    out.carrierWritable = await until(async () => (await c1.update(), c1.writable), 20000)
-  }
+  await a.writers.add(c1.localKey, { indexer: false })
+  out.carrierWritable = await until(async () => (await c1.update(), c1.writable), 20000)
 
-  // j: the carrier's node whose approvals name the claimant. A stranger
-  // carrier also names ITSELF, as s5 does: otherwise autobee records it as
-  // removed (lib/system.js:95-106), and its next plain append is refused.
-  const approvals =
-    driver === 'member'
-      ? [{ key: c2.localKey, weight: TIER }]
-      : [
-          { key: c1.localKey, weight: TIER },
-          { key: c2.localKey, weight: TIER }
-        ]
-  forgeNext(c1, { approvals })
-  out.carrierAppend = (
-    await timed(() => c1.createConcept('carrier-j', 'note', { optimistic: driver !== 'member' }), 20000)
-  ).status
+  // j: the carrier's node whose approvals name the claimant
+  forgeNext(c1, { approvals: [{ key: c2.localKey, weight: TIER }] })
+  out.carrierAppend = (await timed(() => c1.createConcept('carrier-j', 'note'), 20000)).status
   const jLen = c1.db.local.length
   out.claimantAdmitted = await until(async () => (await c2.update(), c2.writable), 20000)
 
@@ -263,16 +302,104 @@ function assertNoLivelock(out) {
 }
 
 test('A3 G1: no livelock driven by a member (s4)', { timeout: 2 * TIMEOUT }, async (t) => {
-  const out = await livelock(t, { driver: 'member' })
+  const out = await livelock(t)
   await record(t, 'A3-G1-livelock-member', out)
   assertNoLivelock(out)
   assert.equal(out.updateCarrier, 'ok', 'no livelock: the carrier update returns within the deadline')
 })
 
-test('A4 G1: no livelock driven by strangers only (s5)', { timeout: 2 * TIMEOUT }, async (t) => {
-  const out = await livelock(t, { driver: 'outsider' })
+// G1 driven by strangers only (ab2-review/scratch-B/s5-stranger-livelock.mjs).
+// Two keys of one outsider: the carrier's node j approves both keys, the
+// claimant's node N cites j as a witness, and the carrier's node k follows.
+// With optimistic: true, j reached apply and admitted both keys, which set
+// up the livelock. Now no node of either key reaches apply.
+test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', { timeout: TIMEOUT }, async (t) => {
+  const a = quiet(await Bundle.init(await tmpDir('a4-a'))) // genesis
+  const c1 = quiet(await Bundle.join(await tmpDir('a4-c1'), a.key)) // the carrier, never admitted
+  const c2 = quiet(await Bundle.join(await tmpDir('a4-c2'), a.key)) // the claimant, never admitted
+  const applied = { a: watchApply(a), c1: watchApply(c1), c2: watchApply(c2) }
+  const unpairAC = pair(a, c1)
+  let unpairCC = pair(c1, c2)
+  t.after(async () => {
+    unpairAC()
+    unpairCC()
+    await closeAll(a, c1, c2)
+  })
+  const out = { trigger: 'outsider' }
+
+  // The honest ops come first: the seed, and g, the genesis append that
+  // approved both keys at weight 2. At weight 0 no honest append carries
+  // an approval (G35), so the place of g changes nothing.
+  await a.createConcept('seed', 'note')
+  await a.createConcept('g', 'note')
+  const hash0 = await converged([a, c1, c2], 20000)
+
+  // j: the carrier's node, whose approvals name both keys
+  const j = await timed(async () => {
+    const length = await outsiderAppend(c1, 'carrier-j', {
+      approvals: [
+        { key: c1.localKey, weight: TIER },
+        { key: c2.localKey, weight: TIER }
+      ]
+    })
+    await announce(c1, [{ key: c1.localKey, length }])
+    return length
+  }, 20000)
+  out.carrierAppend = j.status
+  const jLen = j.value
+  out.claimantAdmitted = await until(async () => (await c2.update(), c2.writable), 3000)
+
+  unpairCC() // cut the claimant off, as s5 does
+  // N: the claimant's node, with a forged witness citing (carrier, j)
+  const n = await timed(
+    () => outsiderAppend(c2, 'N', { witness: { weight: TIER, link: { key: c1.localKey, length: jLen } } }),
+    20000
+  )
+  out.claimantAppend = n.status
+  await sleep(150) // tN < tk
+  // k: the carrier's next node
+  const k = await timed(() => outsiderAppend(c1, 'k'), 20000)
+  out.carrierSecondAppend = k.status
+
+  // heal: the claimant announces N to the carrier, and the carrier, a
+  // modified client, relays both cores to genesis
+  unpairCC = pair(c1, c2)
+  const before = coreStats(a)
+  out.relayed = await timed(async () => {
+    await announce(c2, [{ key: c2.localKey, length: n.value }])
+    await until(async () => (await c1.update(), await holds(c1, c2.localKey, n.value)), 20000)
+    return announce(c1, [
+      { key: c1.localKey, length: k.value },
+      { key: c2.localKey, length: n.value }
+    ])
+  }, 30000)
+  out.delivered = await until(
+    async () => (await a.update(), (await holds(a, c1.localKey, k.value)) && (await holds(a, c2.localKey, n.value))),
+    20000
+  )
+  await sleep(1000)
+  out.peers = await outsiderRows(
+    [
+      ['a', a, applied.a],
+      ['c1', c1, applied.c1],
+      ['c2', c2, applied.c2]
+    ],
+    [c1.localKey, c2.localKey],
+    hash0
+  )
+  out.undoDelta = coreStats(a).undos - before.undos
+  out.errors = { victim: errorsOf(a), carrier: errorsOf(c1), claimant: errorsOf(c2) }
   await record(t, 'A4-G1-livelock-outsider', out)
-  assertNoLivelock(out)
+
+  assert.ok(hash0, 'the peers converge before the attack')
+  assert.equal(out.carrierAppend, 'ok')
+  assert.equal(out.claimantAdmitted, false, 'j admits nobody, not even on the claimant')
+  assert.equal(out.claimantAppend, 'ok')
+  assert.equal(out.carrierSecondAppend, 'ok')
+  assert.equal(out.delivered, true, 'genesis holds j, k and N (positive control)')
+  assertOutsiderShut(out.peers)
+  assert.equal(out.undoDelta, 0, 'genesis undoes nothing: no outsider node sorts into its order')
+  assert.deepEqual(out.errors, { victim: [], carrier: [], claimant: [] }, 'no autobee closes')
 })
 
 // ---------------------------------------------------------------------------

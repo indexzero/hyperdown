@@ -1,7 +1,7 @@
 // Store scope (okf SPEC §13, T4): two-writer convergence over real
 // autobee + corestore — view-hash equality after replication (I2 at store
-// level) — plus the §8 optimistic onboarding flow (hold buffer on the
-// writer's own peer, ack-anchored fold, cross-peer hash equality).
+// level) — plus admission before the first write: a joiner's append is
+// refused until an indexer admits it, and the refusal uses no seq.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
@@ -59,62 +59,6 @@ test('two writers converge to bit-identical views (hash equality)', async (t) =>
   assert.deepEqual(Object.values(rec.els), ['wiki'])
 })
 
-test('optimistic onboarding: held locally, folded at the ack position (§8)', async (t) => {
-  const a = await Bundle.init(await tmpDir('opt-a'))
-  const c = await Bundle.join(await tmpDir('opt-c'), a.key)
-  const unpair = pair(a, c)
-  t.after(async () => {
-    unpair()
-    await a.close()
-    await c.close()
-  })
-
-  const { tag: id } = await a.createConcept('notes/seed', 'note')
-  assert.ok(
-    await until(async () => {
-      await c.update()
-      return (await c.val(K.cMeta(id))) !== undefined
-    }),
-    'c replicates the seed concept'
-  )
-
-  // c is NOT an admitted writer: optimistic write (autobee append
-  // {optimistic: true}; the apply wrapper acks the writer at the DAG
-  // level, core holds the op's view effect in hold/ until the in-log ack)
-  assert.equal(c.writable, false)
-  await c.setField(id, 'status', ['draft'], { optimistic: true })
-  await c.update()
-
-  const cHex = c.localKey.toString('hex')
-  const held = await c.view.dump('hold/')
-  assert.equal(Object.keys(held).length, 1, 'full decoded op held under hold/ (§8)')
-  assert.ok(Object.keys(held)[0].startsWith(`hold/${cHex}/`))
-  assert.equal(
-    await c.val(K.cField(id, 'status')),
-    undefined,
-    'no c/ mutation before the ack (I10)'
-  )
-
-  // an indexer AddWriter linearizes: core folds the held op at the ack
-  // position and deletes the hold
-  await a.writers.add(c.localKey, { indexer: false })
-  assert.ok(
-    await until(async () => {
-      await a.update()
-      await c.update()
-      return (await c.val(K.cField(id, 'status'))) !== undefined
-    }),
-    'held op folds after the AddWriter'
-  )
-  const hash = await converged([a, c])
-  assert.ok(hash, 'peers converge (effects are ack-anchored)')
-  for (const v of [a, c]) {
-    assert.equal(Object.keys(await v.view.dump('hold/')).length, 0, 'hold buffer cleared')
-    const rec = await v.val(K.cField(id, 'status'))
-    assert.deepEqual(rec.values, ['draft'])
-  }
-})
-
 test('a refused append does not burn a seq (§8 forged-clock)', async (t) => {
   const a = await Bundle.init(await tmpDir('burn-a'))
   const c = await Bundle.join(await tmpDir('burn-c'), a.key)
@@ -132,24 +76,37 @@ test('a refused append does not burn a seq (§8 forged-clock)', async (t) => {
     })
   )
 
-  // autobee@2 records an unadmitted writer as removed once its optimistic
-  // node is applied (lib/system.js ackWriter), so db.writable is false and
-  // the Bundle refuses its plain appends up front with VAULT_NOT_WRITABLE,
-  // before anything reaches the local core.
-  const first = await c.setField(id, 'status', ['one'], { optimistic: true })
-  assert.equal(first.seq, 0)
-  await c.update()
-  await assert.rejects(
-    () => c.setField(id, 'status', ['plain']),
-    (err) => err.code === 'VAULT_NOT_WRITABLE'
-  )
+  // No indexer has admitted c, so db.writable is false and the store
+  // refuses each append up front with VAULT_NOT_WRITABLE, before a seq is
+  // used and before anything reaches the local core.
+  for (const value of ['early', 'early-again']) {
+    await assert.rejects(
+      () => c.setField(id, 'status', [value]),
+      (err) => err.code === 'VAULT_NOT_WRITABLE'
+    )
+  }
 
-  const second = await c.setField(id, 'status', ['two'], { optimistic: true })
-  assert.equal(second.seq, 1, 'the refused append did not consume seq 1')
-  await c.update()
+  // Once admitted, c's first op takes seq 0, and every peer accepts it.
+  await a.writers.add(c.localKey, { indexer: false })
+  assert.ok(
+    await until(async () => {
+      await c.update()
+      return c.writable
+    }),
+    'c becomes writable after the AddWriter op linearizes'
+  )
+  const first = await c.setField(id, 'status', ['one'])
+  assert.equal(first.seq, 0, 'the refused appends consumed no seq')
+  const second = await c.setField(id, 'status', ['two'])
+  assert.equal(second.seq, 1)
+  assert.ok(await converged([a, c]), 'peers converge')
   const cHex = c.localKey.toString('hex')
-  assert.equal(await c.val(K.flagRejected(cHex, 1)), undefined, 'not rejected forged-clock')
-  assert.equal(Object.keys(await c.view.dump(`hold/${cHex}/`)).length, 2, 'both ops held')
+  for (const v of [a, c]) {
+    assert.equal(await v.val(K.flagRejected(cHex, 0)), undefined, 'seq 0 is not rejected forged-clock')
+    assert.equal(await v.val(K.flagRejected(cHex, 1)), undefined, 'seq 1 is not rejected forged-clock')
+    assert.equal(await v.val(K.seen(cHex)), 2, 'both ops reached apply')
+    assert.deepEqual((await v.val(K.cField(id, 'status'))).values, ['two'])
+  }
 })
 
 test('a joiner folds every op through its own apply, never a stamped view (I2/I3)', async (t) => {

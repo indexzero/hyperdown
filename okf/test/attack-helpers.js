@@ -8,13 +8,17 @@
 // writer's `appendLocal` to forge the fields an honest client never sets:
 // approvals, a witness, a timestamp, a link set. That is a malicious
 // CLIENT, not a modified autobee. The forged node is a legal oplog node,
-// and every peer that reads it runs stock autobee@2.12.1. Nothing else
-// here changes autobee behaviour: the other helpers only read. Product
-// code never does any of this.
+// and every peer that reads it runs stock autobee@2.12.1. An outsider's
+// client also asks for an optimistic node and announces its own core over
+// the wakeup protocol (outsiderAppend, announce), which the Bundle never
+// does. Nothing here changes how a victim's autobee behaves: the other
+// helpers only read, and watchApply wraps okf's apply handler, not
+// autobee. Product code never does any of this.
 //
 // Vaults live under the store tests' temp root (store-helpers.js tmpDir).
 import { mkdir, appendFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { encodeOp } from '../core/index.js'
 import { Bundle, K, tmpDir, pair, until, sleep, converged } from './store-helpers.js'
 
 export { Bundle, K, tmpDir, pair, until, sleep, converged }
@@ -49,6 +53,90 @@ export function forgeNext(v, over = {}) {
       drift
     )
   }
+}
+
+/**
+ * Append one forged node as an outsider's client. The outsider is a Bundle
+ * that no indexer admitted. The Bundle refuses its appends
+ * (VAULT_NOT_WRITABLE) and never asks for an optimistic node, so the
+ * outsider calls autobee's documented `db.append(buf, { optimistic: true
+ * })` (autobee README.md:131-134) itself. `over` forges node fields
+ * through forgeNext. Returns the outsider's core length.
+ *
+ * The outsider's own autobee runs with optimistic: false, so it never
+ * applies its own node (autobee index.js:1357-1364). A writer that a peer
+ * never applied is no system head there, so that peer never couples the
+ * core to the wakeup protocol (lib/writers.js:504-516), and no other peer
+ * hears of it. A test therefore sends the core with announce(), as a
+ * modified client can.
+ */
+export async function outsiderAppend(v, path, over = {}) {
+  const self = hex(v.db.local.key)
+  const op = encodeOp('create-concept', {
+    path,
+    type: 'note',
+    clock: [[self, v.db.local.length]],
+    at: Date.now()
+  })
+  forgeNext(v, over)
+  await v.db.append(op, { optimistic: true })
+  return v.db.local.length
+}
+
+/**
+ * Send one wakeup announce of `entries` from `from` to its paired peers, as
+ * a modified client can (autobee-wakeup/index.js:24-26: a receiver hints
+ * every announced key). Returns true when a non-pending wakeup peer took
+ * it. Adopted from the T1 spike (D-003).
+ */
+export async function announce(from, entries, ms = 15000) {
+  const session = from.db._wakeup._session
+  if (!session) return false
+  return until(
+    async () => {
+      const peers = (session.topic.peers || []).filter((x) => !x.pending)
+      if (peers.length === 0) return false
+      for (const peer of peers) session.announce(peer, entries)
+      return true
+    },
+    ms,
+    50
+  )
+}
+
+/**
+ * True when `v`'s corestore holds the first `length` blocks of the core
+ * `key`: the outsider's node reached the victim. This is the positive
+ * control of an outsider attack, so a test that sees no effect knows that
+ * the node arrived. It reads through a short-lived session, and it never
+ * creates a core that is missing.
+ */
+export async function holds(v, key, length = 1) {
+  const core = v.store.get({ key, createIfMissing: false })
+  try {
+    await core.ready()
+    return core.contiguousLength >= length
+  } catch {
+    return false
+  } finally {
+    await core.close().catch(() => {})
+  }
+}
+
+/**
+ * Record the writer key (hex) of every node that autobee hands to okf's
+ * apply on `v`. It wraps the Bundle's apply handler (store/lib/bundle.js
+ * `_apply`, which the Autobee `apply` option calls), never autobee.
+ * Returns the live Set.
+ */
+export function watchApply(v) {
+  const writers = new Set()
+  const orig = v._apply
+  v._apply = function (nodes, view, host) {
+    for (const node of nodes) writers.add(hex(node.key))
+    return orig.call(this, nodes, view, host)
+  }
+  return writers
 }
 
 // Bundle re-emits autobee's `error` event, and an EventEmitter 'error' with
@@ -162,3 +250,4 @@ export async function reopenCheck(vault, dir, ms = 20000) {
   }, ms * 2)
   return { status: out.status, ms: out.ms, ...(out.value || {}), error: out.error }
 }
+
