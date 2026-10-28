@@ -98,7 +98,12 @@ earlier op. apply calls `host.addWriter(key, { weight: 0 })` for every
 `add-writer` op it folds, accepted or rejected, so a reorder never undoes
 a substrate grant; okf membership comes only from `gov/`. Revocation is
 causal (clock-based, never positional) with a seq-at-removal cross-check,
-and `host.removeWriter` is never called. An op's seq is its node's
+and `host.removeWriter` is never called. The revocation check binds only
+the ops that sort after the removal (`okf/core/lib/apply.js:399-403`), so
+revocation stops cooperating clients only (SPEC §8). An `add-writer`
+whose key or swarm key is not 32 bytes is rejected `bad-writer-key` or
+`bad-swarm-key`. One that would demote the last live indexer is rejected
+`policy-governance` (`okf/core/lib/apply.js:554-567`). An op's seq is its node's
 position in its writer's core (`node.length - 1`); a clock whose self
 entry differs from it is rejected `forged-clock`. Per-writer token
 buckets refill on accepted indexer ops.
