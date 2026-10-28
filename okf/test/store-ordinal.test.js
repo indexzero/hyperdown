@@ -515,6 +515,16 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
     await j.close()
   }
 
+  // The attacker's client keeps each junk core open, so that it can serve
+  // the op until a has it. Without a session, the junk store opens a core
+  // only for a peer's request, and corestore closes it again after an idle
+  // check, within about 6 s (corestore index.js:487-506, :151-171). Under
+  // load, a asked for some ops after their cores had closed. No peer served
+  // those ops again, so a never folded them (D-059). The sessions are
+  // passive (active: false), so a still asks for each core itself, through
+  // the wakeup below. junk.close() closes them.
+  await Promise.all(keys.map((k) => junk.get({ key: Buffer.from(k, 'hex'), active: false }).ready()))
+
   // A junk writer's own client would announce its core over the wakeup
   // protocol. The junk store has no such client, so a learns of each core
   // through the documented db.wakeup (autobee README). Without the hint,
