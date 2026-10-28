@@ -238,6 +238,11 @@ core's §8 clock rule — the applied/rejected partition is replay-stable
 `replicate(isInitiator | stream)` returns a direct replication stream. It
 passes no firewall: the caller chooses the peer at the other end.
 
+At open, the store calls autobee's `db.wakeup` for each key with a
+`gov/writer` record. So a peer that closed during a heal fetches the
+blocks that it has not folded, also in a vault where nobody writes. A key
+that only `seen/` holds is not woken.
+
 `swarm({ bootstrap, allow, publicDht })` replicates over a private
 hyperswarm. The vault key is not a capability to connect:
 

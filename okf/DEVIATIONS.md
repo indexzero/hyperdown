@@ -408,3 +408,16 @@ per-generation namespace of its root corestore (corestore
 (corestore `README.md:62-81`). `db.close()` closes the store that it was
 handed (`index.js:442`). So the Bundle closes its root corestore itself,
 after `db.close()`.
+
+**A reopen wakes each writer with a `gov/writer` record (D-047 F02).** At
+boot, autobee restarts only the writers that are system heads, and the
+boot hints since the last drain that applied hints (`index.js:605-618`,
+`:853-875`, `:877-892`). A peer that closed during a heal can hold new
+blocks of a writer that is no head, and that it has not folded. Its
+caught-up peers announce no pending writer (autobee-wakeup
+`index.js:19-23`), and no new length reaches it. So the peer stays behind
+until somebody writes. The Bundle open calls the documented
+`db.wakeup({ key, length: 0 })` (`README.md:165-167`) for each key with a
+`gov/writer` record. It wakes no key that only `seen/` holds, because each
+wakeup opens a core, and a member can make any number of such keys (G32).
+Tests: the two "D-047 F02" tests in `okf/test/store-restart.test.js`.

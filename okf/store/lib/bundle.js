@@ -383,6 +383,7 @@ export class Bundle extends EventEmitter {
 
     this.metadata = meta
     if (!this._coreApply) this._setApply(meta)
+    await this._wakeWriters()
     // Fold what the cores already hold, so the view is current when open
     // resolves.
     await this.db.update()
@@ -394,6 +395,31 @@ export class Bundle extends EventEmitter {
     // A reopen applies nothing, so the update handler has not run yet.
     await this._refreshIndexer()
     return this
+  }
+
+  /**
+   * D-047 F02: wake the writer of each key with a gov/writer record in the
+   * view, with the documented db.wakeup (autobee README.md:165-167). At
+   * open, autobee restarts only the writers that are system heads, and the
+   * boot hints since the last drain that applied hints (index.js:605-618,
+   * :853-875, :877-892). A peer that closed during a heal can hold the new
+   * blocks of a writer that is no head, and that it has not folded. Its
+   * peers are caught up, so they announce no pending writer
+   * (autobee-wakeup index.js:19-23), and no new length reaches it. Without
+   * the wakeup, that peer stays behind until somebody writes. A revoked
+   * writer keeps its record, so it wakes too: every peer folds its later
+   * nodes and rejects their ops. A key that only seen/ holds wakes never:
+   * a member can make any number of such keys (G32), and each wakeup opens
+   * a core.
+   */
+  async _wakeWriters() {
+    const self = b4a.toString(this.db.local.key, 'hex')
+    const keys = []
+    for await (const { key } of this.scan(K.govWriterPrefix())) {
+      const writer = K.parseKey(key)[2]
+      if (writer !== self) keys.push(b4a.from(writer, 'hex'))
+    }
+    await Promise.all(keys.map((key) => this.db.wakeup({ key, length: 0 })))
   }
 
   /**
