@@ -304,6 +304,101 @@ test('a body that core rejects on an established concept is not recorded as inge
   assert.equal(await readFile(f, 'utf8'), edited, 'materialize keeps the human edit')
 })
 
+test('a later ingest of a pending new file reuses the concept that its first ingest created, also in a new watcher: core rejected a later op (D-055 Q2)', async (t) => {
+  // A new file has no _id until materialize stamps it (DEVIATIONS: the
+  // deferred write-back). Core accepts its create-concept here and rejects
+  // its set-body oversize-op, so the file stays pending (D-048 F02). Before
+  // the fix, each later ingest of the same bytes minted another concept.
+  // The writer holds 16 nodes first, so the next minted tag has two hex
+  // digits of seq, and the clock of the set-body a two-digit self entry:
+  // the op is 2 bytes over the preflight's lower bound.
+  const limit = 4096
+  const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
+  const dir = await tmpDir('bundle')
+  let w = await createIngestWatcher(v, dir, { watch: false })
+  t.after(async () => {
+    await w.close()
+    await v.close()
+  })
+  await materialize(v, dir)
+  for (let i = 0; i < 16; i++) await v.createConcept(`seed/${i}`, 'note')
+  const n = v.db.local.length
+  const self = v.localKey.toString('hex')
+  const opBytes = (len) =>
+    encodeOp('set-body', { id: makeTag(v.localKey, n), base: null, text: 'x'.repeat(len), clock: [[self, n + 1]], at: Date.now() }).byteLength
+  let len = limit
+  while (opBytes(len) > limit + 1) len--
+  assert.equal(opBytes(len), limit + 1, 'the set-body op of the file is one byte over maxOpBytes')
+  await writeFile(join(dir, 'near.md'), `---\ntype: note\n---\n${'x'.repeat(len)}\n`)
+  const rejected = []
+  const listen = (watcher) => watcher.on('rejected', (e) => rejected.push(e))
+  listen(w)
+
+  const first = await w.ingestFile('near.md')
+  assert.deepEqual(first.map((o) => o.type), ['create-concept', 'set-body'])
+  assert.deepEqual(rejected, [{ path: 'near.md', op: 'set-body', reason: 'oversize-op' }], 'core accepted the create and rejected the body')
+  const id = await v.val(K.path('near'))
+  assert.notEqual(id, undefined)
+
+  const second = await w.ingestFile('near.md')
+  assert.deepEqual(second.map((o) => o.type), ['set-body'], 'the same watcher creates no second concept')
+  await w.close()
+  w = await createIngestWatcher(v, dir, { watch: false }) // as a new auto-okf ingest run does
+  listen(w)
+  const third = await w.scan()
+  assert.deepEqual(third.map((o) => o.type), ['set-body'], 'a new watcher creates no second concept')
+  assert.equal(rejected.length, 3, 'each ingest names the rejection')
+  assert.deepEqual(await conceptIds(v), [...(await seedIds(v)), id].sort(), 'one concept for near.md, beside the 16 seeds')
+})
+
+test('a later ingest of a new file whose ingest failed after its create reuses that concept (D-055 Q2)', async (t) => {
+  // A typed literal with a bad lexical form makes ingest throw in the
+  // field diff, after it appended the create-concept. Before the fix, each
+  // later ingest minted another concept.
+  const v = await Bundle.init(await tmpDir('vault'))
+  const dir = await tmpDir('bundle')
+  const w = await createIngestWatcher(v, dir, { watch: false })
+  t.after(async () => {
+    await w.close()
+    await v.close()
+  })
+  await materialize(v, dir)
+  const bad = '---\ntype: note\ncount:\n  value: abc\n  datatype: http://www.w3.org/2001/XMLSchema#integer\n---\nbody\n'
+  await writeFile(join(dir, 'bad.md'), bad)
+  await assert.rejects(w.ingestFile('bad.md'))
+  await v.update()
+  const id = await v.val(K.path('bad'))
+  assert.notEqual(id, undefined, 'the create-concept took effect before the throw')
+  await assert.rejects(w.ingestFile('bad.md'))
+  await v.update()
+  assert.deepEqual(await conceptIds(v), [id], 'the second ingest created no second concept')
+  assert.deepEqual(JSON.parse(await readFile(join(dir, '.okf-pending.json'), 'utf8')), { files: { 'bad.md': id } })
+
+  // The human drops the bad field. That ingest completes on the same
+  // concept, and the record goes.
+  await writeFile(join(dir, 'bad.md'), '---\ntype: note\n---\nbody\n')
+  const ops = await w.ingestFile('bad.md')
+  assert.deepEqual(ops.map((o) => o.type), ['set-body'])
+  assert.deepEqual(await conceptIds(v), [id])
+  assert.equal((await v.val(K.cRev(id, await v.val(K.cBody(id))))).text, 'body')
+  await assert.rejects(readFile(join(dir, '.okf-pending.json')), { code: 'ENOENT' }, 'no record is left')
+})
+
+/** The _id of every concept in a vault's view, sorted. */
+async function conceptIds(v) {
+  await v.update()
+  const ids = []
+  for await (const { key } of v.scan('c/')) if (key.endsWith('/meta')) ids.push(K.parseKey(key)[1])
+  return ids.sort()
+}
+
+/** The _id of each seed/<i> concept. */
+async function seedIds(v) {
+  const ids = []
+  for (let i = 0; i < 16; i++) ids.push(await v.val(K.path(`seed/${i}`)))
+  return ids
+}
+
 /** Every flag/rejected record in a vault's view, as { key: reason }. */
 async function rejectedOf(v) {
   const out = {}

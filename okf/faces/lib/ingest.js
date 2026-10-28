@@ -42,6 +42,8 @@ import {
   isReservedFile,
   statOrNull,
   walkNotes,
+  atomicWrite,
+  atomicUnlink,
   MANIFEST_FILE
 } from './fsatomic.js'
 
@@ -52,6 +54,10 @@ const HEX64 = /^[0-9a-f]{64}$/
 const RESERVED_FRONTMATTER = new Set(['_id', '_rev'])
 // The shortest tag (§3 makeTag): a 64-hex writer key and one hex digit of seq.
 const MIN_TAG = '0'.repeat(65)
+// D-055 Q2: the record of each pending file whose ingest created a concept
+// and did not complete, `{ files: { <rel>: <_id> } }` (see _keepCreated).
+// The faces reserve `.okf-` names for their own state.
+const PENDING_FILE = '.okf-pending.json'
 
 /**
  * Create (and start) the ingest watcher for `dir`.
@@ -271,7 +277,14 @@ export class IngestWatcher extends EventEmitter {
       }
 
       const appended = []
-      const { ops, established } = await this._ingestParsed(rel, fm || {}, body, appended)
+      let parsed
+      try {
+        parsed = await this._ingestParsed(rel, fm || {}, body, appended)
+      } catch (err) {
+        await this._keepCreated(rel, appended)
+        throw err
+      }
+      const { ops, established } = parsed
 
       if (!established) {
         // No concept corresponds to this file (e.g. missing/empty `type`, so
@@ -288,9 +301,11 @@ export class IngestWatcher extends EventEmitter {
       // it. Each rejection is reported by name.
       const rejected = await this._rejections(appended)
       if (rejected.length > 0) {
+        await this._keepCreated(rel, appended)
         for (const r of rejected) this.emit('rejected', { path: rel, op: r.op.type, reason: r.reason })
         return ops
       }
+      await this._setPending(rel, null)
       this._ingested.set(rel, hash)
       // Account the ingested bytes into the manifest: they are now known to
       // the system, so the next materialize MAY regenerate the file (its
@@ -433,9 +448,10 @@ export class IngestWatcher extends EventEmitter {
           if (viewPath !== undefined && viewPath !== authoredPath) {
             const original = await statOrNull(join(this.root, viewPath + '.md'))
             if (original !== null) {
-              // A distinct file holds the original path: mint a fresh copy.
+              // A distinct file holds the original path: mint a fresh copy,
+              // or reuse the copy that a pending ingest of this file made.
               this.emit('copy', { path: rel, of: rawId })
-              return this._create(authoredPath, fm, undefined, emitted, appended)
+              return (await this._pendingConcept(rel)) ?? this._create(authoredPath, fm, undefined, emitted, appended)
             }
           }
         }
@@ -446,8 +462,9 @@ export class IngestWatcher extends EventEmitter {
     }
 
     // §9: missing _id → mint (write-back happens on the next materialize,
-    // which stamps the deterministic minted _id into the file).
-    return this._create(authoredPath, fm, undefined, emitted, appended)
+    // which stamps the deterministic minted _id into the file). A pending
+    // ingest of this file already minted one: reuse it (D-055 Q2).
+    return (await this._pendingConcept(rel)) ?? this._create(authoredPath, fm, undefined, emitted, appended)
   }
 
   /** Emit a CreateConcept; return the concept id (adopted id or minted tag). */
@@ -465,6 +482,7 @@ export class IngestWatcher extends EventEmitter {
     // view — never trust the op tag for identity.
     const conceptId = id !== undefined ? id : await this._resolveMintedId(res && res.tag, path)
     emitted.push({ type: 'create-concept', payload: { path, type, id: conceptId } })
+    if (appended) appended[appended.length - 1].created = conceptId
     return conceptId
   }
 
@@ -725,6 +743,7 @@ export class IngestWatcher extends EventEmitter {
     }
     const op = { type: 'delete-concept', payload: { id } }
     await this._apply(op)
+    await this._setPending(rel, null)
     this._ingested.delete(rel)
     await this._touchManifest(rel, null)
     if (typeof this.vault.update === 'function') await this.vault.update()
@@ -760,6 +779,63 @@ export class IngestWatcher extends EventEmitter {
       else manifest.files[rel] = hash
       await saveManifest(this.root, manifest)
     })
+  }
+
+  // ---------- pending files (D-055 Q2) ----------
+  //
+  // The rule: a new file gets its _id only when materialize stamps it,
+  // after the file is recorded as ingested. If an ingest of a file creates
+  // a concept (a mint or a copy split) and does not complete, because core
+  // rejected one of its ops or the ingest threw, the file stays pending
+  // without an _id. So the watcher records the created _id for the path in
+  // PENDING_FILE. A later ingest of that path, in this watcher or in another
+  // one, uses that concept where it would mint or split a copy, while the
+  // view holds it. So a pending file never gets a second concept. The record
+  // goes when an ingest of the path completes, or when its delete runs.
+
+  /** The recorded concept of a pending `rel`, if the view still holds it. */
+  async _pendingConcept(rel) {
+    const id = (await this._loadPending()).files[rel]
+    if (typeof id !== 'string') return undefined
+    return (await this.vault.val(K.cMeta(id))) !== undefined ? id : undefined
+  }
+
+  /** Record the concept that this ingest of `rel` created, if the view holds it. */
+  async _keepCreated(rel, appended) {
+    const entry = appended.find((a) => a.created !== undefined)
+    if (entry === undefined) return
+    if (typeof this.vault.update === 'function') await this.vault.update()
+    if ((await this.vault.val(K.cMeta(entry.created))) === undefined) return
+    await this._setPending(rel, entry.created)
+  }
+
+  /** Set (`id`) or clear (null) the record of `rel`. Writes only on a change. */
+  _setPending(rel, id) {
+    return withPathLock(this.registry, PENDING_FILE, async () => {
+      const pending = await this._loadPending()
+      if ((pending.files[rel] ?? null) === id) return
+      if (id === null) delete pending.files[rel]
+      else pending.files[rel] = id
+      if (Object.keys(pending.files).length === 0) {
+        await atomicUnlink(this.root, PENDING_FILE)
+        return
+      }
+      const sorted = { files: {} }
+      for (const k of Object.keys(pending.files).sort(byteCmp)) sorted.files[k] = pending.files[k]
+      await atomicWrite(this.root, PENDING_FILE, Buffer.from(canonical.stableStringify(sorted) + '\n', 'utf8'))
+    })
+  }
+
+  async _loadPending() {
+    let raw
+    try {
+      raw = await readFile(join(this.root, PENDING_FILE), 'utf8')
+    } catch (err) {
+      if (err.code === 'ENOENT') return { files: {} }
+      throw err
+    }
+    const parsed = JSON.parse(raw)
+    return { files: parsed && parsed.files && typeof parsed.files === 'object' ? { ...parsed.files } : {} }
   }
 
   async close() {

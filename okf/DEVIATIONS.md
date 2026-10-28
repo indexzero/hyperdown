@@ -63,6 +63,19 @@ create op's tag (`writerKey‖seq`); under the §6 squat fallback the true id
 would differ, but that requires an adversary pre-occupying the tag id and is
 unreachable through ordinary ingest.
 
+**okf §9 a pending new file keeps the concept that its ingest created
+(D-055 Q2).** With the deferred write-back above, a new file has no `_id`
+until materialize stamps it, and materialize does that only after the file
+is recorded as ingested. An ingest that creates a concept and does not
+complete leaves the file pending without an `_id`: core rejected one of its
+ops (D-048 F02), or the ingest threw. So the watcher records that `_id` for
+the path in `<bundle>/.okf-pending.json`. A later ingest of that path uses
+the recorded concept where it would mint or split a copy, while the view
+holds it, so the file never gets a second concept. The record goes when an
+ingest of the path completes, or when its delete runs. A file that moves to
+another path before it completes mints again. Tests: the two "D-055 Q2"
+tests in `okf/test/faces-ingest.test.js`.
+
 **okf §9 materialize path-safety violations are reported, never written to
 the view.** §7 notes a materialize-time containment violation "is reported on
 the CLI only." Faces re-checks lexical + realpath containment before every
