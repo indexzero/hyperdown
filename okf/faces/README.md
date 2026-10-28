@@ -137,6 +137,31 @@ against the head revision:
   `wanted/`, never a flag (SPEC §9, I4); `index.md`/`log.md` edits are
   ignored (regenerated faces).
 
+After it appends the ops of a file, the watcher reads core's verdict on
+each one at its own fold (`okf/faces/lib/ingest.js:677-686`). A later
+reorder can still change a verdict (SPEC §8). The watcher emits these
+events:
+
+- `ops` `{ path, ops }`: the ops that the watcher appended for the file,
+  with no rejection. A file that holds a concept is then recorded as
+  ingested in the emission manifest (`okf/faces/lib/ingest.js:287-316`).
+- `rejected` `{ path, op, reason }`: core rejected that op. The file is
+  not recorded as ingested, so it stays pending, and the next
+  `materialize` keeps it (`okf/faces/lib/ingest.js:298-307`).
+- `oversize` `{ path, bytes, limit, opBytes }`: the encoded `set-body` op
+  is over `maxOpBytes`. `bytes` is the body size and `opBytes` the op
+  size. Nothing of the file is appended
+  (`okf/faces/lib/ingest.js:268-277`, `:355-359`).
+- `copy` `{ path, of }`, `delete-skipped`, `skip`, `warning` and `error`.
+
+A new file gets its `_id` only when `materialize` stamps it. If an ingest
+creates a concept for a new file and does not complete, the watcher
+records that `_id` for the path in `<dir>/.okf-pending.json`. A later
+ingest of the path, in any watcher, reuses that concept, so the file
+never gets a second one. The record goes when an ingest of the path
+completes, or when its delete runs (`okf/faces/lib/ingest.js:799-809`).
+Tests: the two "D-055 Q2" tests in `okf/test/faces-ingest.test.js`.
+
 > The note codec keeps body bytes exactly: `parseNote(renderNote(pairs,
 > body)).body === body` for every body and every non-empty `pairs` (a note
 > always has `type`), also for a body that ends in one or more newlines.
@@ -171,7 +196,7 @@ if (report.lossy.length > 0) throw new Error('fix report.lossy before import')
 // 2. resolve in the face what must not cross: a .conflict- copy is refused
 // 3. a fresh vault, filled from the notes of the face
 const res = await importFace(Bundle.init, './generation-face', './vault-e1', {
-  metadata: old.metadata,     // carries limits, rate and schemaVersion
+  metadata: old.metadata,     // carries limits, rate and schemaVersion, never swarm
   predecessorKey: old.keyHex  // records the generation chain
   // encryptionKey: a 32-byte key encrypts the new vault
 })
@@ -225,6 +250,12 @@ each entry that it wrote in `dir` while it held the claim, the claim, and
 then each directory that it made for `dir`, when that directory is empty.
 An existing `dir` stays. No verification copy is written to disk.
 
+A generation is the eviction point, so `opts.metadata` never carries the
+`swarm` allowlist (`okf/faces/lib/import.js:44`, `:380-390`). The invite
+of the new vault lists only the swarm key of the peer that ran the
+import, and an indexer admits each writer again with
+`writers.add(key, { swarmKey })`.
+
 The fresh vault uses a **fresh writer keypair**: `@auto-okf/store` derives
 writer cores under a per-generation namespace derived from
 `predecessorKey` (SPEC §10), which is why adopting the predecessor's
@@ -253,8 +284,8 @@ npm install @auto-okf/faces
 | export | what |
 | --- | --- |
 | `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; `opts.onPlaintext` is awaited with the plaintext warning before the first write of an encrypted vault; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root, warnings, lossy }`, `lossy` the values that the face cannot hold (above) |
-| `createIngestWatcher(vault, dir, opts)` | start the watcher; `opts`: `confirmDelete`, `debounce`, `settle`, `watch:false` (drive `ingestFile`/`scan` manually) |
-| `importFace(initBundle, faceDir, dir, opts)` | SPEC §10 generation: a new vault in a new or empty `dir`, filled from the notes of the face; `initBundle` is the store factory (`Bundle.init`); `opts`: `encryptionKey`, `metadata` (carries `limits`, `rate`, `schemaVersion`), `predecessorKey`; returns `{ vault, dir, generation, counts, warnings }`; errors carry an `IMPORT_*` code (above) |
+| `createIngestWatcher(vault, dir, opts)` | start the watcher; `opts`: `confirmDelete`, `debounce`, `settle`, `watch:false` (drive `ingestFile`/`scan` manually); events `ops`, `rejected`, `oversize` and the others above |
+| `importFace(initBundle, faceDir, dir, opts)` | SPEC §10 generation: a new vault in a new or empty `dir`, filled from the notes of the face; `initBundle` is the store factory (`Bundle.init`); `opts`: `encryptionKey`, `metadata` (carries `limits`, `rate`, `schemaVersion`, never `swarm`), `predecessorKey`; returns `{ vault, dir, generation, counts, warnings }`; errors carry an `IMPORT_*` code (above) |
 | `status(vault, dir)` | read-only per-file state rows `[{ path, state }]` (ADR-002) |
 | `wanted(vault)` | `[{ path, count, referrers }]`, most-wanted first (from `wanted/` + `wantedrank/`) |
 | `readView(reader)` / `readLog(reader)` | the pure view→model projection materialize builds on |
