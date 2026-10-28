@@ -269,6 +269,41 @@ test('the oversize preflight encodes the set-body op: a body just below maxOpByt
   assert.equal(await readFile(join(dir, 'over.md'), 'utf8'), before, 'materialize keeps over.md')
 })
 
+test('a body that core rejects on an established concept is not recorded as ingested: it stays pending, materialize keeps it, and ingest names the rejection (D-048 F02)', async (t) => {
+  // The writer may write under team/ only, so core rejects its set-body on
+  // other/x policy-namespace. Before the fix, ingest recorded the file as
+  // ingested before core's verdict, so the next materialize overwrote the
+  // human edit with the head that the vault still holds.
+  const v = await Bundle.init(await tmpDir('vault'))
+  const dir = await tmpDir('bundle')
+  const w = await createIngestWatcher(v, dir, { watch: false })
+  t.after(async () => {
+    await w.close()
+    await v.close()
+  })
+  const { tag: id } = await v.createConcept('other/x', 'note')
+  await v.setBody(id, null, 'first')
+  await materialize(v, dir)
+  await v.writers.setPolicy(v.localKey, { namespacePrefixes: ['team'] })
+  await v.update()
+
+  const f = join(dir, 'other/x.md')
+  const edited = (await readFile(f, 'utf8')).replace('first', 'second')
+  await writeFile(f, edited)
+  const rejected = []
+  const ingested = []
+  w.on('rejected', (e) => rejected.push(e))
+  w.on('ops', (e) => ingested.push(e.path))
+  const ops = await w.ingestFile('other/x.md')
+
+  assert.deepEqual(ops.map((o) => o.type), ['set-body'], 'ingest appended the set-body')
+  assert.deepEqual(rejected, [{ path: 'other/x.md', op: 'set-body', reason: 'policy-namespace' }])
+  assert.deepEqual(ingested, [], "no 'ops' event for a rejected file")
+  const report = await materialize(v, dir)
+  assert.ok(report.pendingIngest.includes('other/x.md'), 'the file stays pending')
+  assert.equal(await readFile(f, 'utf8'), edited, 'materialize keeps the human edit')
+})
+
 /** Every flag/rejected record in a vault's view, as { key: reason }. */
 async function rejectedOf(v) {
   const out = {}

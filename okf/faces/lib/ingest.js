@@ -98,7 +98,7 @@ export class IngestWatcher extends EventEmitter {
     this._drainTimer = null
     this._scanTimer = null
     this._scanChain = Promise.resolve() // serializes directory-event rescans
-    this._import = null // { rel, appended } while importNote runs (import mode)
+    this._import = null // { rel } while importNote runs (import mode)
   }
 
   _start() {
@@ -270,7 +270,8 @@ export class IngestWatcher extends EventEmitter {
         return []
       }
 
-      const { ops, established } = await this._ingestParsed(rel, fm || {}, body)
+      const appended = []
+      const { ops, established } = await this._ingestParsed(rel, fm || {}, body, appended)
 
       if (!established) {
         // No concept corresponds to this file (e.g. missing/empty `type`, so
@@ -279,6 +280,15 @@ export class IngestWatcher extends EventEmitter {
         // treat it as a prior output and DELETE it (N3). Leave it out so it
         // surfaces as pending-ingest instead.
         this.emit('ops', { path: rel, ops })
+        return ops
+      }
+      // D-048 F02: core's verdict comes before the record. A file with an op
+      // that core rejected is not recorded as ingested: its bytes stay out of
+      // the manifest, so it stays pending, and the next materialize keeps
+      // it. Each rejection is reported by name.
+      const rejected = await this._rejections(appended)
+      if (rejected.length > 0) {
+        for (const r of rejected) this.emit('rejected', { path: rel, op: r.op.type, reason: r.reason })
         return ops
       }
       this._ingested.set(rel, hash)
@@ -331,9 +341,10 @@ export class IngestWatcher extends EventEmitter {
   /**
    * Diff a parsed file against the view and emit the minimal op set.
    * Resolves identity first (§6/§9: known/adopt/mint + copy detection +
-   * conflict-copy awareness), then diffs fields and body.
+   * conflict-copy awareness), then diffs fields and body. Each op that it
+   * appends goes on `appended` as `{ op, tag }`, for core's verdict.
    */
-  async _ingestParsed(rel, fm, body) {
+  async _ingestParsed(rel, fm, body, appended) {
     if (typeof this.vault.update === 'function') await this.vault.update()
 
     const P = rel.slice(0, -3) // strip '.md'
@@ -350,7 +361,7 @@ export class IngestWatcher extends EventEmitter {
     }
 
     const emitted = []
-    const id = await this._ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted)
+    const id = await this._ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted, appended)
     if (id == null) return { ops: emitted, established: false } // could not create (e.g. missing type)
 
     if (typeof this.vault.update === 'function') await this.vault.update()
@@ -399,7 +410,7 @@ export class IngestWatcher extends EventEmitter {
       ops.push({ type: 'set-body', payload: { id, base, text } })
     }
 
-    for (const op of ops) await this._apply(op)
+    for (const op of ops) await this._apply(op, appended)
     return { ops: emitted.concat(ops), established: true }
   }
 
@@ -408,7 +419,7 @@ export class IngestWatcher extends EventEmitter {
    * CreateConcept when adopting, minting, or copy-splitting; the created id
    * is appended to `emitted`.
    */
-  async _ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted) {
+  async _ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted, appended) {
     const rawId = typeof fm._id === 'string' ? nfc(fm._id) : undefined
 
     if (rawId) {
@@ -424,29 +435,29 @@ export class IngestWatcher extends EventEmitter {
             if (original !== null) {
               // A distinct file holds the original path: mint a fresh copy.
               this.emit('copy', { path: rel, of: rawId })
-              return this._create(authoredPath, fm, undefined, emitted)
+              return this._create(authoredPath, fm, undefined, emitted, appended)
             }
           }
         }
         return rawId
       }
       // §9/§10: unknown id → ADOPT it.
-      return this._create(authoredPath, fm, rawId, emitted)
+      return this._create(authoredPath, fm, rawId, emitted, appended)
     }
 
     // §9: missing _id → mint (write-back happens on the next materialize,
     // which stamps the deterministic minted _id into the file).
-    return this._create(authoredPath, fm, undefined, emitted)
+    return this._create(authoredPath, fm, undefined, emitted, appended)
   }
 
   /** Emit a CreateConcept; return the concept id (adopted id or minted tag). */
-  async _create(path, fm, id, emitted) {
+  async _create(path, fm, id, emitted, appended) {
     const type = this._fmType(fm)
     if (type == null) {
       this.emit('warning', { path: path + '.md', message: 'cannot create concept: no non-empty `type` in frontmatter' })
       return null
     }
-    const res = await this._apply({ type: 'create-concept', payload: { path, type, id } })
+    const res = await this._apply({ type: 'create-concept', payload: { path, type, id } }, appended)
     // Adoption keeps the supplied id. For a MINT the concept's id is knowable
     // only from the view (§9/§6 P1): a squat pre-occupying this writer's
     // tag-id makes apply mint a SHA fallback, so the op's tag can point at the
@@ -587,24 +598,21 @@ export class IngestWatcher extends EventEmitter {
     const authored = { ...(fm || {}) }
     delete authored._rev
     const appended = []
-    this._import = { rel, appended }
+    this._import = { rel }
     let ops
     try {
-      ;({ ops } = await this._ingestParsed(rel, authored, body))
+      ;({ ops } = await this._ingestParsed(rel, authored, body, appended))
     } finally {
       this._import = null
     }
-    if (typeof this.vault.update === 'function') await this.vault.update()
-    for (const { op, tag } of appended) {
-      const { writer, seq } = parseTag(tag)
-      const rec = await this.vault.val(K.flagRejected(writer, seq))
-      if (rec !== undefined) {
-        throw namedError('IMPORT_REJECTED', `${rel}: core rejected its ${op.type} op (${rec.reason})`, {
-          path: rel,
-          op: op.type,
-          reason: rec.reason
-        })
-      }
+    const [rejected] = await this._rejections(appended)
+    if (rejected !== undefined) {
+      const { op, reason } = rejected
+      throw namedError('IMPORT_REJECTED', `${rel}: core rejected its ${op.type} op (${reason})`, {
+        path: rel,
+        op: op.type,
+        reason
+      })
     }
     this.emit('ops', { path: rel, ops })
     return ops
@@ -637,16 +645,33 @@ export class IngestWatcher extends EventEmitter {
     }
   }
 
+  /**
+   * Core's verdict on each op in `appended` (`{ op, tag }`): the ones that
+   * core rejected, as `{ op, reason }`, in append order. It folds first, so
+   * the view holds each flag/rejected record (§3, I4).
+   */
+  async _rejections(appended) {
+    if (typeof this.vault.update === 'function') await this.vault.update()
+    const out = []
+    for (const { op, tag } of appended) {
+      const { writer, seq } = parseTag(tag)
+      const rec = await this.vault.val(K.flagRejected(writer, seq))
+      if (rec !== undefined) out.push({ op, reason: rec.reason })
+    }
+    return out
+  }
+
   // ---------- op sink ----------
 
   /**
-   * Apply one op descriptor via the store's typed helpers. In import mode
-   * (importNote), check the op first, and record it for core's verdict.
+   * Apply one op descriptor via the store's typed helpers, and put it on
+   * `appended`, when given, for core's verdict. In import mode
+   * (importNote), check the op first.
    */
-  async _apply(op) {
+  async _apply(op, appended) {
     if (this._import !== null) await this._preflightImport(op)
     const res = await this._append(op)
-    if (this._import !== null) this._import.appended.push({ op, tag: res.tag })
+    if (appended) appended.push({ op, tag: res.tag })
     return res
   }
 
