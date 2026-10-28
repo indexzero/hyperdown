@@ -424,10 +424,10 @@ export class Bundle extends EventEmitter {
 
   /**
    * isIndexer from okf authority: gov/writer/<self> with indexer: true and
-   * no gov/removed/<self> in db.view. That is core apply's live-indexer
-   * rule (core/lib/apply.js:442). Only then does a new governance op from
-   * this writer pass the revocation and issuer checks of core apply
-   * (core/lib/apply.js:370-383).
+   * no gov/removed/<self> in db.view. That is how core apply tells a live
+   * indexer (core/lib/apply.js:477-478, :533-542). Only then does a new
+   * governance op from this writer pass the revocation check and the
+   * issuer check of core apply (core/lib/apply.js:399-403, :411-413).
    */
   async _onViewUpdate() {
     await this._refreshIndexer()
@@ -1355,9 +1355,15 @@ export class Bundle extends EventEmitter {
 }
 
 /**
- * Adapts autobee's host (lib/apply-calls.js) to the one call @auto-okf/core's
- * apply makes — addWriter(key, { isIndexer, weight }) — only ever for
- * governance ops that passed the §8 authority check.
+ * Adapts autobee's host (lib/apply-calls.js) to the one call that
+ * @auto-okf/core's apply makes: addWriter(key, { weight: 0 }) (AD7). Core
+ * makes it for every AddWriter op that it folds, whether it then accepts or
+ * rejects the op, once the op is within maxOpBytes, decodes, and names a
+ * 32-byte key (core/lib/apply.js:361-375, grant() at :444-448). The grant
+ * comes before every check that reads the op's linearized position, such
+ * as the revocation check and the indexer-issuer check, so a reorder can
+ * never undo it (G9b). okf membership still comes only from gov/, which
+ * those checks decide.
  * autobee's positional removeWriter is deliberately NOT exposed: §8
  * revocation is decided purely by core's in-log clock rule.
  */
@@ -1367,15 +1373,17 @@ class HostAdapter {
   }
 
   addWriter(key) {
-    // WEIGHT 0 FOR EVERY WRITER. Core passes { isIndexer, weight: 1 } (§8's
-    // literal grant). This adapter overrides both and grants { weight: 0 }.
-    // With `bootstrapWeight: 0` (the constructor call), genesis stands at 0
-    // too. What that means on autobee@2.12.1:
+    // WEIGHT 0 FOR EVERY WRITER. Core passes { weight: 0 }. The adapter
+    // grants { weight: 0 } whatever core passes, so autobee's default
+    // (isIndexer true, weight 2, lib/apply-calls.js:33) never applies. With
+    // `bootstrapWeight: 0` (the constructor call), genesis stands at 0 too.
+    // What that means on autobee@2.12.1:
     // - The grant records the key at weight 0 with ceiling (maxWeight) 0
     //   (lib/apply-calls.js:33-41, lib/system.js:66-92). isIndexer only
     //   selects the default weight (lib/apply-calls.js:33), so the adapter
     //   does not pass it. A grant at 0 opens no promotion request
-    //   (lib/system.js:78, lib/promotions.js:111-113).
+    //   (lib/system.js:78, lib/promotions.js:111-113). The D-047 F08 test
+    //   in okf/test/store-governance.test.js fails at the default weight.
     // - Order: nodes sort by weight, then timestamp, then writer key, then
     //   length (lib/topo.js:168-179). Every weight is 0, so nodes sort by
     //   timestamp, then key.
