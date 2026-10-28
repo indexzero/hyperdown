@@ -461,6 +461,16 @@ function oversizeLine({ path, bytes, limit }) {
   return `error: ${path} body is ${n(bytes)} bytes; maxOpBytes is ${n(limit)}\n`
 }
 
+/**
+ * `error: notes/x.md: core rejected its set-body op (policy-namespace), and
+ * the file stays pending` (D-048 F02, D-055 Q1): one line per op of a file
+ * that core rejected. Ingest does not record such a file, so it stays
+ * pending, and materialize keeps it.
+ */
+function rejectedLine({ path, op, reason }) {
+  return `error: ${path}: core rejected its ${op} op (${reason}), and the file stays pending\n`
+}
+
 function printIdentity(vault) {
   console.log(`vault key:   ${vault.keyHex}`)
   console.log(`writer key:  ${localHex(vault)}`)
@@ -760,6 +770,12 @@ async function cmdIngest(parsed) {
       oversize++
       process.stderr.write(oversizeLine(o))
     })
+    // D-055 Q1: each op that core rejects is named, and the run exits 1.
+    let rejected = 0
+    watcher.on('rejected', (r) => {
+      rejected++
+      process.stderr.write(rejectedLine(r))
+    })
     watcher.on('warning', ({ path, message }) =>
       process.stderr.write(`warning (${path}): ${message}\n`)
     )
@@ -773,7 +789,7 @@ async function cmdIngest(parsed) {
       // The skip clause is omitted (never "0") when no skips occurred.
       const skips = upToDate > 0 ? `; ${upToDate} file(s) already up to date` : ''
       console.log(`ingest complete: ${ops} op(s) from ${files} file(s)${skips}`)
-      return oversize > 0 ? 1 : 0
+      return oversize > 0 || rejected > 0 ? 1 : 0
     } finally {
       await watcher.close()
     }
@@ -801,6 +817,7 @@ async function cmdWatch({ args, flags }) {
       console.log(`ingested ${path}: ${ops.map((o) => o.type).join(', ') || '(no-op)'}`)
     })
     watcher.on('oversize', (o) => process.stderr.write(oversizeLine(o)))
+    watcher.on('rejected', (r) => process.stderr.write(rejectedLine(r))) // D-055 Q1: watch keeps running
     watcher.on('warning', (w) =>
       process.stderr.write(`warning: ${w && w.message ? w.message : JSON.stringify(w)}\n`)
     )

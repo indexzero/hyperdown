@@ -1122,6 +1122,66 @@ test('watch ingests a human edit in the foreground and exits on SIGINT', async (
   assert.equal(code, 0, `clean shutdown, log:\n${log}`)
 })
 
+// ---------- D-055 Q1: ingest and watch name each op that core rejects ----------
+
+const REJECTED_LINE = /^error: other\/x\.md: core rejected its set-body op \(policy-namespace\), and the file stays pending$/m
+
+/**
+ * A vault whose writer may write under team/ only, and its face. other/x
+ * predates the policy, and the face holds a human edit of its body, so core
+ * rejects the set-body of that edit policy-namespace. team/y.md is a new
+ * file that ingests.
+ */
+async function rejectingFace(base) {
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  const v = await Bundle.init(storage)
+  try {
+    const { tag: id } = await v.createConcept('other/x', 'note')
+    await v.setBody(id, null, 'first')
+    await v.update()
+    assert.equal((await materialize(v, bundle)).ok, true)
+    await v.writers.setPolicy(v.localKey, { namespacePrefixes: ['team'] })
+    await v.update()
+  } finally {
+    await v.close()
+  }
+  const f = join(bundle, 'other', 'x.md')
+  await writeFile(f, (await readFile(f, 'utf8')).replace('first', 'second'))
+  await mkdir(join(bundle, 'team'), { recursive: true })
+  await writeFile(join(bundle, 'team', 'y.md'), '---\ntype: note\n---\nInside the namespace.\n')
+  return { storage, bundle }
+}
+
+test('ingest names each op that core rejects, with the file and the reason, and exits 1; the file stays pending (D-055 Q1)', async () => {
+  const { storage, bundle } = await rejectingFace(await tmpDir('ingest-rejected'))
+  const ing = await cli(['ingest', storage, bundle])
+  assert.equal(ing.code, 1, `a rejected op is an error exit\n${ing.stdout}${ing.stderr}`)
+  assert.match(ing.stderr, REJECTED_LINE)
+  assert.match(ing.stdout, /ingested team\/y\.md: create-concept/, 'the sibling still ingested')
+  assert.doesNotMatch(ing.stdout, /ingested other\/x\.md/)
+  const mat = await cli(['materialize', storage, bundle])
+  assert.match(mat.stderr, /pending ingest .*other\/x\.md/, 'materialize keeps the edit pending')
+  assert.match(await readFile(join(bundle, 'other', 'x.md'), 'utf8'), /second/)
+})
+
+test('watch prints each op that core rejects, by name, and keeps running (D-055 Q1)', async () => {
+  const { storage, bundle } = await rejectingFace(await tmpDir('watch-rejected'))
+  const child = spawn('node', [BIN, 'watch', storage, bundle], { cwd: ROOT })
+  let log = ''
+  child.stdout.on('data', (d) => (log += d))
+  child.stderr.on('data', (d) => (log += d))
+  const exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)))
+  try {
+    await waitFor(() => log.includes('watching') && REJECTED_LINE.test(log), 30000)
+    assert.match(log, /ingested team\/y\.md: create-concept/)
+    assert.equal(child.exitCode, null, `watch keeps running after the rejection, log:\n${log}`)
+  } finally {
+    child.kill('SIGINT')
+  }
+  assert.equal(await exited, 0, `clean shutdown, log:\n${log}`)
+})
+
 // ---------- T24: auto-okf import <face-dir> <dir> ----------
 
 /** Every file under `dir` whose bytes hold `plain`, as relative paths: what an encrypted vault must never hold. */
