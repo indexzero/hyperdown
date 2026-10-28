@@ -29,8 +29,10 @@ const s1 = a.replicate(true)
 const s2 = b.replicate(false)
 s1.pipe(s2).pipe(s1)
 
-// b writes nothing until an indexer admits it: until b has folded its
-// admission, b.writable is false and every append fails VAULT_NOT_WRITABLE
+// b writes nothing until autobee adds it. a's add-writer op grants b's key
+// at the substrate. Until b has folded that op, b.writable is false and
+// every append fails VAULT_NOT_WRITABLE. a is an indexer, so apply also
+// admits b (gov/writer), and b's ops take effect
 await a.writers.add(b.localKey) // the genesis indexer admits b (an in-log governance op)
 while (!b.writable) {
   await b.update()
@@ -119,7 +121,12 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
   field name. The empty list applies only when `allow` is absent. The
   creator of a vault always adds its own swarm key, after that check, and
   once also when the list names it. See [Replication](#replication). Apply
-  does not read it, so `applyConfig` leaves it out.
+  does not read it, so `applyConfig` leaves it out. A generation never
+  carries it: `auto-okf import --metadata` carries `limits`, `rate` and
+  `schemaVersion` only (`okf/faces/lib/import.js:44`), so the invite of
+  the new vault lists only the swarm key of the peer that ran the import.
+  A generation is the eviction point: an indexer admits each writer again
+  with `writers.add(key, { swarmKey })`.
 - `schemaVersion`, `encrypted` — pinned with the rest. `encrypted` is
   `true` for a vault made with an `encryptionKey`.
 
@@ -181,8 +188,11 @@ and `fastForward: false`, and grants every writer at weight 0 (SPEC §8,
   (`okf/core/lib/apply.js:375`). So a writer that is not an indexer can
   make a joiner writable. Apply rejects its `writers.add` op
   `policy-governance` (`okf/core/lib/apply.js:411-412`), but the grant
-  still adds the key. The appends of that joiner then resolve, and apply
-  rejects each of its ops.
+  still adds the key. A member can also forge an approval that names a
+  key, and autobee adds that key too (autobee@2.12.1
+  `index.js:1432-1441`, [SECURITY_MODEL.md](../SECURITY_MODEL.md) point
+  (d)). The appends of such a joiner then resolve, and apply rejects each
+  of its ops.
 - okf membership comes only from `gov/`. Only an `add-writer` op that
   apply accepts writes the `gov/writer` record that admits a key
   (`okf/core/lib/apply.js:554-575`). Apply accepts that op only from an
@@ -216,6 +226,27 @@ with one of these codes:
 `close()` closes autobee first, then waits for every append that started
 before it, then closes the owned corestore.
 
+`append` reports durable, not accepted. Its `{ seq, tag }` says that the
+local core holds the node (`okf/store/lib/bundle.js:689-703`). It does not
+say that apply accepted the op. Read the verdict from the view: a
+rejected op has `flag/rejected/<writerKey>/<seq>` (`auto-okf flags <dir>
+rejected`). Read it in your write loop, because a reorder can change it
+(SPEC §8). The ingest watcher reads that verdict once, at its own fold,
+and reports each rejected op (`okf/faces/lib/ingest.js:677-686`, test "a
+body that core rejects on an established concept is not recorded as
+ingested: it stays pending, materialize keeps it, and ingest names the
+rejection (D-048 F02)").
+
+### One process per vault directory
+
+One process at a time opens a vault directory. corestore takes a lock on
+`<dir>/CORESTORE` when it opens the store (hypercore-storage 3.4.0
+`index.js:516-524`). An open in a second process fails with
+`File descriptor could not be locked` while the first process holds the
+vault. So run each command from the process that replicates, or give each
+process its own vault directory. `auto-okf watch` holds the directory
+while it runs.
+
 ### Backpressure (opt-in)
 
 By default `append` is fire-at-caller-rate. With `{ backpressure: true }`
@@ -228,10 +259,17 @@ throughput instead of deadlocking the writer.
 ### Revocation semantics
 
 A removed writer's post-revocation ops still linearize on every peer
-(`host.removeWriter` is never called) and are uniformly rejected by
-core's §8 clock rule — the applied/rejected partition is replay-stable
-(I10). The removed writer's own store refuses further local appends
-(`VAULT_REVOKED`).
+(`host.removeWriter` is never called). Core's §8 clock rule rejects each
+of them that sorts after the removal, uniformly, so the applied/rejected
+partition is replay-stable (I10). The removed writer's own store refuses
+further local appends (`VAULT_REVOKED`).
+
+Revocation stops cooperating clients only. A revoked key with a modified
+client can stamp a node below the removal and leave the removal out of
+its links. That node sorts before the removal, and its op takes effect
+(SPEC §8). The cut of its swarm key below stops its future delivery only.
+A new generation evicts it fully. See the trust model and the eviction
+ladder in [SECURITY_MODEL.md](../SECURITY_MODEL.md).
 
 ### Replication
 
