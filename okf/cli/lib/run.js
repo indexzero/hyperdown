@@ -22,8 +22,8 @@ import { join, relative, resolve, sep } from 'node:path'
 import b4a from 'b4a'
 import { command, flag, arg, rest, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
-import { Bundle, METADATA_FILE, startBootstrapNode } from '@auto-okf/store'
-import { materialize, createIngestWatcher, wanted, compact, status } from '@auto-okf/faces'
+import { Bundle, METADATA_FILE, loadMetadata, startBootstrapNode } from '@auto-okf/store'
+import { materialize, createIngestWatcher, wanted, compact, importFace, status } from '@auto-okf/faces'
 import { guardCompactPaths } from '@auto-okf/faces/compact'
 
 const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
@@ -241,6 +241,16 @@ function buildCli() {
       requiredArgs('<dir>', '<out-dir>')
     ),
     sub(
+      'import',
+      'create a new vault in <dir> from the notes of a face (a generation: materialize, then import)',
+      arg('<face-dir>', 'face directory to read, such as one that materialize wrote'),
+      arg('<dir>', 'storage directory for the new vault (new or empty)'),
+      flag('--encryption-key <hex64>', 'encrypt the new vault with this key (64 hex chars)'),
+      flag('--metadata <okf-vault.json>', "carry limits, rate and schemaVersion from the predecessor's okf-vault.json"),
+      flag('--predecessor <vault-key>', "record the predecessor's vault key in the new vault's metadata (64 hex chars)"),
+      requiredArgs('<face-dir>', '<dir>')
+    ),
+    sub(
       'resolve',
       'resolve an open body conflict on <id>',
       arg('<dir>', 'vault storage directory'),
@@ -345,6 +355,7 @@ const HANDLERS = {
   wanted: cmdWanted,
   flags: cmdFlags,
   compact: cmdCompact,
+  import: cmdImport,
   resolve: cmdResolve,
   undelete: cmdUndelete,
   bootstrap: cmdBootstrap
@@ -920,6 +931,74 @@ function laterWarnings(warnings) {
  */
 function encryptionOpt(flags) {
   return flags.encryptionKey ? { encryptionKey: hexKey(flags.encryptionKey, '--encryption-key') } : {}
+}
+
+/**
+ * T24: `import <face-dir> <dir>` (SPEC §10). importFace refuses a pinned,
+ * non-empty or non-directory <dir>, and a face that holds a conflicted copy,
+ * a reserved .okf- note or a symlink, before it writes anything. It checks
+ * the new vault against the face and removes <dir> on a difference
+ * (IMPORT_FIDELITY). import reads plaintext and writes none, so it prints no
+ * plaintext warning.
+ */
+async function cmdImport({ args, flags }) {
+  const { faceDir, dir } = args
+  const opts = {}
+  if (flags.encryptionKey !== undefined) opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
+  if (flags.predecessor !== undefined) {
+    opts.predecessorKey = b4a.toString(hexKey(flags.predecessor, '--predecessor'), 'hex')
+  }
+  if (flags.metadata !== undefined) opts.metadata = await predecessorMetadata(flags.metadata)
+  await refuseSiblingVault(dir)
+  let res
+  try {
+    res = await importFace(Bundle.init, faceDir, dir, opts)
+  } catch (err) {
+    // run() prints the message and exits 1. The warnings say why a note did
+    // not import, and IMPORT_FIDELITY names every difference in its message.
+    for (const w of err.warnings || []) process.stderr.write(warningLine(w))
+    if (err.code === 'IMPORT_FIDELITY') process.stderr.write(`notes:       ${importCountsLine(err.counts)}\n`)
+    throw err
+  }
+  try {
+    for (const w of res.warnings) process.stderr.write(warningLine(w))
+    printIdentity(res.vault)
+    console.log(`storage:     ${res.dir}`)
+    console.log(`generation:  ${res.generation}`)
+    console.log(`predecessor: ${res.vault.metadata.predecessorKey ?? '(none: a root vault)'}`)
+    console.log(`notes:       ${importCountsLine(res.counts)}`)
+    console.log('fidelity:    every note of the new vault matches the face (_rev lines excluded; index.md and log.md not compared)')
+    console.log(
+      `invite:      a joiner needs the vault key and ${join(res.dir, METADATA_FILE)} ` +
+        '(auto-okf join <dir> <vault-key> --metadata <that file>)'
+    )
+    return 0
+  } finally {
+    // importFace returns the new vault OPEN; the caller owns closing it.
+    await res.vault.close()
+  }
+}
+
+/** --metadata: the predecessor's okf-vault.json, which must be metadata of this release. */
+async function predecessorMetadata(path) {
+  let meta
+  try {
+    meta = await loadMetadata(path)
+  } catch (err) {
+    throw new Error(`--metadata ${path}: ${err.message}`)
+  }
+  if (meta === null) throw new Error(`--metadata ${path}: no such file`)
+  return meta
+}
+
+/** `3 read, 3 imported`: the notes that import read from the face, and the notes that established a concept. */
+function importCountsLine({ notes, imported }) {
+  return `${notes} read, ${imported} imported`
+}
+
+/** `warning: notes/a.md: no parseable frontmatter`: one warning line on stderr. */
+function warningLine({ path, message }) {
+  return `warning: ${path}: ${message}\n`
 }
 
 async function cmdResolve({ args, flags }) {

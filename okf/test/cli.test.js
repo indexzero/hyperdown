@@ -14,7 +14,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
 import { keyspace as K } from '../core/index.js'
-import { compact, materialize } from '../faces/index.js'
+import { compact, importFace, materialize } from '../faces/index.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(ROOT, 'okf', 'cli', 'bin', 'auto-okf.js')
@@ -1397,4 +1397,258 @@ test('watch ingests a human edit in the foreground and exits on SIGINT', async (
   child.kill('SIGINT')
   const code = await exited
   assert.equal(code, 0, `clean shutdown, log:\n${log}`)
+})
+
+// ---------- T24: auto-okf import <face-dir> <dir> ----------
+
+/** Every file under `dir` whose bytes hold `plain`, as relative paths: what an encrypted vault must never hold. */
+async function plaintextFiles(dir, plain) {
+  const hits = []
+  for (const e of await readdir(dir, { recursive: true, withFileTypes: true })) {
+    if (!e.isFile()) continue
+    const file = join(e.parentPath, e.name)
+    if ((await readFile(file)).includes(Buffer.from(plain))) hits.push(file.slice(dir.length + 1))
+  }
+  return hits.sort()
+}
+
+/** A vault at `<base>/old` seeded by `seed(v)`, and its face at `<base>/face`. Returns the vault's metadata and seed result. */
+async function oldWithFace(base, seed, opts = {}) {
+  const v = await Bundle.init(join(base, 'old'), opts)
+  try {
+    const seeded = await seed(v)
+    await v.update()
+    assert.equal((await materialize(v, join(base, 'face'))).ok, true)
+    return { keyHex: v.keyHex, metadata: v.metadata, seeded }
+  } finally {
+    await v.close()
+  }
+}
+
+test('T24: auto-okf import makes a vault from a face, prints the counts and the check, and writes nothing to the face', async () => {
+  const base = await tmpDir('imp-cli')
+  const { keyHex, seeded: id } = await oldWithFace(base, async (v) => {
+    const { tag } = await v.createConcept('notes/one', 'note')
+    await v.setBody(tag, null, 'one')
+    await v.createConcept('notes/two', 'note')
+    return tag
+  })
+  const face = join(base, 'face')
+  const before = await treeHash(face)
+  const r = await cli(['import', face, join(base, 'new')])
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(r.stderr, '', 'a clean import prints no warning')
+  assert.match(r.stdout, KEY_LINE)
+  assert.match(r.stdout, /^generation: {2}root$/m)
+  assert.match(r.stdout, /^predecessor: \(none: a root vault\)$/m)
+  assert.match(r.stdout, /^notes: {7}2 read, 2 imported$/m)
+  assert.match(r.stdout, /^fidelity: {4}every note of the new vault matches the face/m)
+  assert.match(r.stdout, /--metadata/, 'the output tells how a joiner gets the metadata')
+  assert.equal(await treeHash(face), before, 'import changed the face')
+  assert.deepEqual(await entries(base), ['face', 'new', 'old'])
+  const nu = await Bundle.open(join(base, 'new'))
+  try {
+    assert.equal(await headText(nu, id), 'one')
+    assert.notEqual(nu.keyHex, keyHex)
+  } finally {
+    await nu.close()
+  }
+})
+
+test('T24: auto-okf import carries --metadata and records --predecessor in the new okf-vault.json', async () => {
+  const base = await tmpDir('imp-cli-meta')
+  const limits = { maxOpBytes: 400000, maxPathBytes: 2048, maxPathDepth: 100 }
+  const { keyHex, seeded: id } = await oldWithFace(
+    base,
+    async (v) => {
+      const { tag } = await v.createConcept('big/report', 'note')
+      await v.setBody(tag, null, 'x'.repeat(100000))
+      return tag
+    },
+    { metadata: { limits, rate: { defaultCeiling: 8 }, schemaVersion: 3 } }
+  )
+  const out = join(base, 'new')
+  const r = await cli(['import', join(base, 'face'), out, '--metadata', join(base, 'old', 'okf-vault.json'), '--predecessor', keyHex])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  const meta = await pinned(out)
+  const old = await pinned(join(base, 'old'))
+  assert.deepEqual([meta.limits, meta.rate, meta.schemaVersion], [old.limits, old.rate, old.schemaVersion])
+  assert.equal(meta.predecessorKey, keyHex)
+  assert.equal(meta.generation, createHash('sha256').update(Buffer.from(keyHex, 'hex')).digest('hex'))
+  assert.ok(!('predecessorCheckpoint' in meta))
+  assert.match(r.stdout, new RegExp(`^predecessor: ${keyHex}$`, 'm'))
+  assert.match(r.stdout, new RegExp(`^generation: {2}${meta.generation}$`, 'm'))
+  const nu = await Bundle.open(out)
+  try {
+    assert.equal(await headText(nu, id), 'x'.repeat(100000))
+  } finally {
+    await nu.close()
+  }
+
+  // Without --metadata the new vault takes the default maxOpBytes, and the
+  // preflight refuses the 100 KB body by name. The new directory is removed.
+  const bare = await cli(['import', join(base, 'face'), join(base, 'bare')])
+  assert.equal(bare.code, 1, bare.stdout + bare.stderr)
+  assert.match(bare.stderr, /^auto-okf import: IMPORT_OVERSIZE: big\/report\.md: its set-body op is \d+ bytes encoded; maxOpBytes is 65536$/m)
+  assert.deepEqual(await entries(base), ['face', 'new', 'old'])
+
+  // A --metadata file that is missing, or not metadata of this release,
+  // is refused by name before import writes anything.
+  await writeFile(join(base, 'v1.json'), JSON.stringify({ ...old, version: 1 }))
+  for (const [file, message] of [
+    [join(base, 'missing.json'), /^auto-okf import: --metadata \S+missing\.json: no such file$/m],
+    [join(base, 'v1.json'), /^auto-okf import: --metadata \S+v1\.json: unsupported vault metadata version: 1$/m]
+  ]) {
+    const res = await cli(['import', join(base, 'face'), join(base, 'refused'), '--metadata', file])
+    assert.equal(res.code, 1, res.stdout + res.stderr)
+    assert.match(res.stderr, message)
+  }
+  assert.deepEqual(await entries(base), ['face', 'new', 'old', 'v1.json'])
+})
+
+test('T24: auto-okf import --encryption-key makes a vault whose files hold no plaintext of the face; an unencrypted control holds it; no plaintext warning', async () => {
+  const base = await tmpDir('imp-cli-enc')
+  const { seeded: id } = await oldWithFace(base, seedSecret)
+  const out = join(base, 'enc')
+  const r = await cli(['import', join(base, 'face'), out, '--encryption-key', NEW_KEY])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  assert.equal(r.stderr, '', 'import reads plaintext and writes none, so it warns about nothing')
+  assert.equal((await pinned(out)).encrypted, true)
+  // No file of the new vault holds the body or the concept path, not only
+  // the cores (D-047 F01: a side file in an encrypted directory leaked paths).
+  assert.deepEqual({ body: await plaintextFiles(out, SECRET), path: await plaintextFiles(out, 'secret/plan') }, { body: [], path: [] })
+  const nu = await Bundle.open(out)
+  try {
+    assert.deepEqual(await inspectSecret(nu, id), { encrypted: true, text: SECRET, rawHits: false })
+  } finally {
+    await nu.close()
+  }
+
+  // The control: the same face, no key. Its files and its raw blocks hold
+  // the plaintext, so the checks above can see it.
+  const ctl = join(base, 'plain')
+  const c = await cli(['import', join(base, 'face'), ctl])
+  assert.equal(c.code, 0, c.stdout + c.stderr)
+  assert.equal((await pinned(ctl)).encrypted, false)
+  assert.notDeepEqual(await plaintextFiles(ctl, SECRET), [])
+  const cv = await Bundle.open(ctl)
+  try {
+    assert.deepEqual(await inspectSecret(cv, id), { encrypted: false, text: SECRET, rawHits: true })
+  } finally {
+    await cv.close()
+  }
+})
+
+test('T24: auto-okf import refuses by name before it writes: a pinned or non-empty <dir>, a vault-ld <dir>, an open collision, a missing face', async () => {
+  const base = await tmpDir('imp-cli-refuse')
+  const { seeded: y } = await oldWithFace(base, async (v) => {
+    await v.createConcept('shared/note', 'note')
+    const { tag } = await v.createConcept('shared/note', 'note') // the collision loser
+    return tag
+  })
+  const face = join(base, 'face')
+  const init = await cli(['init', join(base, 'pinned')])
+  assert.equal(init.code, 0, init.stderr)
+  await mkdir(join(base, 'used'))
+  await writeFile(join(base, 'used', 'keep.txt'), 'keep\n')
+  await mkdir(join(base, 'sibling'))
+  await writeFile(join(base, 'sibling', 'vault-ld.json'), '{}\n')
+  const state = async () => ({ entries: await entries(base), face: await treeHash(face), pinned: await treeHash(join(base, 'pinned')) })
+  const before = await state()
+
+  const copy = `shared/note.conflict-${createHash('sha256').update(y).digest('hex').slice(0, 8)}.md`
+  const cases = [
+    ['pinned', [face, join(base, 'pinned')], /^auto-okf import: IMPORT_DIR_NOT_EMPTY: \S+pinned is already a vault \(okf-vault\.json exists\)/m],
+    ['used', [face, join(base, 'used')], /^auto-okf import: IMPORT_DIR_NOT_EMPTY: \S+used is not empty \(keep\.txt\)/m],
+    ['vault-ld', [face, join(base, 'sibling')], /^error: \S+sibling is a vault-ld vault \(vault-ld\.json present\); use autovault-ld, not auto-okf$/m],
+    ['collision', [face, join(base, 'out')], new RegExp(`^auto-okf import: IMPORT_CONFLICT_COPY: the face \\S+ holds a conflicted copy.*: ${copy.replace(/\./g, '\\.')}$`, 'm')],
+    ['no face', [join(base, 'no-face'), join(base, 'out')], /^auto-okf import: ENOENT: .*no-face/m]
+  ]
+  for (const [name, args, message] of cases) {
+    const r = await cli(['import', ...args])
+    assert.equal(r.code, 1, `${name}: ${r.stdout}${r.stderr}`)
+    assert.match(r.stderr, message, name)
+    assert.deepEqual(await state(), before, `${name}: the refusal wrote something`)
+  }
+})
+
+test('T24: auto-okf import usage errors exit 2 and write nothing (bad or empty key, bad predecessor, a missing argument)', async () => {
+  const base = await tmpDir('imp-cli-usage')
+  await oldWithFace(base, async (v) => v.createConcept('notes/a', 'note'))
+  const face = join(base, 'face')
+  const cases = [
+    ['bad key', ['import', face, join(base, 'out'), '--encryption-key', 'not-hex'], /--encryption-key must be 64 hex characters/],
+    ['empty key', ['import', face, join(base, 'out'), '--encryption-key', ''], /--encryption-key/],
+    ['bad predecessor', ['import', face, join(base, 'out'), '--predecessor', 'abc'], /--predecessor must be 64 hex characters/],
+    ['one argument', ['import', face], /missing required argument <dir>/]
+  ]
+  for (const [name, args, message] of cases) {
+    const r = await cli(args)
+    assert.equal(r.code, 2, `${name}: ${r.stdout}${r.stderr}`)
+    assert.match(r.stderr, message, name)
+  }
+  assert.deepEqual(await entries(base), ['face', 'old'], 'a usage error created something')
+})
+
+test('T24: auto-okf import prints every difference and every warning, and exits 1 on IMPORT_FIDELITY', async () => {
+  const base = await tmpDir('imp-cli-fid')
+  await oldWithFace(base, async (v) => {
+    const { tag } = await v.createConcept('notes/a', 'note')
+    await v.setBody(tag, null, 'body a')
+    await v.createConcept('.drafts/idea', 'note')
+  })
+  // A note cut short inside its frontmatter: no closing --- line.
+  const notePath = join(base, 'face', 'notes', 'a.md')
+  const text = await readFile(notePath, 'utf8')
+  await writeFile(notePath, text.slice(0, text.indexOf('type:')))
+
+  const r = await cli(['import', join(base, 'face'), join(base, 'out')])
+  assert.equal(r.code, 1, r.stdout + r.stderr)
+  assert.match(r.stderr, /^warning: notes\/a\.md: cannot create concept: no non-empty `type` in frontmatter$/m)
+  assert.match(r.stderr, /^notes: {7}2 read, 1 imported$/m)
+  assert.match(r.stderr, /^auto-okf import: IMPORT_FIDELITY: /m)
+  assert.match(r.stderr, /^ {2}missing notes\/a\.md$/m)
+  // The dot-path note is read and imported, so no difference names it (T14).
+  assert.ok(!r.stderr.includes('.drafts'), r.stderr)
+  assert.deepEqual(await entries(base), ['face', 'old'], 'the failure left the new directory')
+})
+
+test('F02 (T24): the in-process import refuses a key that is not 32 bytes by name, false, empty and zero included, before it writes; and a factory that drops the key', async () => {
+  // D-029 F02: the store reads a false value as no key. import never reads
+  // a value that is not a key as no key.
+  const base = await tmpDir('imp-badkey')
+  await oldWithFace(base, seedSecret)
+  const face = join(base, 'face')
+  const bad = [false, '', 0, NEW_KEY, Buffer.alloc(16, 1), Buffer.alloc(33, 1), [...Buffer.from(NEW_KEY, 'hex')]]
+  for (const [i, encryptionKey] of bad.entries()) {
+    await assert.rejects(
+      () => importFace(Bundle.init, face, join(base, `out-${i}`), { encryptionKey }),
+      (err) => {
+        assert.equal(err.code, 'IMPORT_ENCRYPTION_KEY_INVALID', `${JSON.stringify(encryptionKey)}: ${err.stack}`)
+        assert.ok(!err.message.includes(NEW_KEY), 'the message holds the key')
+        return true
+      }
+    )
+  }
+  assert.deepEqual(await entries(base), ['face', 'old'], 'a refusal created something')
+
+  // initBundle is injected. A factory that does not pass the key on gives
+  // an unencrypted vault. import reads its metadata before the first note,
+  // and removes the new directory.
+  const created = []
+  const dropKey = async (dir, { encryptionKey, ...opts }) => {
+    const v = await Bundle.init(dir, opts)
+    return new Proxy(v, {
+      get(target, prop, receiver) {
+        if (prop === 'createConcept') created.push(prop)
+        return Reflect.get(target, prop, receiver)
+      }
+    })
+  }
+  await assert.rejects(
+    () => importFace(dropKey, face, join(base, 'out'), { encryptionKey: Buffer.from(NEW_KEY, 'hex') }),
+    (err) => err.code === 'IMPORT_NOT_ENCRYPTED'
+  )
+  assert.deepEqual(created, [], 'the import wrote content to the unencrypted vault')
+  assert.deepEqual(await entries(base), ['face', 'old'])
 })
