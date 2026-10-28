@@ -990,12 +990,17 @@ export class Bundle extends EventEmitter {
   // confirmed indexer at the op's linearized position; revocation is
   // causal — core's clock rule — never host.removeWriter).
   /**
+   * `key`: the writer key, 32 bytes or 64 hex characters. Each governance
+   * helper refuses any other key with VAULT_BAD_WRITER_KEY before anything
+   * is appended (D-047 F18).
    * `swarmKey` (T25, optional): the writer's swarm key, 32 bytes or 64 hex.
    * Core stores it on gov/writer/<key>, and every peer's swarm firewall then
    * admits it (swarm()). A bad key is refused before anything is appended.
    */
   addWriter(key, { indexer = false, swarmKey = null } = {}) {
-    const payload = { key: toKeyBuffer(key), indexer }
+    const writerKey = toKeyBuffer(key)
+    if (!writerKey) return Promise.reject(badWriterKeyError())
+    const payload = { key: writerKey, indexer }
     if (swarmKey !== null && swarmKey !== undefined) {
       const buf = swarmKeyBuffer(swarmKey)
       if (!buf) {
@@ -1009,13 +1014,17 @@ export class Bundle extends EventEmitter {
   }
 
   removeWriter(key) {
-    return this.append('remove-writer', { key: toKeyBuffer(key) })
+    const writerKey = toKeyBuffer(key)
+    if (!writerKey) return Promise.reject(badWriterKeyError())
+    return this.append('remove-writer', { key: writerKey })
   }
 
   /** rateCeiling is a required wire uint; defaults to the metadata ceiling. */
   setWriterPolicy(key, { namespacePrefixes = [], rateCeiling } = {}) {
+    const writerKey = toKeyBuffer(key)
+    if (!writerKey) return Promise.reject(badWriterKeyError())
     return this.append('set-writer-policy', {
-      key: toKeyBuffer(key),
+      key: writerKey,
       namespacePrefixes,
       rateCeiling: rateCeiling ?? this.metadata.rate.defaultCeiling
     })
@@ -1406,8 +1415,12 @@ function swarmTopic(discoveryKey) {
   return createHash('sha256').update(SWARM_NAMESPACE).update(discoveryKey).digest()
 }
 
+/**
+ * A 32-byte writer key from 32 bytes or 64 hex characters, else null
+ * (D-047 F18). A writer key has the form of a swarm key.
+ */
 function toKeyBuffer(key) {
-  return b4a.from(keyHex(key), 'hex')
+  return swarmKeyBuffer(key)
 }
 
 /**
@@ -1437,6 +1450,10 @@ function swarmDhtOptions(bootstrap, publicDht) {
 function swarmKeyBuffer(key) {
   const hex = swarmKeyHex(key)
   return hex === null ? null : b4a.from(hex, 'hex')
+}
+
+function badWriterKeyError() {
+  return vaultError('VAULT_BAD_WRITER_KEY', 'a writer key must be 32 bytes or 64 hex characters')
 }
 
 function closedError() {
