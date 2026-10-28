@@ -146,7 +146,12 @@ cli read no undocumented autobee property" in
 autobee that the README does not document, it says so.
 
 **The pins, and the corestore floor.** `okf/store/package.json` pins
-`autobee` `^2.12.1` and `corestore` `^7.16.1`. autobee lists corestore
+`autobee` at exactly `2.12.1` and `corestore` at exactly `7.16.1`, with
+no range. This section relies on behaviour of these versions, and the
+autobee README does not document all of it. A later release, a patch
+release too, can change that behaviour and break a rule that an entry
+names. A range lets such a release in with no change to okf, so okf
+pins each version exactly. autobee lists corestore
 only as a dev dependency (`package.json`), and the store hands it a
 corestore session.
 autobee asks for its system and view cores at manifest version 3
@@ -158,8 +163,9 @@ manifest through `_preload` and `_auth` (corestore `index.js:673-682`,
 store-wide version (corestore 7.12.5 `index.js:670`), which is 1 by
 default (corestore `index.js:258`). autobee's view encryption refuses a
 view core below version 3 (`lib/encryption.js:83-86`). So 7.12.6 is the
-floor, and the pin `^7.16.1` is above it. Test:
-`okf/test/store-encryption.test.js`.
+floor, and the exact pin `7.16.1` is above it. Tests:
+`okf/test/store-deps.test.js` (the exact pins and the resolved
+versions) and `okf/test/store-encryption.test.js` (the floor).
 
 **The apply contract.** autobee calls `apply(nodes, view, host)`
 (`README.md:74`, `:185-208`, `lib/apply-view.js:17-19`). `view` is what
