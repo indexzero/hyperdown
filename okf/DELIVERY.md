@@ -5,6 +5,24 @@ counts, PR stack and open items as they stood then. The store now runs on
 autobee@2.12.1, writes vault metadata version 2 and opens no other version
 (see [store/README.md](store/README.md)).
 
+## The round of 2026-10-28
+
+A generation is now two commands, `materialize`, then
+`auto-okf import <face-dir> <dir>`, and the `compact` command is gone
+(SPEC §10, `faces/lib/import.js`). The swarm is private by default. Its
+firewall admits only the swarm keys of the invite, of live `gov/writer`
+records and of the peer's local list. The public DHT needs
+`--public-dht` (`store/lib/bundle.js` `swarm()`). The store pins autobee
+at exactly 2.12.1 and corestore at exactly 7.16.1 (`store/package.json`,
+`test/store-deps.test.js`). A reopen wakes each writer with a
+`gov/writer` record. The ingest preflight measures the encoded op, and a
+file with an op that core rejects stays pending. Core rejects a writer
+key that is not 32 bytes, and an `AddWriter` that demotes the last live
+indexer. One import at a time holds its directory. The README opens with
+the characterization that the owner approved. SECURITY_MODEL states the
+trust model: membership is total trust for one generation, and
+revocation stops cooperating clients only.
+
 ## Bottom line
 
 **Shipped.** All four gates pass, verified from an independent clean clone
