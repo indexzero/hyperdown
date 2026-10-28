@@ -299,6 +299,11 @@ auto-okf import ./face ./vault-e1 \
 - `IMPORT_FACE_ENTRY`: the face holds an entry that is not a regular file
   or a directory, such as a symlink.
 - `IMPORT_ENCRYPTION_KEY_REQUIRED`: see above.
+- `IMPORT_DIR_CLAIMED`: another `import` holds `<dir>`. Before it creates
+  the vault, `import` creates the claim file `okf-import-claim` in `<dir>`
+  with an exclusive open, and it removes the claim when it ends. So two
+  imports into one `<dir>` never both run: the second refuses, and it
+  removes nothing that the first wrote.
 
 A bad key or predecessor key is a usage error (exit 2). `--metadata` must
 be an `okf-vault.json` of this release, else exit 1, by name.
@@ -310,8 +315,10 @@ imports it with `_id` adoption. It ignores the emission manifest and every
 `IMPORT_REJECTED`. After the import, the notes of the new vault must equal
 the notes of the face, byte for byte, without `_rev` lines (`index.md` and
 `log.md` are not compared). A difference exits 1 with `IMPORT_FIDELITY`,
-which names each difference. On each failure, `import` removes what it
-created in `<dir>`. On success it prints the note counts
+which names each difference. On each failure, `import` removes only what
+it created while it held the claim: the entries that it wrote in `<dir>`,
+the claim, and `<dir>` itself when `import` made it. On success it prints
+the note counts
 (`notes: <n> read, <n> imported`), a `fidelity:` line, and the file that a
 joiner passes as `--metadata`: a joiner of the new vault needs it to derive
 the same generation namespace.
@@ -321,9 +328,10 @@ The face holds the head body of each concept only. So resolve each open
 losing body stays behind in the old vault.
 
 A signal such as Ctrl-C stops `import` before its cleanup, so `<dir>` can
-keep a partial vault. A rerun refuses that `<dir>` by name
-(`IMPORT_DIR_NOT_EMPTY`): remove it and run `import` again. The face is
-never written, and with `--encryption-key` the partial vault is
+keep a partial vault and the claim. A rerun refuses that `<dir>` by name
+(`IMPORT_DIR_NOT_EMPTY`, or `IMPORT_DIR_CLAIMED` when only the claim
+stays): when no `import` runs, remove `<dir>` and run `import` again. The
+face is never written, and with `--encryption-key` the partial vault is
 encrypted too.
 
 ## Exit codes

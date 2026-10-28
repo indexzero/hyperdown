@@ -196,6 +196,14 @@ the face first) or a note at a reserved `.okf-` name
 (`IMPORT_RESERVED_NAME`). A missing `initBundle` throws
 `IMPORT_NO_INITBUNDLE`.
 
+**One import at a time holds `dir`.** Before it calls `initBundle`,
+`importFace` makes `dir` if it is absent, and creates the claim file
+`okf-import-claim` in it with an exclusive open. Only one open can create
+that file, so a second import into the same `dir` refuses by name
+(`IMPORT_DIR_CLAIMED`) before its `initBundle`, and removes nothing. The
+claim goes when the import ends. A claim that stays after a signal also
+refuses: when no import runs, remove `dir`.
+
 **Import-mode ingest** (`IngestWatcher.importNote`) ignores the emission
 manifest of the face, treats every `_rev` as absent (each head becomes the
 concept's first revision), and imports dot-segment paths such as
@@ -209,8 +217,10 @@ notes of the face, byte for byte, without `_rev` lines. `index.md` and
 `log.md` are regenerated faces that import never reads, so the check
 leaves them out. A difference throws `IMPORT_FIDELITY`, with every
 difference in the message and in `err.differences`. On any failure after
-the new vault exists, `importFace` closes it and removes what it created
-in `dir`. No verification copy is written to disk.
+the new vault exists, `importFace` closes it and removes what it created:
+each entry that it wrote in `dir` while it held the claim, the claim, and
+then each directory that it made for `dir`, when that directory is empty.
+An existing `dir` stays. No verification copy is written to disk.
 
 The fresh vault uses a **fresh writer keypair**: `@auto-okf/store` derives
 writer cores under a per-generation namespace derived from
@@ -270,7 +280,8 @@ asserted, a second generation that keeps even `_rev`, the values that
 the face cannot hold reported by `materialize`, dot-segment paths,
 exact body bytes, the carried `limits`, `rate` and `schemaVersion`, the
 encoded-op preflight and core rejections, a truncated note that fails
-`IMPORT_FIDELITY`, and the refusals); and an
+`IMPORT_FIDELITY`, the refusals, and a second import into the same `dir`
+that refuses `IMPORT_DIR_CLAIMED` while the first keeps its vault); and an
 **independent** OKF v0.1 conformance check (`okf/test/okf-conformance.js`,
 written from scratch against the OKF spec — it does not call this package's
 emitter).

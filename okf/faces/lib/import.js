@@ -16,13 +16,18 @@
 // face, byte for byte, without each `_rev` frontmatter line (§14). index.md
 // and log.md are regenerated faces, which import never reads (§9), so the
 // check leaves them out. A difference throws IMPORT_FIDELITY, and import
-// removes the new directory. No verification copy is written to disk.
+// removes what it created in the new directory. No verification copy is
+// written to disk.
+//
+// An import holds its directory with a claim file from before its
+// initBundle until it ends (claimDir), so a second import into the same
+// directory refuses by name and deletes nothing.
 //
 // This module imports no substrate (the rest of @auto-okf/faces does not
 // either). The @auto-okf/store `Bundle.init` is passed in as `initBundle`;
 // the CLI (okf/cli) wires the two together.
-import { mkdir, readdir, readFile, readlink, realpath, rm } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { mkdir, open, readdir, readFile, readlink, realpath, rm, rmdir } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { planBundle } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
 import { isReservedDotFile, isReservedFile } from './fsatomic.js'
@@ -33,6 +38,8 @@ const CONFLICT_COPY_RE = /\.conflict-[0-9a-f]{8,}\.md$/
 // The store pins a vault in this file (@auto-okf/store METADATA_FILE). faces
 // imports no substrate, so it names the file here.
 const PINNED_FILE = 'okf-vault.json'
+// An import holds its `dir` with this file while it runs (claimDir).
+const CLAIM_FILE = 'okf-import-claim'
 // The fields of the predecessor's metadata that the new vault carries.
 const CARRIED = ['limits', 'rate', 'schemaVersion']
 
@@ -80,6 +87,10 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  *   IMPORT_RESERVED_NAME           the face holds a note at a reserved `.okf-`
  *                                  name
  * Each of the last three carries `err.paths`.
+ *   IMPORT_DIR_CLAIMED             another import holds `dir`: its claim
+ *                                  file okf-import-claim exists. This
+ *                                  import writes no file, and it removes
+ *                                  nothing that another import wrote
  *
  * Failures after the new vault exists: IMPORT_NOT_ENCRYPTED (a key was
  * given and the new vault's metadata does not say encrypted),
@@ -87,9 +98,10 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  * `err.op`, and `err.bytes` and `err.limit` or `err.reason`), and
  * IMPORT_FIDELITY (`err.differences`: [{ path, kind }], kind 'missing',
  * 'extra' or 'differs'). On each, import closes the new vault and removes
- * what it created in `dir`: `dir` itself when import created it, else only
- * the entries that it added. Every error after the refusals carries
- * `err.warnings` and `err.counts`.
+ * what it created: each entry that it wrote in `dir` while it held the
+ * claim, and the claim. Then it removes each directory that it made, `dir`
+ * or a parent of it, when that directory is empty. An existing `dir` stays.
+ * Every error after the refusals carries `err.warnings` and `err.counts`.
  *
  * Returns { vault (the new vault, OPEN: the caller closes it), dir,
  *   generation, counts: { notes, imported }, warnings }. `notes` counts the
@@ -144,6 +156,7 @@ export async function importFace(initBundle, faceDir, dir, opts = {}) {
 
     const differences = compareNotes(face.notes, await renderedNotes(vault))
     if (differences.length > 0) throw fidelityError(face.root, differences)
+    await outDir.done()
     return { vault, dir: vaultDir, generation: vault.generation, counts, warnings }
   } catch (err) {
     if (err !== null && typeof err === 'object') {
@@ -227,6 +240,8 @@ async function renderedNotes(vault) {
  * IMPORT_DIR_NOT_EMPTY. A store in `dir` would take the import of the face,
  * which reverts the edits made there, or the encryption key, which makes it
  * unreadable. A pinned `dir` holds its metadata file, so this refuses it too.
+ * A `dir` that holds only CLAIM_FILE goes on to claimDir, which refuses it
+ * by name (IMPORT_DIR_CLAIMED).
  */
 async function refuseUsedDir(dir) {
   let names
@@ -243,14 +258,19 @@ async function refuseUsedDir(dir) {
       throw err
     }
   }
-  if (names !== null && names.length === 0) return
+  if (names !== null && names.every((name) => name === CLAIM_FILE)) return
+  throw usedDirError(dir, names)
+}
+
+/** IMPORT_DIR_NOT_EMPTY for `dir`: `names` are its entries, or null when it is not a directory. */
+function usedDirError(dir, names) {
   const what =
     names === null
       ? 'is not a directory'
       : names.includes(PINNED_FILE)
         ? `is already a vault (${PINNED_FILE} exists)`
         : `is not empty (${names.sort().slice(0, 4).join(', ')}${names.length > 4 ? ', ...' : ''})`
-  throw importError(
+  return importError(
     'IMPORT_DIR_NOT_EMPTY',
     `${dir} ${what}. import makes the new vault only in a new or empty directory, so it never writes into an ` +
       'existing store: the import would revert the edits made there, and an encryption key would make it ' +
@@ -259,22 +279,76 @@ async function refuseUsedDir(dir) {
 }
 
 /**
- * Claim `dir` before the new vault writes to it. release() removes only
- * what this import created: the directory (with any parent that mkdir
- * created for it) when it did not exist, else only the entries that were not
- * in it at claim time. importFace admits an existing `dir` only when it is
- * empty, so release() leaves such a directory as it was.
+ * Claim `dir` before the new vault writes to it (G3-P8 F01). mkdir makes
+ * `dir` when it is absent. Then an exclusive open ('wx') creates CLAIM_FILE
+ * in `dir`. The file system lets only one open create the file, so one
+ * import at a time holds `dir`, also when `dir` existed empty. Another
+ * import refuses by name (IMPORT_DIR_CLAIMED) before its initBundle, and
+ * deletes nothing. The holder then makes sure that `dir` holds nothing
+ * else.
+ *
+ * While the claim holds, every other entry in `dir` is one that this import
+ * created. release() removes those entries, then the claim. Then it removes
+ * `dir` and each parent that mkdir created, with rmdir, which removes only
+ * an empty directory. So release() never removes what another import
+ * wrote. done() removes the claim after a successful import.
  */
 async function claimDir(dir) {
-  const created = await mkdir(dir, { recursive: true }) // undefined when dir existed
-  const before = created === undefined ? new Set(await readdir(dir)) : null
+  const claim = join(dir, CLAIM_FILE)
+  let created // the first directory that mkdir created: `dir` or a parent
+  for (let attempt = 1; ; attempt++) {
+    created = (await mkdir(dir, { recursive: true })) ?? created
+    try {
+      await (await open(claim, 'wx')).close()
+      break
+    } catch (err) {
+      // ENOENT: the release of another import removed `dir` after the mkdir.
+      if (err.code === 'ENOENT' && attempt < 3) continue
+      await removeDirs(dir, created)
+      if (err.code !== 'EEXIST') throw err
+      throw importError(
+        'IMPORT_DIR_CLAIMED',
+        `${dir} is held by another import (${CLAIM_FILE} exists). An import holds <dir> until it ends. If no ` +
+          'import runs, a signal stopped an import before its cleanup: remove <dir> and run import again'
+      )
+    }
+  }
+  const others = (await readdir(dir)).filter((name) => name !== CLAIM_FILE)
+  if (others.length > 0) {
+    // `dir` got entries after refuseUsedDir, for example from an import
+    // that ended before this claim. They are not this import's, so it
+    // removes only its claim.
+    await rm(claim, { force: true })
+    await removeDirs(dir, created)
+    throw usedDirError(dir, others)
+  }
   return {
     async release() {
-      if (created !== undefined) return rm(created, { recursive: true, force: true })
       for (const name of await readdir(dir)) {
-        if (!before.has(name)) await rm(join(dir, name), { recursive: true, force: true })
+        if (name !== CLAIM_FILE) await rm(join(dir, name), { recursive: true, force: true })
       }
+      await rm(claim, { force: true })
+      await removeDirs(dir, created)
+    },
+    done: () => rm(claim, { force: true })
+  }
+}
+
+/**
+ * rmdir `dir`, then each parent of it up to `created`, the first directory
+ * that this import's mkdir created. It stops at the first directory that
+ * rmdir cannot remove, such as one that is not empty. No-op when `created`
+ * is undefined.
+ */
+async function removeDirs(dir, created) {
+  if (created === undefined) return
+  for (let d = dir; ; d = dirname(d)) {
+    try {
+      await rmdir(d)
+    } catch {
+      return
     }
+    if (d === created || dirname(d) === d) return
   }
 }
 

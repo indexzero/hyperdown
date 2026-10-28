@@ -784,6 +784,73 @@ test('T18 (T24): import refuses a pinned, non-empty or non-directory <dir> by na
   await old.close()
 })
 
+/**
+ * The schedule of G3-P8 F01, through the injected initBundle: import A
+ * pauses in its initBundle, after its claim on `dir`. Import B starts on
+ * the same `dir`. Then A goes on and returns its vault, and then B goes on,
+ * if it reached its initBundle. Returns { a, b, bInitialized }: `b` holds
+ * `res` or `err`.
+ */
+async function concurrentImports(face, dir) {
+  const gate = () => {
+    let open
+    const promise = new Promise((resolve) => (open = resolve))
+    return { promise, open }
+  }
+  const [enteredA, runA, enteredB, runB] = [gate(), gate(), gate(), gate()]
+  const paused = (entered, run) => async (d, opts) => {
+    entered.open()
+    await run.promise
+    return Bundle.init(d, opts)
+  }
+  const pA = importFace(paused(enteredA, runA), face, dir)
+  await enteredA.promise
+  const pB = importFace(paused(enteredB, runB), face, dir).then((res) => ({ res }), (err) => ({ err }))
+  // B settles before its initBundle, or it reaches its initBundle.
+  const early = await Promise.race([pB, enteredB.promise.then(() => null)])
+  runA.open()
+  const a = await pA
+  runB.open()
+  const b = await pB
+  if (b.res) await b.res.vault.close()
+  return { a, b, bInitialized: early === null }
+}
+
+test('G3-P8 F01 (T24): a second import into the same <dir> refuses by name before its initBundle and deletes nothing; the vault, pin and files of the first import stay, for an absent and an existing empty <dir>', async () => {
+  // Before the fix, both imports claimed <dir>: mkdir succeeds on an
+  // existing directory too. B failed in Bundle.init on the corestore lock,
+  // and its cleanup removed the vault that A had returned.
+  const old = await Bundle.init(await tmpDir('imp-race-vault'))
+  const { tag } = await old.createConcept('notes/a', 'note')
+  await old.setBody(tag, null, 'kept')
+  await old.update()
+  const base = await tmpDir('imp-race')
+  const face = join(base, 'face')
+  await materialize(old, face)
+  await old.close()
+
+  for (const [name, setup] of [['absent', async () => {}], ['empty', (dir) => mkdir(dir)]]) {
+    const dir = join(base, name)
+    await setup(dir)
+    const { a, b, bInitialized } = await concurrentImports(face, dir)
+    const files = await entries(dir)
+    await a.vault.close()
+    assert.deepEqual(files, ['CORESTORE', 'db', 'okf-vault.json'], `${name}: the files of the first import stay, and no claim is left`)
+    assert.ok(b.err, `${name}: the second import returned`)
+    assert.equal(b.err.code, 'IMPORT_DIR_CLAIMED', `${name}: ${b.err.stack}`)
+    assert.ok(b.err.message.includes(dir), b.err.message)
+    assert.equal(bInitialized, false, `${name}: the second import ran its initBundle`)
+    const reopened = await Bundle.open(dir)
+    assert.equal((await liveConcepts(reopened)).get(tag).headText, 'kept', `${name}: the vault of the first import opens`)
+    await reopened.close()
+  }
+
+  // A signal stopped an import after its claim: a rerun refuses by name.
+  await writeTree(join(base, 'stopped'), new Map([['okf-import-claim', '']]))
+  const err = await expectRefusal(() => importFace(Bundle.init, face, join(base, 'stopped')), 'IMPORT_DIR_CLAIMED', base, [face, join(base, 'stopped')])
+  assert.ok(err.message.includes(join(base, 'stopped')), err.message)
+})
+
 test('T24: the face holds each head only, so a body conflict open in the predecessor crosses as its head', async () => {
   // The face shows no body conflict (§9 materializes the head). So the
   // operator resolves open conflicts before the materialize (`auto-okf

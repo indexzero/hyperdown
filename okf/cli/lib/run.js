@@ -908,9 +908,11 @@ async function cmdFlags({ args, flags }) {
 /**
  * T24: `import <face-dir> <dir>` (SPEC §10). importFace refuses a pinned,
  * non-empty or non-directory <dir>, and a face that holds a conflicted copy,
- * a reserved .okf- note or a symlink, before it writes anything. It checks
- * the new vault against the face and removes <dir> on a difference
- * (IMPORT_FIDELITY). import reads plaintext and writes none, so it prints no
+ * a reserved .okf- note or a symlink, before it writes anything. It claims
+ * <dir> before it creates the vault, so a second import into the same <dir>
+ * refuses (IMPORT_DIR_CLAIMED, G3-P8 F01). It checks the new vault against
+ * the face, and on a difference (IMPORT_FIDELITY) it removes only what it
+ * created. import reads plaintext and writes none, so it prints no
  * plaintext warning.
  */
 async function cmdImport({ args, flags }) {
