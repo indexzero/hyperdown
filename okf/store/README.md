@@ -280,7 +280,8 @@ hyperswarm. The vault key is not a capability to connect:
   value that is not an array, a bad key or a key listed twice fails
   `VAULT_BAD_SWARM_ALLOW` before the swarm exists. A second `swarm()` call
   adds its keys. `saveLocalAllow(dir, keys)` and `loadLocalAllow(dir)`
-  keep the list in `<dir>/okf-swarm-allow.json` (`LOCAL_ALLOW_FILE`).
+  keep the list in `<dir>/okf-swarm-allow.json` (`LOCAL_ALLOW_FILE`), for
+  `auto-okf join --swarm-allow` and `auto-okf watch --swarm`.
 - **The Bundle owns the swarm.** `leaveSwarm()` and `close()` leave the
   topic and the listed peers, clear the local list, and destroy it.
 
@@ -300,8 +301,9 @@ Two shapes of membership use the same swarm:
    swarm key. So a late joiner needs a peer of the invite online, such as
    the creator, or it never learns its admission. When none is online,
    the indexer that admitted the joiner hands it its swarm key with the
-   invite, and the joiner passes that key in `allow`. Never admit a key
-   that a discovery alone names.
+   invite, and the joiner passes that key in `allow`
+   (`auto-okf join --swarm-allow <hex64>`). Never admit a key that a
+   discovery alone names.
 
 ## Tests
 

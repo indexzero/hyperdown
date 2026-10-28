@@ -623,6 +623,133 @@ test('bootstrap runs a private DHT node, and watch --swarm --bootstrap replicate
   assert.equal(await node.exited, 0, node.log)
 })
 
+test('join --swarm-allow keeps a local list of swarm keys apart from the invite, and refuses a bad or repeated key (G3-P9 F03)', async () => {
+  const base = await tmpDir('join-allow')
+  const origin = join(base, 'origin')
+  const init = await cli(['init', origin])
+  const vaultKey = init.stdout.match(KEY_LINE)[1]
+  const k1 = 'ab'.repeat(32)
+  const k2 = '12'.repeat(32)
+
+  const peer = join(base, 'peer')
+  const joined = await cli([
+    'join', peer, vaultKey, '--metadata', join(origin, 'okf-vault.json'),
+    '--swarm-allow', k1, '--swarm-allow', k2.toUpperCase()
+  ])
+  assert.equal(joined.code, 0, joined.stderr)
+  assert.match(joined.stdout, new RegExp(`local allow: {2}${k2}`))
+  assert.match(joined.stdout, new RegExp(`local allow: {2}${k1}`))
+  // This peer only: the local list is its own file, and the invite does
+  // not change.
+  assert.deepEqual(JSON.parse(await readFile(join(peer, 'okf-swarm-allow.json'), 'utf8')), { allow: [k2, k1] })
+  assert.deepEqual(await invite(peer), await invite(origin), 'the pinned metadata is the invite')
+  assert.equal((await invite(peer)).swarm.allow.includes(k1), false)
+
+  // A later join on the pinned directory states the list again.
+  const again = await cli(['join', peer, '--swarm-allow', k1])
+  assert.equal(again.code, 0, again.stderr)
+  assert.deepEqual(JSON.parse(await readFile(join(peer, 'okf-swarm-allow.json'), 'utf8')), { allow: [k1] })
+
+  for (const [flags, re] of [
+    [['--swarm-allow', 'nothex'], /--swarm-allow must be 64 hex characters/],
+    [['--swarm-allow', `${k1},${k2}`], /--swarm-allow must be 64 hex characters/],
+    [['--swarm-allow', k1, '--swarm-allow', k1.toUpperCase()], new RegExp(`--swarm-allow lists ${k1} twice`)]
+  ]) {
+    const dir = join(base, `bad-${flags.length}-${flags[1].length}`)
+    const bad = await cli(['join', dir, vaultKey, '--metadata', join(origin, 'okf-vault.json'), ...flags])
+    assert.equal(bad.code, 2, `${flags.join(' ')}: ${bad.stderr}`)
+    assert.match(bad.stderr, re)
+    await assert.rejects(access(join(dir, 'okf-vault.json')), 'nothing is pinned')
+    await assert.rejects(access(join(dir, 'okf-swarm-allow.json')), 'no local list is written')
+  }
+})
+
+test('watch --swarm admits the local list of join: a late joiner whose creator is offline connects to the admitting indexer and becomes writable (G3-P9 F03)', { timeout: 180000 }, async (t) => {
+  const base = await tmpDir('offline-creator')
+  const origin = join(base, 'origin')
+  const late = join(base, 'late')
+  const lateBundle = join(base, 'late-bundle')
+  const port = await freeUdpPort()
+  const node = foreground(['bootstrap', '--port', String(port)])
+  let watch = null
+  let indexer = null
+  t.after(async () => {
+    if (indexer) await indexer.close()
+    for (const p of [watch, node]) {
+      if (p && p.child.exitCode === null) p.child.kill('SIGINT')
+    }
+  })
+  await waitFor(() => node.log.includes('bootstrap node: 127.0.0.1:' + port), 30000)
+
+  // The creator admits a second indexer, hands it the ops over a direct
+  // stream, and goes offline for good.
+  const init = await cli(['init', origin])
+  const vaultKey = init.stdout.match(KEY_LINE)[1]
+  indexer = await Bundle.join(join(base, 'indexer'), Buffer.from(vaultKey, 'hex'), { metadata: await invite(origin) })
+  const indexerSwarmKey = indexer.swarmKey.toString('hex')
+  const admitted = await cli([
+    'add-writer', origin, indexer.localKey.toString('hex'), '--indexer', '--swarm-key', indexerSwarmKey
+  ])
+  assert.equal(admitted.code, 0, admitted.stderr)
+  const o = await Bundle.open(origin)
+  const s1 = o.replicate(true)
+  const s2 = indexer.replicate(false)
+  s1.on('error', () => {})
+  s2.on('error', () => {})
+  s1.pipe(s2).pipe(s1)
+  const deadline = Date.now() + 30000
+  while (!indexer.isIndexer && Date.now() < deadline) {
+    await indexer.update()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  assert.ok(indexer.isIndexer, 'the second indexer folds its admission')
+  s1.destroy()
+  s2.destroy()
+  await o.close()
+
+  // The late joiner gets the invite and the indexer's swarm key. The
+  // indexer admits it.
+  const joined = await cli([
+    'join', late, vaultKey, '--metadata', join(origin, 'okf-vault.json'), '--swarm-allow', indexerSwarmKey
+  ])
+  assert.equal(joined.code, 0, joined.stderr)
+  await indexer.addWriter(Buffer.from(joined.stdout.match(WRITER_LINE)[1], 'hex'), {
+    swarmKey: joined.stdout.match(SWARM_LINE)[1]
+  })
+  await indexer.update()
+  await indexer.swarm({ bootstrap: [`127.0.0.1:${port}`] })
+
+  await mkdir(lateBundle, { recursive: true })
+  watch = foreground(['watch', late, lateBundle, '--swarm', '--bootstrap', `127.0.0.1:${port}`])
+  await waitFor(() => watch.log.includes('watching'), 30000)
+  assert.match(watch.log, /local allow: {2}1 key/)
+
+  // A note ingests once the joiner is writable. Until then each ingest
+  // fails Not writable, so the test writes a new note every second.
+  let n = 0
+  const ingested = () => /ingested late-(\d+)\.md/.exec(watch.log)
+  const writeUntil = Date.now() + 60000
+  while (!ingested() && Date.now() < writeUntil) {
+    await writeFile(join(lateBundle, `late-${n}.md`), `---\ntype: note\ntitle: Late ${n}\n---\nFrom the late joiner.\n`)
+    n++
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+  assert.ok(ingested(), `the late joiner becomes writable and ingests a note:\n${watch.log}`)
+  const path = `late-${ingested()[1]}`
+  const foldUntil = Date.now() + 30000
+  let id
+  while (!(id = await indexer.val(K.path(path))) && Date.now() < foldUntil) {
+    await indexer.update()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  assert.ok(id, "the indexer folds the late joiner's note over the swarm")
+
+  watch.child.kill('SIGINT')
+  assert.equal(await watch.exited, 0, watch.log)
+  node.child.kill('SIGINT')
+  assert.equal(await node.exited, 0, node.log)
+})
+
 /**
  * Seed a body conflict single-writer via the unknown-base rule (SPEC §5): a
  * SetBody citing a base absent from the concept's revisions is stored and

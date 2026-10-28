@@ -23,7 +23,15 @@ import { join, relative, resolve, sep } from 'node:path'
 import b4a from 'b4a'
 import { command, flag, arg, rest, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
-import { Bundle, METADATA_FILE, loadMetadata, startBootstrapNode } from '@auto-okf/store'
+import {
+  Bundle,
+  METADATA_FILE,
+  LOCAL_ALLOW_FILE,
+  loadMetadata,
+  loadLocalAllow,
+  saveLocalAllow,
+  startBootstrapNode
+} from '@auto-okf/store'
 import { materialize, createIngestWatcher, wanted, importFace, status } from '@auto-okf/faces'
 
 const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
@@ -154,6 +162,10 @@ function buildCli() {
       arg('[vault-key]', 'vault key (64 hex chars; optional when <dir> is pinned)'),
       flag('--encryption-key <hex64>', 'encrypt the vault with this key (64 hex chars)'),
       flag('--metadata <invite.json>', 'invite metadata file'),
+      flag(
+        '--swarm-allow <hex64>',
+        `a swarm key that this peer alone admits and dials, such as the key of the indexer that admitted it (repeatable; kept in <dir>/${LOCAL_ALLOW_FILE}, never in the invite)`
+      ).multiple(),
       requiredArgs('<dir>')
     ),
     sub(
@@ -368,6 +380,21 @@ function swarmAllow(value) {
 }
 
 /**
+ * `join --swarm-allow <hex64>` (G3-P9 F03): each value is one 64-hex swarm
+ * key, and no key twice. A bad or repeated key is a usage error, before
+ * the vault opens.
+ */
+function localAllow(values) {
+  const keys = []
+  for (const value of values) {
+    const hex = b4a.toString(hexKey(value, '--swarm-allow'), 'hex')
+    if (keys.includes(hex)) throw new UsageError(`--swarm-allow lists ${hex} twice`)
+    keys.push(hex)
+  }
+  return keys
+}
+
+/**
  * The swarm options of `watch` (T25): null without --swarm. With --swarm,
  * exactly one DHT: --bootstrap (a private DHT) or --public-dht (the
  * commons, explicit opt-in). Anything else is a usage error, named, and it
@@ -476,6 +503,7 @@ async function cmdInit({ args, flags }) {
 
 async function cmdJoin({ args, flags }) {
   const { dir, vaultKey: key } = args
+  const allow = flags.swarmAllow !== undefined ? localAllow([].concat(flags.swarmAllow)) : null
   await refuseSiblingVault(dir)
   const opts = {}
   if (flags.encryptionKey) {
@@ -494,6 +522,12 @@ async function cmdJoin({ args, flags }) {
     : await Bundle.join(dir, hexKey(key, 'vault key'), opts)
   try {
     printIdentity(vault)
+    if (allow !== null) {
+      // G3-P9 F03: this peer's own list, apart from the invite. It replaces
+      // the list that an earlier join wrote.
+      for (const hex of await saveLocalAllow(dir, allow)) console.log(`local allow:  ${hex}`)
+      console.log(`(this peer alone admits these keys: ${join(dir, LOCAL_ALLOW_FILE)}, never the invite)`)
+    }
     console.log('hand both keys to an indexer (`auto-okf add-writer <dir> <writer-key> --swarm-key <swarm-key>`),')
     console.log('then replicate with `auto-okf watch <dir> <bundle-dir> --swarm --bootstrap <host:port>`')
     return 0
@@ -776,7 +810,9 @@ async function cmdWatch({ args, flags }) {
     watcher.on('error', (err) => process.stderr.write(`watch error: ${errorText(err)}\n`))
     vault.on('error', (err) => process.stderr.write(`vault error: ${err.message}\n`))
     if (swarmOpts) {
-      await vault.swarm(swarmOpts)
+      // G3-P9 F03: the local list that `join --swarm-allow` kept, this peer only.
+      const allow = await loadLocalAllow(dir)
+      await vault.swarm({ ...swarmOpts, allow })
       swarmed = true
       console.log(
         swarmOpts.publicDht
@@ -784,8 +820,9 @@ async function cmdWatch({ args, flags }) {
           : `joined the private swarm on the vault's auto-okf/2 topic (bootstrap ${swarmOpts.bootstrap.join(',')})`
       )
       console.log(
-        `swarm key:   ${b4a.toString(vault.swarmKey, 'hex')} (the firewall admits only the keys of the invite and of live writers)`
+        `swarm key:   ${b4a.toString(vault.swarmKey, 'hex')} (the firewall admits only the keys of the invite, of live writers and of the local list)`
       )
+      if (allow.length > 0) console.log(`local allow:  ${allow.length} key(s) from ${join(dir, LOCAL_ALLOW_FILE)}`)
     }
     await watcher.scan() // pick up edits made while the watcher was down
     console.log(`watching ${bundleDir} (foreground; Ctrl-C to stop)`)
