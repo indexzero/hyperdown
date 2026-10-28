@@ -66,10 +66,10 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | command | what it does |
 | --- | --- |
 | `init <dir>` | create a new vault at `<dir>`; prints the vault key, this peer's writer key and swarm key, and the generation namespace; refuses a dir already pinned. `<dir>/okf-vault.json` is the invite: share it with the vault key. `--swarm-allow <hex64,...>` pins those swarm keys in the invite (`metadata.swarm.allow`); the creator's own swarm key is always pinned. See [Private swarm](#private-swarm) |
-| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry the invite (a private swarm needs it: it names the swarm keys that the peer can reach first); when `<dir>` is already pinned the key is optional (reopen + reprint keys). `--swarm-allow <hex64>` (repeatable) keeps a local list of swarm keys in `<dir>/okf-swarm-allow.json` that this peer alone admits and dials, such as the key of the indexer that admitted it; it is never written to the invite, and each `join --swarm-allow` replaces the list (see [Private swarm](#private-swarm)). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:858-866`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key and swarm key to an indexer (`add-writer --swarm-key`), then replicate (`watch --swarm --bootstrap`). See [Joining a vault](#joining-a-vault) |
-| `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8). `--swarm-key` puts the writer's swarm key on its `gov/writer` record, and the swarm firewall of every peer admits it once it folds the op |
+| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry the invite (a private swarm needs it: it names the swarm keys that the peer can reach first); when `<dir>` is already pinned the key is optional (reopen + reprint keys). `--swarm-allow <hex64>` (repeatable) keeps a local list of swarm keys in `<dir>/okf-swarm-allow.json` that this peer alone admits and dials, such as the key of the indexer that admitted it; it is never written to the invite, and each `join --swarm-allow` replaces the list (see [Private swarm](#private-swarm)). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:884-892`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key and swarm key to an indexer (`add-writer --swarm-key`), then replicate (`watch --swarm --bootstrap`). See [Joining a vault](#joining-a-vault) |
+| `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8). An `add-writer` that apply rejects still grants the key at the substrate (`okf/core/lib/apply.js:375`): the key becomes writable, and apply rejects each of its ops (see [Joining a vault](#joining-a-vault)). `--swarm-key` puts the writer's swarm key on its `gov/writer` record, and the swarm firewall of every peer admits it once it folds the op |
 | `keys <dir>` | print the vault key, this peer's writer key and its swarm key. A `<dir>` without a vault prints the swarm key only: it already exists (the store derives it from the directory's corestore, which `keys` creates when it is new), so a pre-provisioned fleet can collect every key before `init --swarm-allow` |
-| `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
+| `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8). It stops cooperating clients only: a revoked key with a modified client can keep writing until the next generation. Each peer that folds the op takes the writer's swarm key out of its allowlist. The full eviction is a new generation (see [SECURITY_MODEL.md](../SECURITY_MODEL.md), the eviction ladder) |
 | `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. A value that the face cannot hold (a scalar `null`, a second `type` value, a reference or an object) is a `warning:` line that names the note, the key and the `_id`, then an `error:` line, and exit 1: fix it in the vault before `import` (SPEC §10). For an encrypted vault the line holds no value. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
 | `ingest <dir> <bundle-dir> [paths…]` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9). Trailing bundle-relative paths restrict the scan to exactly those concept files (ADR-001 — concurrent-writer politeness; the shell expands globs): a named path that does not exist, escapes the bundle root, or is not a `.md` file exits 1 naming the path, with zero ops appended. Zero paths = full scan, unchanged. `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default). Each op that core rejects is an `error:` line on stderr that names the file, the op and core's reason, for example `error: notes/x.md: core rejected its set-body op (policy-namespace), and the file stays pending`, and the run exits 1. Ingest does not record such a file, so it stays pending, and `materialize` keeps it. A new file that stays pending keeps the concept that its ingest created: `<bundle-dir>/.okf-pending.json` records it, and a later ingest reuses it. A `DeleteConcept` that core rejects is such a line too, and it ends `and the delete stays pending`: ingest keeps the emission manifest entry of the deleted file, so the next `ingest --confirm-deletes` tries the delete again. Sibling files still ingest |
 | `watch <dir> <bundle-dir> [--swarm --bootstrap <host:port,...> \| --swarm --public-dht]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also replicates over a swarm whose firewall admits only members' swarm keys and the local list of `join --swarm-allow` (see [Private swarm](#private-swarm)). `--swarm` needs exactly one DHT: `--bootstrap`, the nodes of a private DHT (`auto-okf bootstrap`), or `--public-dht`, the public DHT (the commons). Without either, `watch --swarm` refuses by name (exit 2) before it opens the vault. `--confirm-deletes`, `--debounce <ms>`. An op that core rejects prints the `error:` line of `ingest`, and `watch` keeps running. No daemon — stop with Ctrl-C |
@@ -77,7 +77,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
-| `import <face-dir> <dir>` | a generation's second step (§10): create a new vault at `<dir>` and fill it from the notes of a face, such as one that `materialize` wrote, with `_id` adoption. Live state and identity survive; history is shed. `<dir>` must be new or empty. `--metadata <okf-vault.json>` carries `limits`, `rate` and `schemaVersion` from the predecessor's metadata; `--predecessor <vault-key>` records the predecessor; `--encryption-key <hex64>` encrypts the new vault. import refuses a face that holds a conflicted copy, and checks the new vault against the face (`IMPORT_FIDELITY`, exit 1). The face is never written. See [Generations](#generations-materialize-then-import) |
+| `import <face-dir> <dir>` | a generation's second step (§10): create a new vault at `<dir>` and fill it from the notes of a face, such as one that `materialize` wrote, with `_id` adoption. Live state and identity survive; history is shed. `<dir>` must be new or empty. `--metadata <okf-vault.json>` carries `limits`, `rate` and `schemaVersion` from the predecessor's metadata, and never the swarm allowlist; `--predecessor <vault-key>` records the predecessor; `--encryption-key <hex64>` encrypts the new vault. import refuses a face that holds a conflicted copy, and checks the new vault against the face (`IMPORT_FIDELITY`, exit 1). The face is never written. See [Generations](#generations-materialize-then-import) |
 | `resolve <dir> <id> --keep <revHash> [--supersede <h>…] [--text <s>]` | resolve open body conflicts on `<id>`: pin the head to `--keep`, clearing the cited `flag/conflict` entries (§5). `--supersede` is repeatable |
 | `undelete <dir> <id>` | restore a tombstoned concept (writes the `flag/undelete` audit, §8) |
 
@@ -88,9 +88,9 @@ There is no content-write command: content flows in through `ingest`/`watch`
 
 `join` prints this peer's own writer key and swarm key. The store refuses
 every append of the peer until autobee adds that key as a writer
-(`okf/store/lib/bundle.js:858-866`). The ops of the peer take effect only
+(`okf/store/lib/bundle.js:884-892`). The ops of the peer take effect only
 once an indexer admits the key with `add-writer`
-(`okf/core/lib/apply.js:426`, `:533-546`):
+(`okf/core/lib/apply.js:426`, `:554-575`):
 
 ```sh
 $ auto-okf join ./peer <vault-key> --metadata okf-vault.json
@@ -106,7 +106,7 @@ $ auto-okf add-writer ./vault 0cf03548… --swarm-key 9e41d2a7…
 
 Until the peer has replicated an `add-writer` op that names its key, the
 store refuses every append on it (`VAULT_NOT_WRITABLE`,
-`okf/store/lib/bundle.js:858-866`), and nothing is appended. `ingest`,
+`okf/store/lib/bundle.js:884-892`), and nothing is appended. `ingest`,
 `add-writer`, `remove-writer`, `resolve` and `undelete` then exit 1 when
 they would append an op. `watch` exits 1 the same way when its first scan
 finds an edit. After that it prints each refusal as a `watch error:` line
@@ -317,7 +317,8 @@ the notes of the face, byte for byte, without `_rev` lines (`index.md` and
 `log.md` are not compared). A difference exits 1 with `IMPORT_FIDELITY`,
 which names each difference. On each failure, `import` removes only what
 it created while it held the claim: the entries that it wrote in `<dir>`,
-the claim, and `<dir>` itself when `import` made it. On success it prints
+the claim, and `<dir>` itself when `import` made it. An existing empty
+`<dir>` stays, empty. On success it prints
 the note counts
 (`notes: <n> read, <n> imported`), a `fidelity:` line, and the file that a
 joiner passes as `--metadata`: a joiner of the new vault needs it to derive
@@ -326,6 +327,14 @@ the same generation namespace.
 The face holds the head body of each concept only. So resolve each open
 `flag/conflict` in the vault before you materialize the face, or the
 losing body stays behind in the old vault.
+
+A generation is the eviction point, so `--metadata` never carries the
+swarm allowlist (`metadata.swarm.allow`) into the new vault
+(`okf/faces/lib/import.js:44`). The invite of the new vault lists only
+the swarm key of the peer that ran `import`. Admit each writer of the new
+vault with `add-writer <dir> <writer-key> --swarm-key <hex64>`, and leave
+out each key that you evict. Each joiner needs the new `okf-vault.json`
+as its `--metadata`.
 
 A signal such as Ctrl-C stops `import` before its cleanup, so `<dir>` can
 keep a partial vault and the claim. A rerun refuses that `<dir>` by name
@@ -375,9 +384,15 @@ per command) and exits 0.
   generation of an encrypted vault, for the new vault. The store pins the
   encrypted bit in vault metadata, and autobee keeps the key in the local
   core's user data, so a reopen needs no key.
-- A single body may not exceed `maxOpBytes` — 65,536 bytes; `ingest` refuses
-  an oversize file by name (exit 1, siblings unaffected) — split the document
-  into smaller linked concepts.
+- A body travels in one `set-body` op, and the encoded op may not exceed
+  `maxOpBytes` (65,536 bytes by default). The op is the body plus its
+  `_id`, its base and its clock, and the clock grows with each admitted
+  writer (SPEC §8). `ingest` encodes the op before it appends anything
+  (`okf/faces/lib/ingest.js:355-359`), and
+  refuses an oversize file by name (exit 1, siblings unaffected). Split
+  the document into smaller linked concepts. Test: "the oversize preflight
+  encodes the set-body op: a body just below maxOpBytes whose op is over
+  it appends nothing and stays pending (D-048 F02)".
 - `auto-okf` refuses vault-ld storage by marker file (`vault-ld.json`),
   naming the right tool (exit 1, storage untouched); `autovault-ld` refuses
   `okf-vault.json` symmetrically — the twin CLIs never open each other's
