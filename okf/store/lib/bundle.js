@@ -124,16 +124,16 @@ const SWARM_KEY_NAME = 'auto-okf/swarm'
 // firewall rejected. hyperswarm bans each rejected key (index.js:315-319),
 // puts it in swarm.peers (:418-424) and never collects a banned record
 // (lib/peer-info.js:113-115), so a flood of fresh keys grows the swarm
-// without a bound. A ban record changes no decision: the firewall decides
-// every attempt, banned or not (index.js:204-208, :309-322), and an
+// without a bound. A ban changes no outcome: hyperswarm rejects a banned
+// key before the firewall runs (index.js:199-202, :312-313), and the
+// firewall rejects it again once the ban is gone (:204-208, :315-319). An
 // incoming attempt costs one handshake either way (hyperdht
-// lib/server.js:239-262). The record serves one honest case: a joiner that
-// dials before its admission folds is unbanned at once when it comes in
-// (_allowPeer). So the bound needs room only for keys that come back soon.
-// 64 is hyperswarm's default maxPeers (index.js:13), the most connections
-// that a swarm keeps, so the table never holds more rejected peers than
-// the swarm holds admitted ones. Past the bound the oldest ban is lifted
-// and its record is freed (_recordBan).
+// lib/server.js:239-262). A ban serves one honest case: a joiner that dials
+// before its admission folds is unbanned at once when it comes in
+// (_allowPeer), so the bound needs room only for keys that come back soon.
+// 64 is hyperswarm's default maxPeers (index.js:13), its default bound on
+// connections: the table holds no more rejected peers than a swarm holds
+// admitted ones. Past the bound the oldest ban is lifted (_recordBan).
 const MAX_BANNED_PEERS = 64
 
 // Defaults for the opt-in append backpressure (vault-ld M2 ancestry, the
