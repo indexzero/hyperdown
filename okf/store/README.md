@@ -113,8 +113,12 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
   `createApply` config slice (`applyConfig`), identical on every peer (I2).
 - **`swarm`** (`allow`) — a closed group. `allow` is the static allowlist
   of the swarm firewall: swarm keys, 64 lowercase hex each, sorted, each
-  key once (`createMetadata` sorts and dedupes it). The creator of a vault
-  always adds its own swarm key. See [Replication](#replication). Apply
+  key once. `createMetadata` takes 32 bytes or 64 hex characters in any
+  case, and sorts the list. It refuses a value that is not an array, a bad
+  key and a key listed twice, each with `VAULT_BAD_SWARM_ALLOW` and the
+  field name. The empty list applies only when `allow` is absent. The
+  creator of a vault always adds its own swarm key, after that check, and
+  once also when the list names it. See [Replication](#replication). Apply
   does not read it, so `applyConfig` leaves it out.
 - `schemaVersion`, `encrypted` — pinned with the rest. `encrypted` is
   `true` for a vault made with an `encryptionKey`.

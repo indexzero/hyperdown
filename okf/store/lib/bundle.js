@@ -98,7 +98,9 @@ import {
   metadataHash,
   applyConfig,
   generationId,
-  keyHex
+  keyHex,
+  swarmKeyHex,
+  swarmKeyList
 } from './metadata.js'
 
 // §10: writer cores (and autobee's system/view cores) derive under this
@@ -400,12 +402,22 @@ export class Bundle extends EventEmitter {
     this._applyBarrierResolve()
   }
 
-  /** The metadata input, with the creator's own swarm key in swarm.allow (T25). */
+  /**
+   * The metadata input, with the creator's own swarm key in swarm.allow
+   * (T25). A supplied list is validated first (G3-P9 F04): a value that is
+   * not an array, a bad key or a key listed twice fails
+   * VAULT_BAD_SWARM_ALLOW by name. The empty list applies only when allow
+   * is absent. The creator's key goes in once, also when the list names it.
+   * A swarm that is not an object passes through to createMetadata, which
+   * refuses it by name.
+   */
   _withOwnSwarmKey(creator, input) {
     if (!creator) return input
-    const swarm = input.swarm || {}
-    const allow = Array.isArray(swarm.allow) ? swarm.allow : []
-    return { ...input, swarm: { ...swarm, allow: [...allow, this._swarmKeyPair.publicKey] } }
+    const swarm = input.swarm === undefined ? {} : input.swarm
+    if (swarm === null || typeof swarm !== 'object' || Array.isArray(swarm)) return input
+    const allow = swarm.allow === undefined ? [] : swarmKeyList(swarm.allow, 'metadata.swarm.allow')
+    const own = b4a.toString(this._swarmKeyPair.publicKey, 'hex')
+    return { ...input, swarm: { ...swarm, allow: allow.includes(own) ? allow : [...allow, own] } }
   }
 
   // ---------- apply wiring (core apply over the autobee contract) ----------
@@ -1319,9 +1331,8 @@ function swarmDhtOptions(bootstrap, publicDht) {
 
 /** A 32-byte swarm key from 32 bytes or 64 hex characters, else null. */
 function swarmKeyBuffer(key) {
-  if (key instanceof Uint8Array) return key.byteLength === 32 ? b4a.from(key) : null
-  if (typeof key === 'string' && /^[0-9a-f]{64}$/i.test(key)) return b4a.from(key.toLowerCase(), 'hex')
-  return null
+  const hex = swarmKeyHex(key)
+  return hex === null ? null : b4a.from(hex, 'hex')
 }
 
 function closedError() {

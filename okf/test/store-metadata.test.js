@@ -8,7 +8,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { writeFile, readFile } from 'node:fs/promises'
+import { access, writeFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   Bundle,
@@ -126,12 +126,13 @@ test('validateMetadata accepts a version 2 document whose rate holds only defaul
 test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys, and it is in the hash (T25)', () => {
   const k1 = '1'.repeat(64)
   const k2 = 'ab'.repeat(32)
-  // the default is an empty allowlist
+  // the default is an empty allowlist, when the field is absent
   assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64) }).swarm, { allow: [] })
-  // createMetadata lowercases, sorts and dedupes, so peers pin the same bytes
+  assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64), swarm: {} }).swarm, { allow: [] })
+  // createMetadata lowercases and sorts, so peers pin the same bytes
   const meta = createMetadata({
     genesisKey: 'a'.repeat(64),
-    swarm: { allow: [k2.toUpperCase(), k1, Buffer.from(k2, 'hex')] }
+    swarm: { allow: [k2.toUpperCase(), Buffer.from(k1, 'hex')] }
   })
   assert.deepEqual(meta.swarm, { allow: [k1, k2] })
   assert.notEqual(
@@ -158,10 +159,65 @@ test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys,
     /metadata\.swarm\.extra is not a metadata version 2 field/,
     'no input can add a key to the group'
   )
-  assert.throws(
-    () => createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: ['not-a-key'] } }),
-    /metadata\.swarm\.allow must be an array of 64-char lowercase-hex keys/
-  )
+  // G3-P9 F04: a supplied list is never changed in silence. A value that is
+  // not an array, a bad key and a key listed twice are refused by name.
+  for (const [allow, re] of [
+    ['not-an-array', /metadata\.swarm\.allow must be an array of swarm keys/],
+    [null, /metadata\.swarm\.allow must be an array of swarm keys/],
+    [{ 0: k1 }, /metadata\.swarm\.allow must be an array of swarm keys/],
+    [['not-a-key'], /metadata\.swarm\.allow\[0\] is not a swarm key/],
+    [[k1, Buffer.alloc(31)], /metadata\.swarm\.allow\[1\] is not a swarm key/],
+    [[k2.toUpperCase(), k1, Buffer.from(k2, 'hex')], new RegExp(`metadata\\.swarm\\.allow lists the swarm key ${k2} twice`)]
+  ]) {
+    assert.throws(
+      () => createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow } }),
+      (err) => err.code === 'VAULT_BAD_SWARM_ALLOW' && re.test(err.message),
+      `refused: ${JSON.stringify(allow)}`
+    )
+  }
+  for (const swarm of [null, 'x', []]) {
+    assert.throws(
+      () => createMetadata({ genesisKey: 'a'.repeat(64), swarm }),
+      /metadata\.swarm must be an object with an allow list/,
+      `refused: swarm ${JSON.stringify(swarm)}`
+    )
+  }
+})
+
+test('Bundle.init refuses a malformed metadata.swarm.allow by name, before it adds the creator key (G3-P9 F04)', async (t) => {
+  const k1 = 'ab'.repeat(32)
+  const cases = [
+    [{ allow: 'not-an-array' }, /metadata\.swarm\.allow must be an array of swarm keys/],
+    [{ allow: null }, /metadata\.swarm\.allow must be an array of swarm keys/],
+    [{ allow: [k1, 'xyz'] }, /metadata\.swarm\.allow\[1\] is not a swarm key/],
+    [{ allow: [k1, k1.toUpperCase()] }, new RegExp(`metadata\\.swarm\\.allow lists the swarm key ${k1} twice`)]
+  ]
+  for (const [swarm, re] of cases) {
+    const dir = await tmpDir('init-bad-allow')
+    await assert.rejects(
+      Bundle.init(dir, { metadata: { swarm } }),
+      (err) => err.code === 'VAULT_BAD_SWARM_ALLOW' && re.test(err.message),
+      `refused: ${JSON.stringify(swarm)}`
+    )
+    await assert.rejects(access(join(dir, METADATA_FILE)), `nothing is pinned for ${JSON.stringify(swarm)}`)
+  }
+  for (const swarm of [null, 'x']) {
+    const dir = await tmpDir('init-bad-swarm')
+    await assert.rejects(Bundle.init(dir, { metadata: { swarm } }), /metadata\.swarm must be an object with an allow list/)
+    await assert.rejects(access(join(dir, METADATA_FILE)), `nothing is pinned for swarm ${JSON.stringify(swarm)}`)
+  }
+
+  // The empty default applies only when the field is absent.
+  const bare = await Bundle.init(await tmpDir('init-no-allow'), { metadata: { swarm: {} } })
+  t.after(() => bare.close())
+  assert.deepEqual(bare.metadata.swarm.allow, [bare.swarmKey.toString('hex')], 'the creator key alone')
+
+  // A fleet list can name the creator: its own key is no duplicate.
+  const dir = await tmpDir('init-own-listed')
+  const own = (await Bundle.readSwarmKey(dir)).toString('hex')
+  const listed = await Bundle.init(dir, { metadata: { swarm: { allow: [k1, own] } } })
+  t.after(() => listed.close())
+  assert.deepEqual(listed.metadata.swarm.allow, [k1, own].sort())
 })
 
 test('limits and rate are closed: a key that metadata version 2 does not define is refused', async (t) => {

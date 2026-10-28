@@ -90,7 +90,7 @@ export function createMetadata(input = {}) {
     predecessorKey,
     limits: { ...METADATA_DEFAULTS.limits, ...(input.limits || {}) },
     rate: { ...METADATA_DEFAULTS.rate, ...(input.rate || {}) },
-    swarm: { ...(input.swarm || {}), allow: normalizeAllow(input.swarm && input.swarm.allow) },
+    swarm: swarmGroup(input.swarm),
     schemaVersion: input.schemaVersion ?? METADATA_DEFAULTS.schemaVersion,
     encrypted: input.encrypted === true
   }
@@ -99,17 +99,54 @@ export function createMetadata(input = {}) {
 }
 
 /**
- * The canonical form of swarm.allow: lowercase hex, sorted, each key once,
- * so peers that assemble the same list in another order pin the same bytes.
- * A value that is not a list of keys passes through, and validateMetadata
- * refuses it by name.
+ * The swarm group of an input. The empty default applies only when a field
+ * is absent: no swarm, or a swarm without allow (G3-P9 F04). A swarm that
+ * is not an object is refused by name. Every other key of the group passes
+ * through, and validateMetadata refuses it by name.
  */
-function normalizeAllow(allow) {
-  if (allow === undefined) return [...METADATA_DEFAULTS.swarm.allow]
-  if (!Array.isArray(allow)) return allow
-  const keys = allow.map((k) => (typeof k === 'string' || k instanceof Uint8Array ? keyHex(k) : k))
-  if (!keys.every((k) => typeof k === 'string')) return keys
-  return [...new Set(keys)].sort()
+function swarmGroup(swarm) {
+  if (swarm === undefined) return { allow: [...METADATA_DEFAULTS.swarm.allow] }
+  if (swarm === null || typeof swarm !== 'object' || Array.isArray(swarm)) {
+    throw new TypeError('metadata.swarm must be an object with an allow list')
+  }
+  const allow = swarm.allow === undefined ? [...METADATA_DEFAULTS.swarm.allow] : swarmKeyList(swarm.allow, 'metadata.swarm.allow')
+  return { ...swarm, allow }
+}
+
+/**
+ * A supplied list of swarm keys (T25) in canonical form: lowercase hex,
+ * sorted, so peers that assemble the same list in another order pin the
+ * same bytes. Each entry is 32 bytes or 64 hex characters, in any case.
+ * `field` names the list in the error. A value that is not an array, an
+ * entry that is not a swarm key, and a key that the list holds twice each
+ * throw VAULT_BAD_SWARM_ALLOW (G3-P9 F04). No entry is dropped or merged
+ * in silence.
+ */
+export function swarmKeyList(list, field) {
+  if (!Array.isArray(list)) {
+    throw swarmAllowError(`${field} must be an array of swarm keys (32 bytes or 64 hex characters each)`)
+  }
+  const keys = new Set()
+  for (let i = 0; i < list.length; i++) {
+    const hex = swarmKeyHex(list[i])
+    if (hex === null) throw swarmAllowError(`${field}[${i}] is not a swarm key (32 bytes or 64 hex characters)`)
+    if (keys.has(hex)) throw swarmAllowError(`${field} lists the swarm key ${hex} twice`)
+    keys.add(hex)
+  }
+  return [...keys].sort()
+}
+
+/** A swarm key as 64 lowercase hex, from 32 bytes or 64 hex characters in any case; else null. */
+export function swarmKeyHex(key) {
+  if (key instanceof Uint8Array) return key.byteLength === 32 ? Buffer.from(key).toString('hex') : null
+  if (typeof key === 'string' && /^[0-9a-f]{64}$/i.test(key)) return key.toLowerCase()
+  return null
+}
+
+function swarmAllowError(message) {
+  const err = new TypeError(`VAULT_BAD_SWARM_ALLOW: ${message}`)
+  err.code = 'VAULT_BAD_SWARM_ALLOW'
+  return err
 }
 
 export function validateMetadata(meta) {
