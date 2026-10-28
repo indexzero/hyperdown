@@ -30,7 +30,7 @@ import { EventEmitter } from 'node:events'
 import { watch } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, sep } from 'node:path'
-import { keyspace as K, canonical } from '@auto-okf/core'
+import { keyspace as K, canonical, encodeOp, parseTag } from '@auto-okf/core'
 import { parseNote, yamlToValues } from './yaml.js'
 import {
   rootRegistry,
@@ -95,6 +95,7 @@ export class IngestWatcher extends EventEmitter {
     this._drainTimer = null
     this._scanTimer = null
     this._scanChain = Promise.resolve() // serializes directory-event rescans
+    this._import = null // { rel, appended } while importNote runs (import mode)
   }
 
   _start() {
@@ -523,10 +524,103 @@ export class IngestWatcher extends EventEmitter {
     return st
   }
 
+  // ---------- import mode (§10, `auto-okf import`) ----------
+
+  /**
+   * Import one note of a face into a fresh vault (§10, importFace). `raw`
+   * holds the bytes that importFace read from the face, so the note is read
+   * once, and the fidelity check compares the same bytes. Import mode
+   * differs from ingestFile:
+   *
+   *   - It reads no emission manifest and writes none. The face is inert
+   *     source: no note is a self-echo, and import never writes the face.
+   *   - It treats `_rev` as absent. No base exists in the fresh vault, so
+   *     each head is the concept's first revision (base null), and `_rev`
+   *     re-derives (§6, §14).
+   *   - A dot segment is part of a concept path (core accepts
+   *     `.drafts/idea`). importFace refuses a `.conflict-` copy and a
+   *     reserved `.okf-` name before the first note.
+   *   - Before it appends an op, it refuses an op whose encoded form exceeds
+   *     the vault's maxOpBytes: IMPORT_OVERSIZE (§3, D-048 F02). After the
+   *     ops of the note, it reads core's verdict on each one, and a rejected
+   *     op throws IMPORT_REJECTED. An import never keeps an op that core
+   *     rejected.
+   *
+   * Returns the op descriptors: none when the note establishes no concept,
+   * for example a note without `type` (a 'warning' event says why).
+   */
+  async importNote(rel, raw) {
+    rel = nfc(rel.split(sep).join('/'))
+    const { fm, body, warnings } = parseNote(raw.toString('utf8'))
+    for (const message of warnings) this.emit('warning', { path: rel, message })
+    const authored = { ...(fm || {}) }
+    delete authored._rev
+    const appended = []
+    this._import = { rel, appended }
+    let ops
+    try {
+      ;({ ops } = await this._ingestParsed(rel, authored, body))
+    } finally {
+      this._import = null
+    }
+    if (typeof this.vault.update === 'function') await this.vault.update()
+    for (const { op, tag } of appended) {
+      const { writer, seq } = parseTag(tag)
+      const rec = await this.vault.val(K.flagRejected(writer, seq))
+      if (rec !== undefined) {
+        throw namedError('IMPORT_REJECTED', `${rel}: core rejected its ${op.type} op (${rec.reason})`, {
+          path: rel,
+          op: op.type,
+          reason: rec.reason
+        })
+      }
+    }
+    this.emit('ops', { path: rel, ops })
+    return ops
+  }
+
+  /**
+   * Import mode: refuse an op whose encoded form exceeds the vault's
+   * pinned maxOpBytes, before it is appended (§3; apply checks the encoded
+   * op, apply.js `raw.length > maxOpBytes`). The size here is a lower bound
+   * of the op that the store appends: the store fills `clock` with this
+   * writer's position, which is at least the 0 used here, and with the
+   * positions that its view holds then, and `at` with the time of the
+   * append. So the check never refuses an op that core would take. An op
+   * within a few bytes of the limit can pass it, and core then rejects it:
+   * importNote reads that verdict.
+   */
+  async _preflightImport(op) {
+    const limit = this.vault.metadata.limits.maxOpBytes
+    // rem-tag: the store adds the cited tags, so none is the lower bound.
+    const payload = op.type === 'rem-tag' ? { ...op.payload, tags: [] } : op.payload
+    const bytes = encodeOp(op.type, { ...payload, clock: await this.vault.clock(0), at: Date.now() }).byteLength
+    if (bytes > limit) {
+      const rel = this._import.rel
+      throw namedError('IMPORT_OVERSIZE', `${rel}: its ${op.type} op is ${bytes} bytes encoded; maxOpBytes is ${limit}`, {
+        path: rel,
+        op: op.type,
+        bytes,
+        limit
+      })
+    }
+  }
+
   // ---------- op sink ----------
 
-  /** Apply one op descriptor via the store's typed helpers. */
+  /**
+   * Apply one op descriptor via the store's typed helpers. In import mode
+   * (importNote), check the op first, and record it for core's verdict.
+   */
   async _apply(op) {
+    if (this._import !== null) await this._preflightImport(op)
+    const res = await this._append(op)
+    if (this._import !== null) this._import.appended.push({ op, tag: res.tag })
+    return res
+  }
+
+  /** Append one op descriptor through the store helper for its type. */
+  _append(op) {
     const p = op.payload
     switch (op.type) {
       case 'create-concept':
@@ -622,6 +716,13 @@ export class IngestWatcher extends EventEmitter {
     this._pendingDeletes.clear()
     await this._scanChain
   }
+}
+
+/** An error whose message starts with its code, with `fields` on it. */
+function namedError(code, message, fields) {
+  const err = new Error(`${code}: ${message}`)
+  err.code = code
+  return Object.assign(err, fields)
 }
 
 function sameArrays(a, b) {

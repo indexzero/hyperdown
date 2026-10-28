@@ -11,14 +11,14 @@ import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import assert from 'node:assert/strict'
-import { mkdir, readdir, readFile, rename, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import hypercoreCrypto from 'hypercore-crypto'
 import { Bundle } from '../store/index.js'
-import { materialize, compact, createIngestWatcher, readView, readLog, parseNote, renderNote } from '../faces/index.js'
-import { compareTrees } from '../faces/lib/verify.js'
+import { materialize, compact, importFace, createIngestWatcher, readView, readLog, parseNote, renderNote } from '../faces/index.js'
+import { compareTrees, compareNotes } from '../faces/lib/verify.js'
 import { keyspace as K } from '../core/index.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -1327,4 +1327,469 @@ test('T18: compact normalizes a trailing slash on toDir, vaultDir and stageDir, 
   )
   assert.deepEqual({ predecessor: await predecessorState(old), entries: await entries(base) }, before)
   await old.close()
+})
+
+// ---------- T24: materialize, then import (decision 10) ----------
+
+const hexOf = (key) => Buffer.from(key).toString('hex')
+
+/** Every .md file under `root`, dot paths included: Map<rel, string>. */
+async function readNotes(root) {
+  const out = new Map()
+  for (const rel of await listFiles(root)) {
+    if (rel.endsWith('.md')) out.set(rel, await readFile(join(root, rel), 'utf8'))
+  }
+  return out
+}
+
+/** The bundle without its root log.md: _rev lines kept. */
+function withoutLog(m) {
+  const out = new Map(m)
+  out.delete('log.md')
+  return out
+}
+
+/**
+ * One generation of `old`: materialize it into `<base>/face`, then import
+ * that face into `<base>/vault`, carrying the metadata and the vault key.
+ */
+async function generation(old, base, opts = {}) {
+  const face = join(base, 'face')
+  assert.equal((await materialize(old, face)).ok, true, 'setup: the face must be clean')
+  return importFace(Bundle.init, face, join(base, 'vault'), { metadata: old.metadata, predecessorKey: old.keyHex, ...opts })
+}
+
+/**
+ * Run `run` and expect it to throw `code` before it writes anything: the
+ * entries of `base` and the bytes of each directory in `dirs` stay as they
+ * were. Returns the error.
+ */
+async function expectRefusal(run, code, base, dirs = []) {
+  const before = { entries: await entries(base), bytes: await Promise.all(dirs.map(treeHash)) }
+  let caught = null
+  try {
+    const res = await run()
+    await res.vault.close()
+  } catch (err) {
+    caught = err
+  }
+  assert.ok(caught, `expected ${code}, and the import returned`)
+  assert.equal(caught.code, code, caught.stack)
+  assert.deepEqual({ entries: await entries(base), bytes: await Promise.all(dirs.map(treeHash)) }, before, `${code}: the refusal wrote something`)
+  return caught
+}
+
+test('I11 (T24): materialize, then import, round-trips a non-trivial bundle with identity and byte fidelity', async () => {
+  const old = await Bundle.init(await tmpDir('imp-rt-vault'))
+  const ids = await buildNonTrivial(old)
+  await old.update()
+  const base = await tmpDir('imp-rt')
+  const face = join(base, 'face')
+  assert.equal((await materialize(old, face)).ok, true)
+  const faceBytes = await treeHash(face)
+
+  const res = await importFace(Bundle.init, face, join(base, 'vault'), { metadata: old.metadata, predecessorKey: old.keyHex })
+  const nu = res.vault
+  // A, B and C are live. D is tombstoned, so the face does not hold it.
+  assert.deepEqual(res.counts, { notes: 3, imported: 3 })
+  assert.deepEqual(res.warnings, [])
+  assert.equal(res.dir, join(base, 'vault'))
+  // The face is inert source: import writes nothing to it.
+  assert.equal(await treeHash(face), faceBytes, 'import changed the face')
+
+  // §10: the chain is predecessorKey alone, and the writer key pair is fresh.
+  assert.equal(nu.metadata.predecessorKey, old.keyHex)
+  assert.equal(res.generation, nu.generation)
+  assert.notEqual(nu.generation, 'root')
+  assert.notEqual(hexOf(nu.localKey), hexOf(old.localKey), 'a writer key pair must not recur across generations')
+  assert.notEqual(nu.keyHex, old.keyHex)
+
+  // The new directory holds only what the store writes: no note, no copy of
+  // the face and no generation log.
+  assert.deepEqual((await listFiles(join(base, 'vault'))).filter((f) => f.endsWith('.md') || f.startsWith('log/')), [])
+
+  // Byte fidelity: the new vault materializes the face, modulo _rev and log.md (§14).
+  const newDir = join(base, 'new-face')
+  assert.equal((await materialize(nu, newDir)).ok, true)
+  assert.equal(bundleDiff(normalizeBundle(await readBundle(newDir)), normalizeBundle(await readBundle(face))), null)
+
+  // Identity and state per live concept.
+  const oldLive = await liveConcepts(old)
+  const newLive = await liveConcepts(nu)
+  assert.deepEqual([...newLive.keys()].sort(), [...oldLive.keys()].sort(), 'the live _id set changed')
+  assert.ok(!newLive.has(ids.d), 'a tombstoned concept crossed the generation')
+  for (const [id, oc] of oldLive) {
+    const nc = newLive.get(id)
+    assert.equal(nc.type, oc.type, `type changed for ${id}`)
+    assert.equal(nc.path, oc.path, `path changed for ${id}`)
+    assert.equal(nc.headText, oc.headText, `head body changed for ${id}`)
+  }
+  assert.equal(newLive.get(ids.b).path, 'tables/orders-v2')
+
+  // History is shed: one base:null revision per concept, and a log of creations only.
+  assert.equal(await revCount(old, ids.a), 2, 'setup: A should have 2 revisions')
+  assert.equal(await revCount(old, ids.c), 3, 'setup: C should have 3 revisions')
+  assert.equal(await revCount(nu, ids.a), 1)
+  assert.equal(await revCount(nu, ids.c), 1)
+  assert.deepEqual([...(await logKinds(nu))].sort(), ['create'])
+
+  await old.close()
+  await nu.close()
+})
+
+test('I11 (T24): a second generation round-trips, and keeps even _rev', async () => {
+  const gen = await Bundle.init(await tmpDir('imp-chain-vault'))
+  await buildNonTrivial(gen)
+  await gen.update()
+  const r1 = await generation(gen, await tmpDir('imp-chain-1'))
+  const e1 = r1.vault
+  const b1 = await readNotes((await materialize(e1, await tmpDir('imp-chain-1-out'))).root)
+  const r2 = await generation(e1, await tmpDir('imp-chain-2'))
+  const e2 = r2.vault
+  const b2 = await readNotes((await materialize(e2, await tmpDir('imp-chain-2-out'))).root)
+
+  // root <- generation 1 <- generation 2
+  assert.equal(e1.metadata.predecessorKey, gen.keyHex)
+  assert.equal(e2.metadata.predecessorKey, e1.keyHex)
+  assert.notEqual(e2.generation, e1.generation)
+  assert.notEqual(e2.generation, 'root')
+  // After one generation every head is a base:null revision, so the second
+  // import keeps each _rev too. Only log.md re-derives.
+  assert.equal(bundleDiff(withoutLog(b2), withoutLog(b1)), null, 'the second generation did not round-trip')
+  assert.deepEqual([...(await liveConcepts(e2)).keys()].sort(), [...(await liveConcepts(gen)).keys()].sort())
+  await gen.close()
+  await e1.close()
+  await e2.close()
+})
+
+test('T14 (T24): concepts at dot-segment paths survive the import, and the ordinary ingest still ignores them (G24)', async () => {
+  const old = await Bundle.init(await tmpDir('imp-dot-vault'))
+  const r1 = await old.createConcept('.drafts/idea', 'note')
+  await old.createConcept('notes/.hidden', 'note')
+  await old.createConcept('notes/visible', 'note')
+  await old.setBody(r1.tag, null, 'dot dir body')
+  const res = await generation(old, await tmpDir('imp-dot'))
+  assert.deepEqual(res.counts, { notes: 3, imported: 3 })
+  const pathById = async (v) => new Map([...(await liveConcepts(v))].map(([id, c]) => [id, c.path]))
+  const oldPaths = await pathById(old)
+  assert.deepEqual([...oldPaths.values()].sort(), ['.drafts/idea', 'notes/.hidden', 'notes/visible'])
+  assert.deepEqual(await pathById(res.vault), oldPaths)
+  assert.equal((await liveConcepts(res.vault)).get(r1.tag).headText, 'dot dir body')
+  await old.close()
+  await res.vault.close()
+
+  // The ordinary watcher: ingestFile and scan() ignore every dot path (§9).
+  const plainDir = await tmpDir('imp-dot-plain')
+  await writeTree(plainDir, new Map([
+    ['.drafts/idea.md', '---\ntype: note\n---\n\ndot dir body\n'],
+    ['notes/.hidden.md', '---\ntype: note\n---\n'],
+    ['notes/visible.md', '---\ntype: note\n---\n']
+  ]))
+  const plain = await Bundle.init(await tmpDir('imp-dot-plain-vault'))
+  const watcher = await createIngestWatcher(plain, plainDir, { watch: false })
+  assert.deepEqual(await watcher.ingestFile('.drafts/idea.md'), [])
+  assert.deepEqual(await watcher.ingestFile('notes/.hidden.md'), [])
+  await watcher.scan()
+  await watcher.close()
+  assert.deepEqual([...(await liveConcepts(plain)).values()].map((c) => c.path), ['notes/visible'])
+  await plain.close()
+})
+
+test('T24: import refuses a face that holds a .conflict- copy, a reserved .okf- note or a symlink, by name, before it writes', async () => {
+  // A path collision: Y claims shared/note after X, so materialize writes
+  // Y as the conflicted copy shared/note.conflict-<h8>.md (§7).
+  const old = await Bundle.init(await tmpDir('imp-refuse-vault'))
+  const { tag: x } = await old.createConcept('shared/note', 'note')
+  const { tag: y } = await old.createConcept('shared/note', 'note')
+  await old.createConcept('notes/.okf-state', 'note') // core accepts it; the faces reserve the name
+  await old.update()
+  assert.equal(await old.val(K.path('shared/note')), x, 'setup: X must hold shared/note')
+  const base = await tmpDir('imp-refuse')
+  const face = join(base, 'face')
+  await materialize(old, face)
+  const copy = copyOf(y)
+  assert.ok((await listFiles(face)).includes(copy), 'setup: the face must hold the conflicted copy')
+
+  const run = () => importFace(Bundle.init, face, join(base, 'vault'))
+  const conflict = await expectRefusal(run, 'IMPORT_CONFLICT_COPY', base, [face])
+  assert.deepEqual(conflict.paths, [copy])
+  assert.ok(conflict.message.includes(copy), conflict.message)
+
+  // Resolved in the face (the copy removed), the reserved name is next.
+  await rm(join(face, copy))
+  const reserved = await expectRefusal(run, 'IMPORT_RESERVED_NAME', base, [face])
+  assert.deepEqual(reserved.paths, ['notes/.okf-state.md'])
+  assert.ok(reserved.message.includes('notes/.okf-state.md'), reserved.message)
+
+  // A symlink: import reads only regular files and directories.
+  await rm(join(face, 'notes', '.okf-state.md'))
+  await writeFile(join(base, 'outside.md'), '---\ntype: note\n---\n\noutside the face\n')
+  await symlink(join(base, 'outside.md'), join(face, 'notes', 'linked.md'))
+  const link = await expectRefusal(run, 'IMPORT_FACE_ENTRY', base, [face])
+  assert.deepEqual(link.paths, ['notes/linked.md'])
+  await old.close()
+})
+
+test('T16 (T24): a collision resolved in the face imports, and each _id keeps its note (G28)', async () => {
+  // Open collisions are resolved in the face first. Here the operator gives
+  // the conflicted copy a path of its own. The index.md files of the face
+  // still list the copy: they are regenerated faces, which import does not read.
+  const old = await Bundle.init(await tmpDir('imp-resolved-vault'))
+  const { tag: x } = await old.createConcept('shared/note', 'note')
+  await old.setBody(x, null, 'X body')
+  const { tag: y } = await old.createConcept('shared/note', 'note')
+  await old.setBody(y, null, 'Y body')
+  await old.update()
+  const base = await tmpDir('imp-resolved')
+  const face = join(base, 'face')
+  await materialize(old, face)
+  await rename(join(face, copyOf(y)), join(face, 'shared', 'note-y.md'))
+
+  const res = await importFace(Bundle.init, face, join(base, 'vault'))
+  assert.deepEqual(res.counts, { notes: 2, imported: 2 })
+  const live = await liveConcepts(res.vault)
+  assert.equal(await res.vault.val(K.path('shared/note')), x, 'the owner of shared/note lost the path')
+  assert.equal(live.get(x).headText, 'X body')
+  assert.equal(live.get(y).path, 'shared/note-y')
+  assert.equal(live.get(y).headText, 'Y body')
+  let collisions = 0
+  for await (const _ of res.vault.scan(K.flagPrefix('pathcollision'))) collisions++
+  assert.equal(collisions, 0)
+  await old.close()
+  await res.vault.close()
+})
+
+test('T15 (T24): a body of "text\\n\\n" round-trips byte for byte (G25)', async () => {
+  const old = await Bundle.init(await tmpDir('imp-nl-vault'))
+  const { tag } = await old.createConcept('notes/blank', 'note')
+  await old.setBody(tag, null, 'text\n\n')
+  const base = await tmpDir('imp-nl')
+  const res = await generation(old, base)
+  assert.deepEqual(res.counts, { notes: 1, imported: 1 })
+  assert.equal((await liveConcepts(res.vault)).get(tag).headText, 'text\n\n')
+  const face = await readFile(join(base, 'face', 'notes', 'blank.md'), 'utf8')
+  assert.ok(face.endsWith('\ntype: note\n---\n\ntext\n\n\n'), JSON.stringify(face))
+  await old.close()
+  await res.vault.close()
+})
+
+test('T15 (T24): the new vault carries limits, rate and schemaVersion, so a 100 KB body and a deep path survive (G26, D-047 F16)', async () => {
+  // scratch-D/s7.mjs: maxOpBytes 400000 and a 100 KB body. The default is
+  // 65536, and maxPathDepth 64 rejects a path at depth 70.
+  const pinned = {
+    limits: { maxOpBytes: 400000, maxPathBytes: 2048, maxPathDepth: 100 },
+    rate: { defaultCeiling: 8 },
+    schemaVersion: 3
+  }
+  const old = await Bundle.init(await tmpDir('imp-lim-vault'), { metadata: pinned })
+  const big = await old.createConcept('big/report', 'note')
+  await old.setBody(big.tag, null, 'x'.repeat(100000))
+  const deep = Array.from({ length: 70 }, (_, i) => `d${i}`).join('/')
+  const { tag: deepId } = await old.createConcept(deep, 'note')
+  const small = await old.createConcept('small/note', 'note')
+  await old.setBody(small.tag, null, 'ok')
+  await old.update()
+
+  const res = await generation(old, await tmpDir('imp-lim'))
+  assert.deepEqual(res.counts, { notes: 3, imported: 3 })
+  for (const key of ['limits', 'rate', 'schemaVersion']) assert.deepEqual(res.vault.metadata[key], old.metadata[key], key)
+  const live = await liveConcepts(res.vault)
+  assert.equal(live.get(big.tag).headText, 'x'.repeat(100000))
+  assert.equal(live.get(deepId).path, deep)
+  assert.equal(live.get(small.tag).headText, 'ok')
+  await res.vault.close()
+
+  // Without the carried metadata the new vault takes the defaults. The
+  // import fails by name: the preflight refuses the body, and core rejects
+  // the deep path. Each failure removes the new directory.
+  const base = await tmpDir('imp-lim-default')
+  await materialize(old, join(base, 'face'))
+  const run = () => importFace(Bundle.init, join(base, 'face'), join(base, 'vault'))
+  const oversize = await expectFailure(run, 'IMPORT_OVERSIZE', base)
+  assert.equal(oversize.path, 'big/report.md')
+  assert.equal(oversize.limit, 65536)
+  assert.ok(oversize.bytes > 100000, String(oversize.bytes))
+  await rm(join(base, 'face', 'big'), { recursive: true })
+  const rejected = await expectFailure(run, 'IMPORT_REJECTED', base)
+  assert.equal(rejected.path, `${deep}.md`)
+  assert.equal(rejected.reason, 'depth-exceeded')
+  await old.close()
+})
+
+/**
+ * Run `run`, expect `code` after the new vault exists, and check that the
+ * failure removed the new directory: `base` holds only the face. Returns the error.
+ */
+async function expectFailure(run, code, base) {
+  let caught = null
+  try {
+    const res = await run()
+    await res.vault.close()
+  } catch (err) {
+    caught = err
+  }
+  assert.ok(caught, `expected ${code}, and the import returned`)
+  assert.equal(caught.code, code, caught.stack)
+  assert.ok(caught.message.includes(caught.path || ''), caught.message)
+  assert.deepEqual(await entries(base), ['face'], `${code}: the failure left the new directory`)
+  return caught
+}
+
+test('D-048 F02 (T24): import checks each op against maxOpBytes as encoded, before it appends', async () => {
+  // A body below the limit whose encoded set-body op is above it: the op
+  // also holds the id, the base, the clock and the time.
+  const limit = 4000
+  const face = (bodyBytes) => new Map([['notes/edge.md', `---\n_id: ${'ab'.repeat(32)}\ntype: note\n---\n\n${'y'.repeat(bodyBytes)}\n`]])
+  /** A Bundle.init that records each op type that the import appends. */
+  const recording = (appended) => async (dir, opts) => {
+    const v = await Bundle.init(dir, { ...opts, metadata: { ...opts.metadata, limits: { maxOpBytes: limit } } })
+    return new Proxy(v, {
+      get(target, prop, receiver) {
+        if (prop === 'createConcept' || prop === 'setBody') appended.push(prop)
+        return Reflect.get(target, prop, receiver)
+      }
+    })
+  }
+  const base = await tmpDir('imp-pre')
+  await writeTree(join(base, 'face'), face(limit - 10))
+  const appended = []
+  const err = await expectFailure(() => importFace(recording(appended), join(base, 'face'), join(base, 'vault')), 'IMPORT_OVERSIZE', base)
+  assert.equal(err.path, 'notes/edge.md')
+  assert.equal(err.op, 'set-body')
+  assert.equal(err.limit, limit)
+  assert.ok(err.bytes > limit, String(err.bytes))
+  assert.deepEqual(appended, ['createConcept'], 'the oversize set-body was appended')
+
+  // A body well inside the limit imports.
+  const ok = await tmpDir('imp-pre-ok')
+  await writeTree(join(ok, 'face'), face(limit - 400))
+  const res = await importFace(recording([]), join(ok, 'face'), join(ok, 'vault'))
+  assert.equal((await liveConcepts(res.vault)).get('ab'.repeat(32)).headText, 'y'.repeat(limit - 400))
+  await res.vault.close()
+})
+
+test('D-048 F02 (T24): an op that core rejects fails the import by name, and import removes the new directory', async () => {
+  // 1. A vault whose metadata shows a larger maxOpBytes than the one it
+  //    pins: the preflight reads the shown limit, and core rejects the op.
+  const base = await tmpDir('imp-rej')
+  await writeTree(join(base, 'face'), new Map([['notes/big.md', `---\ntype: note\n---\n\n${'z'.repeat(3000)}\n`]]))
+  const lying = async (dir, opts) => {
+    const v = await Bundle.init(dir, { ...opts, metadata: { ...opts.metadata, limits: { maxOpBytes: 2000 } } })
+    const shown = { ...v.metadata, limits: { ...v.metadata.limits, maxOpBytes: 1000000 } }
+    return new Proxy(v, { get: (target, prop, receiver) => (prop === 'metadata' ? shown : Reflect.get(target, prop, receiver)) })
+  }
+  const big = await expectFailure(() => importFace(lying, join(base, 'face'), join(base, 'vault')), 'IMPORT_REJECTED', base)
+  assert.deepEqual([big.path, big.op, big.reason], ['notes/big.md', 'set-body', 'oversize-op'])
+
+  // 2. An _id that core does not adopt (§6: lowercase hex only).
+  const bad = await tmpDir('imp-rej-id')
+  await writeTree(join(bad, 'face'), new Map([['notes/a.md', '---\n_id: not-hex\ntype: note\n---\n\nbody\n']]))
+  const id = await expectFailure(() => importFace(Bundle.init, join(bad, 'face'), join(bad, 'vault')), 'IMPORT_REJECTED', bad)
+  assert.deepEqual([id.path, id.op, id.reason], ['notes/a.md', 'create-concept', 'bad-id'])
+})
+
+test('T13 (T24): a truncated note fails the import by name with IMPORT_FIDELITY, and import removes the new directory', async () => {
+  const old = await Bundle.init(await tmpDir('imp-trunc-vault'))
+  const { tag } = await old.createConcept('notes/a', 'note')
+  await old.addTag(tag, 'one')
+  await old.setBody(tag, null, 'body a')
+  await old.createConcept('notes/b', 'note')
+  await old.update()
+  const base = await tmpDir('imp-trunc')
+  const face = join(base, 'face')
+  await materialize(old, face)
+  // The note is cut short inside its frontmatter: no closing --- line.
+  const notePath = join(face, 'notes', 'a.md')
+  const text = await readFile(notePath, 'utf8')
+  await writeFile(notePath, text.slice(0, text.indexOf('type:')))
+
+  const err = await expectFailure(() => importFace(Bundle.init, face, join(base, 'vault')), 'IMPORT_FIDELITY', base)
+  assert.deepEqual(err.differences, [{ path: 'notes/a.md', kind: 'missing' }])
+  assert.match(err.message, /^IMPORT_FIDELITY: .*\n {2}missing notes\/a\.md$/s)
+  assert.deepEqual(err.counts, { notes: 2, imported: 1 })
+  assert.ok(err.warnings.some((w) => w.path === 'notes/a.md' && /type/.test(w.message)), JSON.stringify(err.warnings))
+
+  // A <dir> that existed empty stays, empty.
+  await mkdir(join(base, 'vault'))
+  await assert.rejects(() => importFace(Bundle.init, face, join(base, 'vault')), (e) => e.code === 'IMPORT_FIDELITY')
+  assert.deepEqual(await entries(join(base, 'vault')), [], 'the failure left files in an existing <dir>')
+  await old.close()
+})
+
+test('T18 (T24): import refuses a pinned, non-empty or non-directory <dir> by name and writes nothing; a trailing slash names the same <dir> (G16, G19)', async () => {
+  const old = await Bundle.init(await tmpDir('imp-dir-vault'))
+  const { tag } = await old.createConcept('notes/a', 'note')
+  await old.setBody(tag, null, 'a')
+  await old.update()
+  const base = await tmpDir('imp-dir')
+  const face = join(base, 'face')
+  await materialize(old, face)
+  const pinned = await Bundle.init(join(base, 'pinned'))
+  await pinned.close()
+  await writeTree(base, new Map([['used/keep.txt', 'keep\n'], ['file', 'a file\n']]))
+
+  const cases = [
+    ['pinned', /is already a vault \(okf-vault\.json exists\)/],
+    ['used', /is not empty \(keep\.txt\)/],
+    ['file', /is not a directory/]
+  ]
+  for (const [name, message] of cases) {
+    const err = await expectRefusal(() => importFace(Bundle.init, face, join(base, name)), 'IMPORT_DIR_NOT_EMPTY', base, [face, join(base, 'pinned'), join(base, 'used')])
+    assert.match(err.message, message, name)
+    assert.ok(err.message.includes(join(base, name)), err.message)
+  }
+
+  const res = await importFace(Bundle.init, `${face}/`, `${join(base, 'out')}/`)
+  assert.equal(res.dir, join(base, 'out'))
+  assert.equal((await liveConcepts(res.vault)).get(tag).headText, 'a')
+  await res.vault.close()
+  await old.close()
+})
+
+test('T24: the face holds each head only, so a body conflict open in the predecessor crosses as its head', async () => {
+  // The face shows no body conflict (§9 materializes the head). So the
+  // operator resolves open conflicts before the materialize (`auto-okf
+  // flags`), or the losing sibling stays behind in the predecessor.
+  const v = await Bundle.init(await tmpDir('imp-conf-vault'))
+  const { tag: id } = await v.createConcept('c', 'note')
+  await v.setBody(id, null, 'r1')
+  await v.update()
+  const r1 = await v.val(K.cBody(id))
+  await v.setBody(id, r1, 'r2a')
+  await v.update()
+  await v.setBody(id, r1, 'r2b')
+  await v.update()
+  let open = 0
+  for await (const _ of v.scan(K.flagPrefix('conflict'))) open++
+  assert.equal(open, 1, 'setup should leave one open conflict')
+  const head = (await liveConcepts(v)).get(id).headText
+
+  const res = await generation(v, await tmpDir('imp-conf'))
+  let newOpen = 0
+  for await (const _ of res.vault.scan(K.flagPrefix('conflict'))) newOpen++
+  assert.equal(newOpen, 0)
+  assert.equal(await revCount(res.vault, id), 1)
+  assert.equal((await liveConcepts(res.vault)).get(id).headText, head)
+  await v.close()
+  await res.vault.close()
+})
+
+test('T24: compareNotes reports every difference by path, without _rev lines', () => {
+  const note = (rev, body) => Buffer.from(`---\n_id: 0123abcd\n_rev: ${rev}\ntype: note\n---\n\n${body}\n`)
+  const face = new Map([
+    ['a.md', note('1'.repeat(64), 'same body')], // equal modulo _rev
+    ['.drafts/idea.md', note('2'.repeat(64), 'dot path')], // only in the face
+    ['body.md', Buffer.from('---\ntype: note\n---\n\n_rev: one\n')] // a body line is never stripped
+  ])
+  const vault = new Map([
+    ['a.md', note('3'.repeat(64), 'same body')],
+    ['body.md', Buffer.from('---\ntype: note\n---\n\n_rev: two\n')],
+    ['extra.md', note('4'.repeat(64), 'only in the new vault')]
+  ])
+  assert.deepEqual(compareNotes(face, vault), [
+    { path: '.drafts/idea.md', kind: 'missing' },
+    { path: 'body.md', kind: 'differs' },
+    { path: 'extra.md', kind: 'extra' }
+  ])
+  assert.deepEqual(compareNotes(face, face), [], 'a face must equal itself')
 })

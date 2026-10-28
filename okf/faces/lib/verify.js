@@ -70,6 +70,29 @@ async function bundleFiles(root, rel = '', out = new Set()) {
   return out
 }
 
+/**
+ * Compare the notes of a face with the notes of a new vault (importFace),
+ * both Map<rel, Buffer>. Returns every difference, in byte order of path
+ * (an empty array when they match):
+ *
+ *   { path, kind: 'missing' }   only the face holds the note
+ *   { path, kind: 'extra' }     only the vault holds it
+ *   { path, kind: 'differs' }   both hold it, with different bytes
+ *
+ * Each `_rev` line of a note's frontmatter block is excluded: it re-derives
+ * in the new vault (§14). A `_rev:` line in a body is compared.
+ */
+export function compareNotes(face, vault) {
+  const paths = [...new Set([...face.keys(), ...vault.keys()])].sort(byteCmp)
+  const differences = []
+  for (const rel of paths) {
+    if (!vault.has(rel)) differences.push({ path: rel, kind: 'missing' })
+    else if (!face.has(rel)) differences.push({ path: rel, kind: 'extra' })
+    else if (withoutRev(face.get(rel)) !== withoutRev(vault.get(rel))) differences.push({ path: rel, kind: 'differs' })
+  }
+  return differences
+}
+
 async function sameBytes(a, b) {
   const [x, y] = await Promise.all([readFile(a), readFile(b)])
   return withoutRev(x) === withoutRev(y)
