@@ -47,9 +47,14 @@ const HEX = /^[0-9a-f]+$/
 // limits/rate defaults mirror @auto-okf/core lib/apply.js DEFAULTS exactly
 // (§3 limits; §8 rate — defaultCeiling, the only rate setting, is the
 // spec-silent admitted-writer ceiling pinned here and in core).
+// swarm.allow (T25) is the static allowlist of the swarm firewall: the
+// hyperswarm public keys, 64 hex each, that every peer of the vault admits
+// and dials (Bundle.swarm()). It is not an input of apply, so applyConfig
+// leaves it out, but it is in the pinned hash like every other field.
 export const METADATA_DEFAULTS = {
   limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
   rate: { defaultCeiling: 1024 },
+  swarm: { allow: [] },
   schemaVersion: 1,
   encrypted: false,
   predecessorKey: null,
@@ -96,11 +101,26 @@ export function createMetadata(input = {}) {
     predecessorCheckpoint,
     limits: { ...METADATA_DEFAULTS.limits, ...(input.limits || {}) },
     rate: { ...METADATA_DEFAULTS.rate, ...(input.rate || {}) },
+    swarm: { ...(input.swarm || {}), allow: normalizeAllow(input.swarm && input.swarm.allow) },
     schemaVersion: input.schemaVersion ?? METADATA_DEFAULTS.schemaVersion,
     encrypted: input.encrypted === true
   }
   validateMetadata(meta)
   return meta
+}
+
+/**
+ * The canonical form of swarm.allow: lowercase hex, sorted, each key once,
+ * so peers that assemble the same list in another order pin the same bytes.
+ * A value that is not a list of keys passes through, and validateMetadata
+ * refuses it by name.
+ */
+function normalizeAllow(allow) {
+  if (allow === undefined) return [...METADATA_DEFAULTS.swarm.allow]
+  if (!Array.isArray(allow)) return allow
+  const keys = allow.map((k) => (typeof k === 'string' || k instanceof Uint8Array ? keyHex(k) : k))
+  if (!keys.every((k) => typeof k === 'string')) return keys
+  return [...new Set(keys)].sort()
 }
 
 export function validateMetadata(meta) {
@@ -135,6 +155,7 @@ export function validateMetadata(meta) {
       }
     }
   }
+  validateSwarm(meta.swarm)
   if (!Number.isInteger(meta.schemaVersion) || meta.schemaVersion < 1) {
     throw new TypeError('metadata.schemaVersion must be a positive integer')
   }
@@ -142,6 +163,25 @@ export function validateMetadata(meta) {
     throw new TypeError('metadata.encrypted must be a boolean')
   }
   return meta
+}
+
+/** T25: swarm is a closed group whose one key, allow, is in canonical form. */
+function validateSwarm(swarm) {
+  if (!swarm || typeof swarm !== 'object' || Array.isArray(swarm)) {
+    throw new TypeError('metadata.swarm must be an object with an allow list')
+  }
+  for (const k of Object.keys(swarm)) {
+    if (k !== 'allow') throw new TypeError(`metadata.swarm.${k} is not a metadata version ${METADATA_VERSION} field`)
+  }
+  const { allow } = swarm
+  if (!Array.isArray(allow) || allow.some((k) => typeof k !== 'string' || !HEX64.test(k))) {
+    throw new TypeError('metadata.swarm.allow must be an array of 64-char lowercase-hex keys')
+  }
+  for (let i = 1; i < allow.length; i++) {
+    if (!(allow[i - 1] < allow[i])) {
+      throw new TypeError('metadata.swarm.allow must be sorted and hold each key once')
+    }
+  }
 }
 
 function validateGenerationChain(meta) {

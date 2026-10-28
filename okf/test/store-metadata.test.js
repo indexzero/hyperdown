@@ -116,9 +116,51 @@ test('validateMetadata accepts a version 2 document whose rate holds only defaul
     limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
     rate: { defaultCeiling: 1024 },
     schemaVersion: 1,
-    encrypted: false
+    encrypted: false,
+    swarm: { allow: [] }
   }
   assert.equal(validateMetadata(doc), doc)
+})
+
+test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys, and it is in the hash (T25)', () => {
+  const k1 = '1'.repeat(64)
+  const k2 = 'ab'.repeat(32)
+  // the default is an empty allowlist
+  assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64) }).swarm, { allow: [] })
+  // createMetadata lowercases, sorts and dedupes, so peers pin the same bytes
+  const meta = createMetadata({
+    genesisKey: 'a'.repeat(64),
+    swarm: { allow: [k2.toUpperCase(), k1, Buffer.from(k2, 'hex')] }
+  })
+  assert.deepEqual(meta.swarm, { allow: [k1, k2] })
+  assert.notEqual(
+    metadataHash(meta),
+    metadataHash(createMetadata({ genesisKey: 'a'.repeat(64) })),
+    'the allowlist is part of the pinned hash'
+  )
+
+  // validateMetadata refuses every other shape
+  const good = createMetadata({ genesisKey: 'a'.repeat(64) })
+  const refused = [
+    [{ ...good, swarm: undefined }, /metadata\.swarm must be an object/],
+    [{ ...good, swarm: [] }, /metadata\.swarm must be an object/],
+    [{ ...good, swarm: {} }, /metadata\.swarm\.allow must be an array of 64-char lowercase-hex keys/],
+    [{ ...good, swarm: { allow: ['xyz'] } }, /metadata\.swarm\.allow must be an array of 64-char lowercase-hex keys/],
+    [{ ...good, swarm: { allow: [k2.toUpperCase()] } }, /metadata\.swarm\.allow must be an array of 64-char lowercase-hex keys/],
+    [{ ...good, swarm: { allow: [k2, k1] } }, /metadata\.swarm\.allow must be sorted and hold each key once/],
+    [{ ...good, swarm: { allow: [k1, k1] } }, /metadata\.swarm\.allow must be sorted and hold each key once/],
+    [{ ...good, swarm: { allow: [], extra: 1 } }, /metadata\.swarm\.extra is not a metadata version 2 field/]
+  ]
+  for (const [doc, re] of refused) assert.throws(() => validateMetadata(doc), re)
+  assert.throws(
+    () => createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [], extra: 1 } }),
+    /metadata\.swarm\.extra is not a metadata version 2 field/,
+    'no input can add a key to the group'
+  )
+  assert.throws(
+    () => createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: ['not-a-key'] } }),
+    /metadata\.swarm\.allow must be an array of 64-char lowercase-hex keys/
+  )
 })
 
 test('limits and rate are closed: a key that metadata version 2 does not define is refused', async (t) => {
