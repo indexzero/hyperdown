@@ -175,7 +175,7 @@ and `fastForward: false`, and grants every writer at weight 0 (SPEC §8,
 - `writable` signals substrate admission: autobee has added this writer
   (autobee@2.12.1 `index.js:196-198`). Until then `writable` is false, and
   `append` fails `VAULT_NOT_WRITABLE` (`err.writerKey` names the key)
-  before the op takes a seq (`okf/store/lib/bundle.js:858-866`).
+  before the op takes a seq (`okf/store/lib/bundle.js:884-892`).
 - `writable` is not okf membership. Core grants the key of every
   `add-writer` op that it folds at the substrate, a rejected one too
   (`okf/core/lib/apply.js:375`). So a writer that is not an indexer can
@@ -185,7 +185,7 @@ and `fastForward: false`, and grants every writer at weight 0 (SPEC §8,
   rejects each of its ops.
 - okf membership comes only from `gov/`. Only an `add-writer` op that
   apply accepts writes the `gov/writer` record that admits a key
-  (`okf/core/lib/apply.js:533-546`). Apply accepts that op only from an
+  (`okf/core/lib/apply.js:554-575`). Apply accepts that op only from an
   issuer that is an indexer at the op's linearized position
   (`okf/core/lib/apply.js:407-418`). Only the content ops of an admitted
   key take effect.
