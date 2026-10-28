@@ -218,7 +218,6 @@ test('I11: a generation cycle round-trips a non-trivial bundle (state + identity
   // §10 generation chain metadata is recorded in the new vault.
   assert.equal(res.predecessorKey, old.keyHex)
   assert.equal(nu.metadata.predecessorKey, old.keyHex)
-  assert.match(nu.metadata.predecessorCheckpoint.viewHash, /^[0-9a-f]{64}$/)
   assert.equal(res.predecessorPath, old.dir, 'compact must return the predecessor path (never deletes it)')
 
   // §10/N2 generation key-freshness: fresh generation namespace + fresh writer keypair,

@@ -1,12 +1,13 @@
 // Store scope (okf SPEC §13, T4): vault-metadata determinism — the pinned
 // document is byte-identical across peers (incl. the §8 appendOnly
-// constant and the §10 generation-chain fields), the appendOnly constant is
+// constant and the §10 predecessorKey), the appendOnly constant is
 // immutable (unrepresentable off and refused at open when tampered), and
-// the per-generation writer namespace derives deterministically from the
-// predecessor fields. The rate group holds defaultCeiling only (T6c), and
-// limits and rate refuse a key that version 2 does not define.
+// the per-generation writer namespace derives deterministically from
+// predecessorKey alone (T24). The rate group holds defaultCeiling only
+// (T6c), and limits and rate refuse a key that version 2 does not define.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { writeFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -40,9 +41,10 @@ test('vault metadata is deterministic and identical across peers', async (t) => 
   // §8: the appendOnly constant, written at init, loaded at open
   assert.equal(a.metadata.appendOnly, true)
   assert.equal(b.metadata.appendOnly, true)
-  // §10: generation-chain fields identical (root vault: both null)
+  // §10: the generation chain is predecessorKey alone (root vault: null).
+  // The metadata holds no checkpoint (T24).
   assert.equal(a.metadata.predecessorKey, null)
-  assert.equal(a.metadata.predecessorCheckpoint, null)
+  assert.ok(!('predecessorCheckpoint' in a.metadata), 'the metadata holds no predecessorCheckpoint')
   assert.equal(a.metadata.generation, ROOT_GENERATION)
   assert.equal(a.generation, ROOT_GENERATION)
 
@@ -112,7 +114,6 @@ test('validateMetadata accepts a version 2 document whose rate holds only defaul
     appendOnly: true,
     generation: ROOT_GENERATION,
     predecessorKey: null,
-    predecessorCheckpoint: null,
     limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
     rate: { defaultCeiling: 1024 },
     schemaVersion: 1,
@@ -196,30 +197,25 @@ test('a mismatched invite is refused (metadata is convergence-relevant)', async 
   )
 })
 
-test('generation chain: predecessor fields pin a deterministic writer namespace (§10)', async (t) => {
-  const checkpoint = {
-    viewHash: '1'.repeat(64),
-    writerLengths: [['a'.repeat(64), 12]],
-    signer: 'b'.repeat(64),
-    signature: 'c'.repeat(128)
-  }
+test('generation chain: predecessorKey alone pins a deterministic writer namespace (§10)', async (t) => {
   const predecessorKey = 'd'.repeat(64)
 
-  // the generation id is a pure function of the predecessor fields
-  const e1 = generationId(predecessorKey, checkpoint)
-  const e2 = generationId(predecessorKey, checkpoint)
-  assert.equal(e1, e2)
+  // the generation id is sha256 over the predecessor key bytes, and over
+  // nothing else (T24: the metadata holds no predecessor checkpoint)
+  const e1 = generationId(predecessorKey)
+  assert.equal(e1, createHash('sha256').update(Buffer.from(predecessorKey, 'hex')).digest('hex'))
+  assert.equal(generationId(Buffer.from(predecessorKey, 'hex')), e1, 'a key given as bytes derives the same id')
+  assert.equal(generationId(predecessorKey.toUpperCase()), e1, 'a key given in upper case derives the same id')
   assert.notEqual(e1, ROOT_GENERATION)
-  assert.match(e1, /^[0-9a-f]{64}$/)
+  assert.equal(generationId(null), ROOT_GENERATION)
 
-  // half a chain is invalid
-  assert.throws(() => generationId(predecessorKey, null), /together/)
+  // a predecessorKey that is not a 64-hex key is refused
   assert.throws(
-    () => createMetadata({ genesisKey: 'a'.repeat(64), predecessorKey }),
-    /together/
+    () => createMetadata({ genesisKey: 'a'.repeat(64), predecessorKey: 'not-a-key' }),
+    /metadata\.predecessorKey must be a 64-char lowercase-hex key/
   )
 
-  // a fresh vault records the chain and derives its writer cores under the
+  // a fresh vault records the key and derives its writer cores under the
   // per-generation namespace: same directory, different generation → different vault
   // (writer) key — the §10 keypair-freshness guarantee
   const dir = await tmpDir('meta-generation')
@@ -228,12 +224,10 @@ test('generation chain: predecessor fields pin a deterministic writer namespace 
   await genesisVault.close()
 
   const dir2 = await tmpDir('meta-generation') // fresh dir, generation-2 vault
-  const next = await Bundle.init(dir2, {
-    metadata: { predecessorKey, predecessorCheckpoint: checkpoint }
-  })
+  const next = await Bundle.init(dir2, { metadata: { predecessorKey } })
   t.after(() => next.close())
   assert.equal(next.metadata.predecessorKey, predecessorKey)
-  assert.deepEqual(next.metadata.predecessorCheckpoint, checkpoint)
+  assert.ok(!('predecessorCheckpoint' in next.metadata), 'the metadata holds no predecessorCheckpoint')
   assert.equal(next.metadata.generation, e1)
   assert.equal(next.generation, e1)
   assert.notEqual(next.keyHex, genesisKey)
@@ -244,6 +238,14 @@ test('generation chain: predecessor fields pin a deterministic writer namespace 
   t.after(() => reopened.close())
   assert.equal(reopened.generation, e1)
   assert.equal(reopened.metadata.generation, e1)
+
+  // a pinned document whose generation does not derive from its
+  // predecessorKey does not load
+  const path = join(dir2, METADATA_FILE)
+  const doc = JSON.parse(await readFile(path, 'utf8'))
+  doc.generation = generationId('e'.repeat(64))
+  await writeFile(path, JSON.stringify(doc))
+  await assert.rejects(() => loadMetadata(path), /metadata\.generation does not match its predecessorKey/)
 })
 
 test('same corestore directory, different generations → fresh writer keypairs (§10)', async (t) => {
@@ -258,12 +260,7 @@ test('same corestore directory, different generations → fresh writer keypairs 
   // metadata (operator archived the old vault), init with a predecessor
   const { rm } = await import('node:fs/promises')
   await rm(join(dir, METADATA_FILE))
-  const v2 = await Bundle.init(dir, {
-    metadata: {
-      predecessorKey: k1,
-      predecessorCheckpoint: { viewHash: '0'.repeat(64), writerLengths: [[k1, 1]] }
-    }
-  })
+  const v2 = await Bundle.init(dir, { metadata: { predecessorKey: k1 } })
   t.after(() => v2.close())
   assert.notEqual(v2.keyHex, k1, 'writer keypair does not recur across generations')
   assert.equal(v2.metadata.predecessorKey, k1, 'chain recorded')

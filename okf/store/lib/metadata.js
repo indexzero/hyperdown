@@ -14,23 +14,22 @@
 // cannot open. createMetadata likewise refuses an input trying to set it
 // to anything but true: an append-only:false vault is unrepresentable.
 //
-// §10 generation chain: `{ predecessorKey, predecessorCheckpoint }` (both null
-// for a root vault) record which vault this one was compacted from.
-// `predecessorCheckpoint = { viewHash, writerLengths, signer?, signature? }`
-// — signed by the operator key that ran compact; provenance metadata, not
-// proof (consumers MUST treat cross-generation identity as trusted-operator
-// scope), so the signature is carried, never verified here.
+// §10 generation chain: `predecessorKey` (null for a root vault) records
+// the vault key of the predecessor whose face this vault imported
+// (`auto-okf import --predecessor`). It is the operator's claim: provenance
+// metadata, not proof (consumers MUST treat cross-generation identity as
+// trusted-operator scope). Nothing here checks it against a vault.
 //
 // §10 writer-key freshness: writer cores derive under a per-generation
 // corestore namespace recorded in the metadata (`generation`). The generation id is
-// a PURE FUNCTION of the predecessor fields — 'root' for a first-generation
-// vault, else sha256(predecessorKey bytes || stableStringify(checkpoint))
-// — so every peer of one vault derives the same namespace from the same
-// pinned metadata, an operator re-initing in a REUSED corestore directory
-// still gets fresh writer keypairs (the namespace differs from the
-// predecessor's), and a joiner handed only the predecessor fields can
-// reconstruct it (implementation resolution where §10 is silent on HOW the
-// namespace is derived; code-comment scope per SPEC §0 rule 4).
+// a PURE FUNCTION of predecessorKey — 'root' for a first-generation vault,
+// else sha256(predecessorKey bytes) — so every peer of one vault derives the
+// same namespace from the same pinned metadata, an operator re-initing in a
+// REUSED corestore directory still gets fresh writer keypairs (the
+// namespace differs from the predecessor's), and a joiner handed only
+// predecessorKey can reconstruct it (implementation resolution where §10 is
+// silent on HOW the namespace is derived; code-comment scope per SPEC §0
+// rule 4).
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { canonical } from '@auto-okf/core'
@@ -42,7 +41,6 @@ export const METADATA_FILE = 'okf-vault.json'
 export const ROOT_GENERATION = 'root'
 
 const HEX64 = /^[0-9a-f]{64}$/
-const HEX = /^[0-9a-f]+$/
 
 // limits/rate defaults mirror @auto-okf/core lib/apply.js DEFAULTS exactly
 // (§3 limits; §8 rate — defaultCeiling, the only rate setting, is the
@@ -57,24 +55,17 @@ export const METADATA_DEFAULTS = {
   swarm: { allow: [] },
   schemaVersion: 1,
   encrypted: false,
-  predecessorKey: null,
-  predecessorCheckpoint: null
+  predecessorKey: null
 }
 
 /**
  * The §10 per-generation namespace id: 'root' when there is no predecessor,
- * else sha256 over the predecessor key bytes and the checkpoint's
- * canonical JSON. Deterministic from pinned metadata on every peer.
+ * else sha256 over the predecessor key bytes. Deterministic from pinned
+ * metadata on every peer.
  */
-export function generationId(predecessorKey, predecessorCheckpoint) {
-  if (predecessorKey == null && predecessorCheckpoint == null) return ROOT_GENERATION
-  if (predecessorKey == null || predecessorCheckpoint == null) {
-    throw new TypeError('predecessorKey and predecessorCheckpoint must be set together (§10)')
-  }
-  const h = createHash('sha256')
-  h.update(Buffer.from(keyHex(predecessorKey), 'hex'))
-  h.update(canonical.stableStringify(predecessorCheckpoint))
-  return h.digest('hex')
+export function generationId(predecessorKey) {
+  if (predecessorKey == null) return ROOT_GENERATION
+  return createHash('sha256').update(Buffer.from(keyHex(predecessorKey), 'hex')).digest('hex')
 }
 
 /**
@@ -91,14 +82,12 @@ export function createMetadata(input = {}) {
     throw new TypeError('appendOnly is an immutable vault constant and MUST be true (§8)')
   }
   const predecessorKey = input.predecessorKey != null ? keyHex(input.predecessorKey) : null
-  const predecessorCheckpoint = input.predecessorCheckpoint ?? null
   const meta = {
     version: METADATA_VERSION,
     genesisKey: keyHex(input.genesisKey),
     appendOnly: true,
-    generation: generationId(predecessorKey, predecessorCheckpoint),
+    generation: generationId(predecessorKey),
     predecessorKey,
-    predecessorCheckpoint,
     limits: { ...METADATA_DEFAULTS.limits, ...(input.limits || {}) },
     rate: { ...METADATA_DEFAULTS.rate, ...(input.rate || {}) },
     swarm: { ...(input.swarm || {}), allow: normalizeAllow(input.swarm && input.swarm.allow) },
@@ -186,42 +175,11 @@ function validateSwarm(swarm) {
 
 function validateGenerationChain(meta) {
   const pk = meta.predecessorKey
-  const cp = meta.predecessorCheckpoint
-  if ((pk == null) !== (cp == null)) {
-    throw new TypeError('predecessorKey and predecessorCheckpoint must be set together (§10)')
+  if (pk != null && (typeof pk !== 'string' || !HEX64.test(pk))) {
+    throw new TypeError('metadata.predecessorKey must be a 64-char lowercase-hex key')
   }
-  if (pk != null) {
-    if (typeof pk !== 'string' || !HEX64.test(pk)) {
-      throw new TypeError('metadata.predecessorKey must be a 64-char lowercase-hex key')
-    }
-    if (typeof cp !== 'object' || Array.isArray(cp)) {
-      throw new TypeError('metadata.predecessorCheckpoint must be an object')
-    }
-    if (typeof cp.viewHash !== 'string' || !HEX64.test(cp.viewHash)) {
-      throw new TypeError('predecessorCheckpoint.viewHash must be the 64-hex I2 full-range hash')
-    }
-    if (
-      !Array.isArray(cp.writerLengths) ||
-      cp.writerLengths.some(
-        (e) =>
-          !Array.isArray(e) ||
-          e.length !== 2 ||
-          typeof e[0] !== 'string' ||
-          !HEX64.test(e[0]) ||
-          !Number.isInteger(e[1]) ||
-          e[1] < 0
-      )
-    ) {
-      throw new TypeError('predecessorCheckpoint.writerLengths must be [[64-hex key, length], ...]')
-    }
-    for (const f of ['signer', 'signature']) {
-      if (cp[f] !== undefined && (typeof cp[f] !== 'string' || !HEX.test(cp[f]))) {
-        throw new TypeError(`predecessorCheckpoint.${f} must be a hex string when present`)
-      }
-    }
-  }
-  if (meta.generation !== generationId(pk, cp)) {
-    throw new Error('metadata.generation does not match its predecessor fields (§10 generation chain)')
+  if (meta.generation !== generationId(pk)) {
+    throw new Error('metadata.generation does not match its predecessorKey (§10 generation chain)')
   }
 }
 

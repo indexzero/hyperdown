@@ -7,7 +7,7 @@
 //      suppressed; open conflicts as conflicted copies) into `toDir`;
 //   2. init a FRESH vault whose writer keypairs cannot recur across generations
 //      (@auto-okf/store derives writer cores under a per-generation corestore
-//      namespace keyed by the predecessor fields — §10/N2, so adoption of
+//      namespace keyed by predecessorKey — §10/N2, so adoption of
 //      the predecessor's mint-shaped ids never deadlocks `mint-collision-
 //      risk`). compact takes no keyPair, so nothing bypasses that
 //      namespace. The fresh vault pins the predecessor's `limits` (§3);
@@ -21,8 +21,7 @@
 //      (verify.js). A difference fails the cycle with COMPACT_FIDELITY, and
 //      compaction removes what it wrote to the new out-dir;
 //   5. record the generation chain in the fresh vault's metadata
-//      ({ predecessorKey, predecessorCheckpoint }) and a generation entry in the
-//      fresh vault's `log/`.
+//      (predecessorKey) and a generation entry in the fresh vault's `log/`.
 //
 // Effect = CouchDB compaction (SPEC §10, I11): live STATE and IDENTITY
 // survive byte-for-byte (every live concept's _id, type, fields, tags, path,
@@ -107,9 +106,6 @@ const GENERATION_LOG_REL = 'log/generation.json'
  *                initBundle, before the import, and again before success,
  *                and throws COMPACT_SUCCESSOR_NOT_ENCRYPTED when it says
  *                otherwise.
- *   sign         async (checkpoint) => { signer, signature } (hex) — signs the
- *                predecessor checkpoint that anchors the generation chain (§10:
- *                operator-signed provenance, never verified here).
  *   onPlaintext  async (warning) => void. When the predecessor is encrypted,
  *                compact calls it once with the plaintext warning of the
  *                face, and awaits it, before the first write to the face
@@ -124,7 +120,7 @@ const GENERATION_LOG_REL = 'log/generation.json'
  * vault the predecessor's vault key. compact refuses a supplied `keyPair`
  * with COMPACT_KEYPAIR_REFUSED, before it reads, creates or writes anything.
  *
- * Returns { ok, predecessorKey, predecessorPath, predecessorCheckpoint,
+ * Returns { ok, predecessorKey, predecessorPath,
  *   vault (the fresh OPEN vault — the CALLER closes it), vaultDir, generation,
  *   bundleDir, conflictCopies, logEntry, logPath, ingestOps, counts,
  *   warnings }.
@@ -180,7 +176,7 @@ const GENERATION_LOG_REL = 'log/generation.json'
  * operator to archive or destroy out-of-band (§10 step 5).
  */
 export async function compact(vault, opts = {}) {
-  const { force = false, sign } = opts
+  const { force = false } = opts
   if (opts.keyPair !== undefined) {
     throw compactError(
       'COMPACT_KEYPAIR_REFUSED',
@@ -258,7 +254,7 @@ export async function compact(vault, opts = {}) {
       throw err.code === 'EEXIST' ? stageExistsError(stageDir) : err
     })
     ownStage = true
-    return await generateSuccessor(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, sign, initBundle })
+    return await generateSuccessor(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, initBundle })
   } catch (err) {
     if (err !== null && typeof err === 'object' && err.warnings === undefined) err.warnings = warnings
     throw err
@@ -307,7 +303,7 @@ export async function guardCompactPaths({ predecessorDir = null, toDir, vaultDir
 }
 
 /** Everything after the stage is created: the staged copy, the fresh vault, its ingest, its check and its generation entry. */
-async function generateSuccessor(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, sign, initBundle }) {
+async function generateSuccessor(vault, report, warnings, { expected, stageDir, vaultDir, encryptionKey, initBundle }) {
   // The stage walks the face's emission manifest, not the directory: a
   // directory walk (walkNotes) skips every dot name, and a concept at a
   // dot-segment path such as `.drafts/idea` is a note that materialize wrote.
@@ -352,14 +348,8 @@ async function generateSuccessor(vault, report, warnings, { expected, stageDir, 
     }
   }
 
-  // ---- 4. checkpoint the predecessor and open the fresh vault (§10 step 3/4) ----
+  // ---- 4. open the fresh vault (§10 step 3/4) ----
   const predecessorKey = vault.keyHex
-  const predecessorCheckpoint = await vault.checkpoint() // { viewHash, writerLengths }
-  if (typeof sign === 'function') {
-    const sig = await sign(predecessorCheckpoint)
-    if (sig && sig.signer !== undefined) predecessorCheckpoint.signer = sig.signer
-    if (sig && sig.signature !== undefined) predecessorCheckpoint.signature = sig.signature
-  }
 
   // From here on, a failure closes the fresh vault and removes what this
   // compaction created in vaultDir, so no partial out-dir remains.
@@ -370,7 +360,7 @@ async function generateSuccessor(vault, report, warnings, { expected, stageDir, 
     // face fitted them, and the fresh vault's apply and the ingest preflight
     // check each op against them.
     newVault = await initBundle(vaultDir, {
-      metadata: { predecessorKey, predecessorCheckpoint, limits: { ...vault.metadata.limits } },
+      metadata: { predecessorKey, limits: { ...vault.metadata.limits } },
       ...(encryptionKey !== undefined ? { encryptionKey } : {})
     })
     // With a key, the fresh vault is encrypted before the import writes any
@@ -444,7 +434,6 @@ async function generateSuccessor(vault, report, warnings, { expected, stageDir, 
       generation: newVault.generation,
       at: Date.now(),
       predecessorKey,
-      predecessorCheckpoint,
       conflictCopies,
       note:
         'generation cycle (SPEC §10): live state + identity preserved byte-for-byte; ' +
@@ -461,7 +450,6 @@ async function generateSuccessor(vault, report, warnings, { expected, stageDir, 
       ok: true,
       predecessorKey,
       predecessorPath: vault.dir, // §10 step 5: operator archives/destroys this
-      predecessorCheckpoint,
       vault: newVault,
       vaultDir,
       generation: newVault.generation,

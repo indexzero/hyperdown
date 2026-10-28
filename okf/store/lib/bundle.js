@@ -136,8 +136,8 @@ export class Bundle extends EventEmitter {
    *   takes ownership of (metadata then lives in memory / the invite).
    * @param {object} [opts]
    *   key            vault key to join (Buffer or hex); omit to create/open
-   *   metadata       invite metadata overrides (predecessorKey,
-   *                  predecessorCheckpoint, limits, rate, schemaVersion, ...)
+   *   metadata       invite metadata overrides (predecessorKey, limits,
+   *                  rate, schemaVersion, ...)
    *   encryptionKey  32-byte key for private vaults (end to end: writer
    *                  cores, system and view are encrypted at rest; autobee
    *                  persists the key in the local core's userData —
@@ -263,14 +263,11 @@ export class Bundle extends EventEmitter {
     if (stored) this._setApply(stored)
 
     // §10: the per-generation namespace is derivable before the Autobee exists —
-    // it is a pure function of the (stored or invited) predecessor fields.
+    // it is a pure function of the (stored or invited) predecessorKey.
     const predKey = stored
       ? stored.predecessorKey
       : (overrides && overrides.predecessorKey) ?? null
-    const predCp = stored
-      ? stored.predecessorCheckpoint
-      : (overrides && overrides.predecessorCheckpoint) ?? null
-    this.generation = generationId(predKey, predCp)
+    this.generation = generationId(predKey)
     const session = this.store.namespace(GENERATION_NS + this.generation)
 
     const bootKey = stored
