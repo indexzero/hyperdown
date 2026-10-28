@@ -8,16 +8,17 @@ references cite [SPEC.md](SPEC.md).
 ## The trust model
 
 **Membership is total trust for the life of a generation.** A member is a
-key that autobee has added (point (d) below): genesis, each key that an
-`AddWriter` op granted, and each key that an approval on a folded node
-named. Any member can do these things, and okf cannot stop them without
-changing autobee:
+key that autobee has added (point (d) below). Three paths add one:
+genesis, each key that an `AddWriter` op granted, and each key that an
+approval on a folded node named. Any member can do these things, and okf
+cannot stop them without changing autobee:
 
 - halt every peer that folds its node (G2),
 - choose where its writes sort, and so pick the winner of a race (G5),
 - make every peer open writer cores (G44).
 
-The owner accepted that (decision 1). A generation is one vault, one key
+The owner accepted that (decision 1, and the decision of G1 on G44). A
+generation is one vault, one key
 set and one log. The next generation starts with one member, the peer
 that ran its import (the eviction ladder below).
 
@@ -72,10 +73,10 @@ revocation epochs are the planned fix.**
 
 Step 1 retracts nothing. A block of the cut key that a member already
 holds stays in that member's store. Members still replicate it to each
-other, because every admitted connection runs `db.replicate`, which
-replicates the cores of the store (`store/lib/bundle.js:1176-1177`,
-DEVIATIONS "The store session, replication and close"), and okf never
-removes the key at the substrate. Each peer cuts only its own connections, so a peer that has not
+other. Every admitted connection runs `db.replicate`, which replicates
+the cores of the store (`store/lib/bundle.js:1176-1177`, DEVIATIONS "The
+store session, replication and close"). okf never removes the key at the
+substrate. Each peer cuts only its own connections, so a peer that has not
 folded the removal still admits the key. The old vault stays on each
 replica that holds it, until that replica is destroyed (SPEC §10).
 

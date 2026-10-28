@@ -123,7 +123,7 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
   once also when the list names it. See [Replication](#replication). Apply
   does not read it, so `applyConfig` leaves it out. A generation never
   carries it: `auto-okf import --metadata` carries `limits`, `rate` and
-  `schemaVersion` only (`okf/faces/lib/import.js:44`), so the invite of
+  `schemaVersion` only (`okf/faces/lib/import.js:44`). So the invite of
   the new vault lists only the swarm key of the peer that ran the import.
   A generation is the eviction point: an indexer admits each writer again
   with `writers.add(key, { swarmKey })`.

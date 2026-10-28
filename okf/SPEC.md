@@ -4,13 +4,13 @@
 keywords (MUST, SHOULD, MAY) apply.
 **Changelog:** v1.11 pins autobee at exactly 2.12.1 and corestore at
 exactly 7.16.1 (§1). It states the order of concurrent writes and its
-two-hour bound (§8), and that the revocation check binds only the ops
-that sort after the removal, so revocation stops cooperating clients
-only (§8). It states the `swarmKey` field of `AddWriter`, the rejection
-of a bad key, and the rejection of an `AddWriter` that demotes the last
-live indexer (§3, §8). It states re-admission (§8), the default rate ceiling (§8),
-the events of `log.md` (§9), the claim of an import and its cleanup, the
-swarm allowlist across a generation, and redaction (§10). P7 leaves
+two-hour bound (§8). The revocation check binds only the ops that sort
+after the removal, so revocation stops cooperating clients only (§8). It
+states the `swarmKey` field of `AddWriter`, the rejection of a bad key,
+and the rejection of an `AddWriter` that demotes the last live indexer
+(§3, §8). It states re-admission and the default rate ceiling (§8), and
+the events of `log.md` (§9). It states the claim of an import, its
+cleanup, the swarm allowlist across a generation, and redaction (§10). P7 leaves
 "Known limitations": ingest strips every trailing reserved suffix, and
 the regression test of #28 holds (§9, §12).
 v1.10 makes a generation two commands: `materialize`, then
@@ -969,10 +969,10 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   reads, so the check leaves them out. A difference fails the import by
   name (`IMPORT_FIDELITY`, each difference listed). No verification copy
   is written to disk.
-- **Cleanup on a failure.** After any failure that comes once the new
-  vault exists (`IMPORT_FIDELITY`, `IMPORT_OVERSIZE`, `IMPORT_REJECTED`,
-  `IMPORT_NOT_ENCRYPTED`), import closes the new vault and removes what it
-  created while it held the claim, and then the claim. A `<new-dir>` that
+- **Cleanup on a failure.** Some failures come once the new vault exists:
+  `IMPORT_FIDELITY`, `IMPORT_OVERSIZE`, `IMPORT_REJECTED` and
+  `IMPORT_NOT_ENCRYPTED`. On each, import closes the new vault. It removes
+  what it created while it held the claim, and then the claim. A `<new-dir>` that
   import made is removed. An existing empty `<new-dir>` stays, empty
   (`okf/faces/lib/import.js:95-103`; test "T13 (T24): a truncated note
   fails the import by name with IMPORT_FIDELITY, and import removes the
