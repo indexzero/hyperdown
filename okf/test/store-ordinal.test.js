@@ -453,7 +453,7 @@ test('T12: the clock carries self and each writer with a gov/writer record, a re
   assert.equal(clock[aHex], r.seq, 'its self entry is its own position')
 })
 
-test('G33 (s7): with 1,000 keys that a member approves, of one op each, an honest op stays under maxOpBytes', { timeout: 240000 }, async (t) => {
+test('G33 (s7): with 1,000 keys that a member approves, of one op each, an honest op stays under maxOpBytes', { timeout: 300000 }, async (t) => {
   const N = 1000
   const a = await Bundle.init(await tmpDir('g33-a')) // the genesis indexer
   const m = await Bundle.join(await tmpDir('g33-m'), a.key) // a member
@@ -538,7 +538,12 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
     for (const k of keys) if ((await a.val(K.seen(k))) !== 1) return false
     return true
   }
-  assert.ok(await until(foldedAll, 180000, 250), 'a folds the op of every junk key (positive control)')
+  // D-059 measured the cost. The fold took at most 25 s, also with four
+  // suites on the machine at once, and the steps before it took at most
+  // 110 s. The fold deadline is about five times the fold. The test timeout
+  // leaves room for the steps before it, so a fold that stops fails here,
+  // on the positive control, and not on the test timeout.
+  assert.ok(await until(foldedAll, 120000, 250), 'a folds the op of every junk key (positive control)')
   for (const k of keys) {
     assert.deepEqual(await a.val(K.flagRejected(k, 0)), { reason: 'not-a-writer' })
   }
