@@ -70,7 +70,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8). `--swarm-key` puts the writer's swarm key on its `gov/writer` record, and the swarm firewall of every peer admits it once it folds the op |
 | `keys <dir>` | print the vault key, this peer's writer key and its swarm key. A `<dir>` without a vault prints the swarm key only: it already exists (the store derives it from the directory's corestore, which `keys` creates when it is new), so a pre-provisioned fleet can collect every key before `init --swarm-allow` |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
-| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
+| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. A value that the face cannot hold (a scalar `null`, a second `type` value, a reference or an object) is a `warning:` line that names the note, the key and the `_id`, then an `error:` line, and exit 1: fix it in the vault before `import` (SPEC §10). For an encrypted vault the line holds no value. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
 | `ingest <dir> <bundle-dir> [paths…]` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9). Trailing bundle-relative paths restrict the scan to exactly those concept files (ADR-001 — concurrent-writer politeness; the shell expands globs): a named path that does not exist, escapes the bundle root, or is not a `.md` file exits 1 naming the path, with zero ops appended. Zero paths = full scan, unchanged. `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default) |
 | `watch <dir> <bundle-dir> [--swarm --bootstrap <host:port,...> \| --swarm --public-dht]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also replicates over a swarm whose firewall admits only members' swarm keys (see [Private swarm](#private-swarm)). `--swarm` needs exactly one DHT: `--bootstrap`, the nodes of a private DHT (`auto-okf bootstrap`), or `--public-dht`, the public DHT (the commons). Without either, `watch --swarm` refuses by name (exit 2) before it opens the vault. `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
 | `bootstrap --port <n> [--host <ipv4>]` | run a DHT bootstrap node (hyperdht `DHT.bootstrapper`) in the foreground until Ctrl-C: the hub of a private DHT. It binds `<host>` only, default `127.0.0.1`, so the default node takes no packet from another machine. Peers pass `--bootstrap <host>:<n>` |
@@ -249,6 +249,8 @@ vault is never touched:
 ```sh
 auto-okf flags ./vault conflict            # resolve open body conflicts first
 auto-okf materialize ./vault ./face        # 1. the face of the live vault
+#    (exit 1 names each value that the face cannot hold: fix it in
+#    ./vault, then materialize again)
 # 2. resolve in ./face what must not cross: give each conflicted copy
 #    (*.conflict-<hex>.md) a path of its own, or merge it and remove it
 auto-okf import ./face ./vault-e1 \
@@ -296,7 +298,8 @@ encrypted too.
 ## Exit codes
 
 `0` success · `1` operational error (including a governance op that apply
-rejected, or an unsafe path skipped during `materialize`) · `2` usage
+rejected, an unsafe path skipped during `materialize`, or a value that the
+face cannot hold, reported by `materialize`) · `2` usage
 error — unknown flags and commands, missing or extra arguments, and malformed
 values all exit 2 (paparam parses strictly; the wrapper maps every parse
 failure to 2) · `3` (`materialize` only) everything owned was projected but
@@ -348,8 +351,9 @@ ingests to the expected ops; path-scoped ingest folds only the named files;
 `status` reports the five per-file states read-only; add-writer/remove-writer round trip; `wanted`
 lists an unresolved link; `flags` lists a seeded conflict, and after
 `resolve` a generation runs as `materialize`, then `import`; `materialize`
-warns when it writes an encrypted vault as plaintext, before the first
-plaintext write; `import` prints its counts and its fidelity check, writes
+exits 1 and names each value that the face cannot hold, without the value
+for an encrypted vault; `materialize` warns when it writes an encrypted
+vault as plaintext, before the first plaintext write; `import` prints its counts and its fidelity check, writes
 nothing to the face, carries `--metadata` and records `--predecessor`;
 `import --encryption-key` makes a vault in which no file holds the
 plaintext of the face, checked against an unencrypted control, and prints

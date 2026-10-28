@@ -161,8 +161,10 @@ even though the body text is identical — SPEC §14).
 import { Bundle } from '@auto-okf/store'
 import { materialize, importFace } from '@auto-okf/faces'
 
-// 1. the face of the live vault
-await materialize(old, './generation-face')
+// 1. the face of the live vault; report.lossy lists each value that the
+//    face cannot hold: fix each one in the vault and materialize again
+const report = await materialize(old, './generation-face')
+if (report.lossy.length > 0) throw new Error('fix report.lossy before import')
 // 2. resolve in the face what must not cross: a .conflict- copy is refused
 // 3. a fresh vault, filled from the notes of the face
 const res = await importFace(Bundle.init, './generation-face', './vault-e1', {
@@ -213,12 +215,19 @@ in `dir`. No verification copy is written to disk.
 The fresh vault uses a **fresh writer keypair**: `@auto-okf/store` derives
 writer cores under a per-generation namespace derived from
 `predecessorKey` (SPEC §10), which is why adopting the predecessor's
-mint-shaped ids never trips `mint-collision-risk`. The face is a lossy
-projection: a field value that it cannot hold (a scalar `null`, a second
-`type` value, a reference or an object) comes back as the face holds it,
-and `importFace` cannot see that change (SPEC §10, known limit). The face
-of an encrypted vault holds its contents as plaintext: `materialize`
-announces it (`opts.onPlaintext`), and `importFace` writes no plaintext.
+mint-shaped ids never trips `mint-collision-risk`. The face of an
+encrypted vault holds its contents as plaintext: `materialize` announces
+it (`opts.onPlaintext`), and `importFace` writes no plaintext.
+
+**materialize reports every value that the face cannot hold.** The face
+cannot hold some values that the view can: a scalar `null` is omitted, only
+the first `type` value is written, and a reference or an object is written
+as a string. `importFace` reads only the face, so it cannot see such a
+change. So `materialize` parses each note that it renders back and
+compares each field with the view. Each difference is in `report.lossy` as
+`{ id, path, key, before, after }` (`before` the view's values, `after`
+what the note gives back). An operator fixes those values in the vault,
+and materializes again, before the import (SPEC §10).
 
 ## Install
 
@@ -230,7 +239,7 @@ npm install @auto-okf/faces
 
 | export | what |
 | --- | --- |
-| `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; `opts.onPlaintext` is awaited with the plaintext warning before the first write of an encrypted vault; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root, warnings }` |
+| `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; `opts.onPlaintext` is awaited with the plaintext warning before the first write of an encrypted vault; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root, warnings, lossy }`, `lossy` the values that the face cannot hold (above) |
 | `createIngestWatcher(vault, dir, opts)` | start the watcher; `opts`: `confirmDelete`, `debounce`, `settle`, `watch:false` (drive `ingestFile`/`scan` manually) |
 | `importFace(initBundle, faceDir, dir, opts)` | SPEC §10 generation: a new vault in a new or empty `dir`, filled from the notes of the face; `initBundle` is the store factory (`Bundle.init`); `opts`: `encryptionKey`, `metadata` (carries `limits`, `rate`, `schemaVersion`), `predecessorKey`; returns `{ vault, dir, generation, counts, warnings }`; errors carry an `IMPORT_*` code (above) |
 | `status(vault, dir)` | read-only per-file state rows `[{ path, state }]` (ADR-002) |
@@ -257,7 +266,8 @@ human-file-preservation case; conflict-copy round-trip; the **I11 generation**
 suite (`okf/test/i11-roundtrip.test.js`: a non-trivial bundle round-trips
 through materialize and import byte-identically modulo `_rev`/`log.md`,
 identity + state fidelity per live concept, history shed positively
-asserted, a second generation that keeps even `_rev`, dot-segment paths,
+asserted, a second generation that keeps even `_rev`, the values that
+the face cannot hold reported by `materialize`, dot-segment paths,
 exact body bytes, the carried `limits`, `rate` and `schemaVersion`, the
 encoded-op preflight and core rejections, a truncated note that fails
 `IMPORT_FIDELITY`, and the refusals); and an

@@ -173,8 +173,9 @@ vault into a face, resolve in the face what must not cross, then
 adoption. The new vault's metadata records the predecessor's key, and
 import checks that the new vault's notes match the face. The CouchDB homage.
 **Not this:** not an op — no in-log operation reclaims bytes. Not lossless of
-history: old revisions and per-op attribution are shed by design. Not
-lossless of a value that the face cannot hold (SPEC §10).
+history: old revisions and per-op attribution are shed by design.
+`materialize` reports every value that the face cannot hold, and the
+operator fixes those values before `import` (SPEC §10).
 
 ---
 

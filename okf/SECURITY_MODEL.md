@@ -360,9 +360,10 @@ bytes of the face that the import read.
 History is shed by design: old revisions, per-op attribution, and clocks
 do not survive a generation. [I11](GLOSSARY.md#invariant-i1i11) is the
 counterpart guarantee: every live concept's `_id`, type, fields, tags,
-path, and head body survive byte-for-byte, for each value that the face
-can hold (§10). import refuses a face that holds a conflicted copy, so an
-open path collision is resolved in the face before a generation.
+path, and head body survive byte-for-byte. materialize reports every
+value that the face cannot hold, and the operator fixes those values
+before import (§10). import refuses a face that holds a conflicted copy,
+so an open path collision is resolved in the face before a generation.
 
 ### Privacy
 

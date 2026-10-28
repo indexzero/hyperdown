@@ -7,7 +7,8 @@ keywords (MUST, SHOULD, MAY) apply.
 step, the verification copy, the live-state check against a predecessor,
 `--force`, the generation `log/` entry and the predecessor checkpoint are
 gone. The metadata records `predecessorKey` alone, and the generation id
-derives from it (§9, §10, §11, §13).
+derives from it. `materialize` reports every value that the face cannot
+hold, and `auto-okf materialize` exits 1 on one (§9, §10, §11, §13).
 v1.9 states the transport contract for autobee@2.12.1
 only (§1): the constructor options that the store passes, the apply, host
 and instance surfaces that okf uses, and the corestore floor 7.12.6 under
@@ -886,12 +887,18 @@ Effect: live state and identity survive; history (old revisions, per-op
 attribution, clocks) is shed by design. State- and identity-fidelity
 across a generation is an acceptance criterion (§14).
 
-**Known limit: the face is a lossy projection (§9).** A field value that
-the face cannot hold comes back as the face holds it: a scalar `null` is
-omitted, only the first `type` value is written, and a reference or an
-object is written as a string. import cannot see such a change, because
-it has no live predecessor to compare with. So I11 holds for each value
-that the face can hold.
+**`materialize` reports every value that the face cannot hold. An
+operator fixes those values before `import`.** The face cannot hold some
+values that the view can: a scalar `null` is omitted, only the first
+`type` value is written, and a reference or an object is written as a
+string. import cannot see such a change, because it reads only the face.
+So materialize parses each note that it renders back, reads each field the
+way ingest reads it, and compares it with the view. Each difference is in
+`report.lossy` as `{ id, path, key, before, after }`.
+`auto-okf materialize` prints a warning for each one and exits 1. The
+operator changes the value in the vault to one that the face can hold,
+and materializes again, before the import (`okf/faces/lib/materialize.js`
+`lossyFields`).
 
 ## 11. Invariants (the test suite maps to these)
 
@@ -921,8 +928,9 @@ that the face can hold.
   applied/rejected partition is replay-stable.
 - **I11 Roundtrip:** materialize, then import into a fresh vault (a
   generation, §10), preserves every live concept's `_id`, `type`, fields,
-  tags, path, and head body byte-for-byte, for each value that the face
-  can hold (§10).
+  tags, path, and head body byte-for-byte. `materialize` reports every
+  value that the face cannot hold, and an operator fixes those values
+  before `import` (§10).
 
 ## 12. Non-goals (v1)
 

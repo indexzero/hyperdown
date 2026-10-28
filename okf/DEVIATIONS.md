@@ -115,7 +115,10 @@ pipeline went:
 - The live-state check against the predecessor. It made a field value
   that the face cannot hold (a scalar `null`, a second `type` value, a
   reference or an object) fail loudly (D-029 F01). import cannot see such
-  a change, and SPEC §10 records it as a known limit.
+  a change, so the check moved to `materialize`: it parses each rendered
+  note back, reports each such value in `report.lossy`, and
+  `auto-okf materialize` exits 1 (SPEC §10). An operator fixes those
+  values in the vault before the import.
 
 What stays, in another form:
 
