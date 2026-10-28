@@ -94,21 +94,17 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
   genesis indexer.
 - **`appendOnly: true`** — the SPEC §8 constant, immutable by
   construction: it lives outside the log (no op can flip it — the wire
-  contract has no prune/compact/byte-destroying op at all), nothing
+  contract has no prune or byte-destroying op at all), nothing
   rewrites the file after init, and a tampered document refuses to open.
   `DeleteConcept` is a tombstone; bytes and `_id` remain.
-- **Generation chain** (`predecessorKey`, `predecessorCheckpoint`) — SPEC §10:
-  which vault this one was compacted from, with the predecessor's I2 view
-  hash and writer lengths (provenance, not proof). The checkpoint is
-  unsigned by default. `compact()` adds a `signer` and a `signature` only
-  when its caller passes the optional `sign` hook
-  (`okf/faces/lib/compact.js:358-362`), and `auto-okf compact` passes no
-  hook (`okf/cli/lib/run.js:845-852`). The store checks only that each of
-  the two fields, when present, is a hex string
-  (`okf/store/lib/metadata.js:217-221`). Nothing in okf verifies a
-  signature. A consumer that needs one verifies it outside okf.
-- **`generation`** — the per-generation corestore namespace, derived purely from the
-  predecessor fields (`'root'` when null). Writer cores derive under
+- **Generation chain** (`predecessorKey`) — SPEC §10: the vault key of
+  the predecessor whose face this vault imported
+  (`auto-okf import --predecessor`), or `null` for a root vault. It is the
+  operator's claim: unsigned, never verified, provenance and not proof.
+- **`generation`** — the per-generation corestore namespace, derived purely from
+  `predecessorKey` (`'root'` when null, else sha256 over the key bytes).
+  A joiner passes the same `predecessorKey` in its invite metadata to
+  derive it. Writer cores derive under
   it, so a writer keypair can never recur across generations, even in a reused
   directory (§10 freshness; adoption of predecessor mint ids stays safe).
 - **`limits`** (`maxOpBytes`, `maxPathBytes`, `maxPathDepth`) and **`rate`**
@@ -137,7 +133,7 @@ new vault (or, with `key`, joins that vault). A `key` that differs from
 the pinned vault key fails `VAULT_KEY_MISMATCH`. Invite metadata that
 differs from the pinned document fails `VAULT_METADATA_MISMATCH`.
 
-`opts`: `metadata` (invite overrides incl. generation-chain fields),
+`opts`: `metadata` (invite overrides incl. `predecessorKey`),
 `encryptionKey` (32 bytes, end to end — writer cores, system and view
 encrypted at rest; autobee keeps the key in the local core's user data, so
 a reopen needs no key), `keyPair`, `backpressure`.
@@ -161,7 +157,7 @@ a reopen needs no key), `keyPair`, `backpressure`.
 | `view`, `get(key)`, `val(key)`, `scan(prefix)` | reads over the hyperbee2 view snapshot |
 | `update()`, `updated()`, `flush()` | autobee lifecycle passthrough |
 | `snapshotHash()`, `hash()` | I2/I3 full-range view hash, byte-compatible with core `MemView.hash()` (`hash()` is an alias) |
-| `checkpoint()` | §10 `{ viewHash, writerLengths }` for the next generation's metadata |
+| `checkpoint()` | `{ viewHash, writerLengths }`: the I2 full-range view hash, and the last folded position plus one of each writer (`seen/`) |
 | `replicate(isInitiator \| stream)` | direct replication stream |
 | `swarm({ bootstrap, publicDht })`, `leaveSwarm()` | replication over a private hyperswarm that the Bundle owns, behind a firewall on members' swarm keys (see [Replication](#replication)) |
 | `revokePeer(swarmKey)` | take a swarm key out of this peer's allowlist, destroy its open connections, and `leavePeer` it, for the life of the Bundle |
@@ -298,13 +294,13 @@ across empty blocks and restarts, the bounded clock, backpressure, writer
 add/remove round trip with causal revocation, weight 0 for every writer,
 the governance race (G9b), the substrate attack suite and its residuals,
 encryptionKey open/read and encryption at rest, vault-metadata determinism
-(version 2, appendOnly, closed `limits`, `rate` and `swarm`, generation
-chain), generation-namespace freshness, restart-from-disk rebuild equality,
-hyperswarm replication on the `auto-okf/2` topic over a local testnet, the
-private swarm (the swarm key, the firewall against a peer with the vault
-key and no admitted swarm key, the cut of a removed writer and of
-`revokePeer`, a pre-provisioned pair over `joinPeer`, a joiner admitted
-after a ban), and the dependency resolution of the store.
+(version 2, appendOnly, closed `limits`, `rate` and `swarm`,
+`predecessorKey`), generation-namespace freshness, restart-from-disk
+rebuild equality, hyperswarm replication on the `auto-okf/2` topic over a
+local testnet, the private swarm (the swarm key, the firewall against a
+peer with the vault key and no admitted swarm key, the cut of a removed
+writer and of `revokePeer`, a pre-provisioned pair over `joinPeer`, a
+joiner admitted after a ban), and the dependency resolution of the store.
 
 ## License
 

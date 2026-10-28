@@ -67,7 +67,7 @@ into ops, so the watched tree is untrusted input by design (§9).
 - **Append-only (§8):** the
   [append-only guarantee](GLOSSARY.md#append-only-guarantee) is a
   vault-metadata constant, fixed at init and unrepresentable as an op.
-  There is no prune, no compaction, no byte-destroying operation anywhere
+  There is no prune and no byte-destroying operation anywhere
   in the wire contract. `DeleteConcept` writes a tombstone; a write to a
   tombstoned concept lands and flags `flag/writeafterdelete`.
 - **Path safety (§7):** paths are attacker-controlled. A path that escapes
@@ -342,28 +342,27 @@ right after a successful decode and before every check that can reject it
 
 ### The generation chain is provenance, not proof
 
-Compaction is an operator act via the hydrated face, never an op (§10).
-The new vault records `{ predecessorKey, predecessorCheckpoint }` in its
-metadata (`faces/lib/compact.js:355-373`).
+A generation is an operator act via the face, never an op (§10):
+`materialize`, then `auto-okf import` into a new directory. The new vault
+records `predecessorKey` in its metadata, from `--predecessor`
+(`faces/lib/import.js`, `carriedMetadata`).
 
-**That record is unsigned by default.** `compact()` adds a `signer` and a
-`signature` to the checkpoint only when its caller passes the optional
-`sign` hook (`faces/lib/compact.js:110-112`, `:358-362`), and
-`auto-okf compact` passes no hook (`cli/lib/run.js:712-719`). Nothing in
-okf verifies such a signature either (§10 names it as never verified
-here). So the default chain is a recorded claim, and not an attestation.
+**That record is the operator's claim.** No checkpoint and no signature
+exist: import opens no predecessor vault, and the operator gives the key.
+Nothing in okf checks it against a vault. So the chain is a recorded
+claim, and not an attestation.
 
 Consumers MUST treat cross-generation identity as trusted-operator scope.
 Within one generation, identity is checked by apply. Across generations,
-you are trusting the operator who ran compact, and by default you have
-only the bytes that run wrote.
+you are trusting the operator who ran the import, and you have only the
+bytes of the face that the import read.
 
 History is shed by design: old revisions, per-op attribution, and clocks
-do not survive a cycle. [I11](GLOSSARY.md#invariant-i1i11) is the
+do not survive a generation. [I11](GLOSSARY.md#invariant-i1i11) is the
 counterpart guarantee: every live concept's `_id`, type, fields, tags,
-path, and head body survive byte-for-byte. Compact refuses to run over
-open `flag/conflict` or `flag/pathcollision` without `--force`, and a
-forced run must enumerate every conflicted copy it carries across.
+path, and head body survive byte-for-byte, for each value that the face
+can hold (§10). import refuses a face that holds a conflicted copy, so an
+open path collision is resolved in the face before a generation.
 
 ### Privacy
 

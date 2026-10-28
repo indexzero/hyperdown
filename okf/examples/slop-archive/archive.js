@@ -18,7 +18,7 @@
 //   4. guarantee   — the archive CANNOT be rm'ed: `appendOnly: true` is an
 //                    immutable vault-metadata constant (loaded at open, refuses
 //                    a tampered document), and the entire 12-op wire contract
-//                    contains NO prune / compact / byte-destroying op at all
+//                    contains NO prune / byte-reclaiming / byte-destroying op at all
 //
 // Determinism: a fixed writer key pair and pinned `at` timestamps make every
 // byte under out/ identical on every run (I9; asserted by
@@ -119,13 +119,13 @@ async function main() {
 
   // ---- 4. why an agent cannot rm the archive ------------------------------
   console.log('\n--- the structural guarantee ---')
-  const destructive = OP_TYPES.filter((t) => /prune|compact|gc|destroy|purge|rm|drop/.test(t))
+  const destructive = OP_TYPES.filter((t) => /prune|reclaim|gc|destroy|purge|rm|drop/.test(t))
   say(`the entire wire contract is ${OP_TYPES.length} ops; ops that destroy bytes: ${destructive.length}`)
   say(`  ${OP_TYPES.join(', ')}`)
-  say('DeleteConcept is a tombstone; there is no prune/compact/gc op to represent, so an agent')
+  say('DeleteConcept is a tombstone; there is no prune/reclaim/gc op to represent, so an agent')
   say('literally cannot express "erase this from history". appendOnly lives OUTSIDE the log — no')
   say('op can flip it, and a tampered okf-vault.json refuses to open. Byte reclamation is an')
-  say('operator-only generation-cycle (compact), never an agent action.')
+  say('operator-only generation (materialize, then import), never an agent action.')
 
   // ---- 5. dump the archive ------------------------------------------------
   console.log('\n--- archive dump ---')

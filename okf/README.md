@@ -92,9 +92,10 @@ showing off append-only) and [`vlurp-library`](./examples/vlurp-library/)
 
 No component ever treats a generated face as authoritative: human edits to
 the bundle re-enter as ops (§9), and a face can always be regenerated,
-byte-identically, from a converged view (I9). Byte reclamation is an
-[generation cycle](./GLOSSARY.md#generation--compact) — materialize, re-ingest into
-a fresh vault with `_id` adoption — an operator act, never an op (§10).
+byte-identically, from a converged view (I9). Byte reclamation is a
+[generation](./GLOSSARY.md#generation--import) — materialize the face, then
+`auto-okf import` it into a fresh vault with `_id` adoption — an operator
+act, never an op (§10).
 
 ## Packages
 
@@ -102,8 +103,8 @@ a fresh vault with `_id` adoption — an operator act, never an op (§10).
 | --- | --- |
 | [`@auto-okf/core`](./core) | the op wire codec, the pure deterministic `apply`, the view keyspace, canonical forms |
 | [`@auto-okf/store`](./store) | vault lifecycle on autobee: op emission, §8 governance, metadata pinning (the append-only constant + generation chain), swarm replication |
-| [`@auto-okf/faces`](./faces) | materialize (bundle + `index.md`/`log.md`), the ingest watcher, the `wanted/` demand index, generation-cycle compact |
-| [`@auto-okf/cli`](./cli) | `auto-okf init/join/add-writer/remove-writer/materialize/ingest/watch/status/wanted/flags/resolve/undelete/compact` |
+| [`@auto-okf/faces`](./faces) | materialize (bundle + `index.md`/`log.md`), the ingest watcher, the `wanted/` demand index, the import of a face into a new vault (a generation) |
+| [`@auto-okf/cli`](./cli) | `auto-okf init/join/add-writer/remove-writer/materialize/ingest/watch/status/wanted/flags/import/resolve/undelete` |
 
 Each package README is usage-first, with a table of its API (for the CLI,
 its commands).

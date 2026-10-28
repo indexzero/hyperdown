@@ -26,13 +26,13 @@ destroying that record. auto-okf makes destruction **unrepresentable**:
   an op** — no message in the 12-op wire contract can flip it, and a tampered
   `okf-vault.json` refuses to open.
 - **The wire contract has no byte-destroying op at all.** The script prints all
-  12 ops and counts the ones that prune/compact/gc/destroy: **zero**. An agent
+  12 ops and counts the ones that prune/reclaim/gc/destroy: **zero**. An agent
   cannot even *express* "erase this from history."
 
-Byte reclamation does exist — but only as an **operator-run generation cycle**
-(`compact`, SPEC §10), which materializes the live bundle into a fresh vault
-and sheds history by design. It is a deliberate human act, never something an
-agent can do mid-session.
+Byte reclamation does exist — but only as an **operator-run generation**
+(SPEC §10): `materialize` the live bundle into a face, then `auto-okf
+import` the face into a fresh vault, which sheds history by design. It is a
+deliberate human act, never something an agent can do mid-session.
 
 ## What the run shows
 

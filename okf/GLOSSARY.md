@@ -166,13 +166,15 @@ Cunningham's sense. Sorted by referrer count. Queryable work for writers.
 **Not this:** not a flag. An unwritten concept is legitimate, healthy state,
 never an error.
 
-### generation / compact
-Operator-only byte reclamation: materialize the live bundle, optionally delete
-files on disk, init a fresh vault whose metadata records the predecessor,
-ingest with `_id` adoption, and check that the fresh vault matches the face
-and the predecessor's live state. The CouchDB-compaction homage.
+### generation / import
+Operator-only byte reclamation in two commands: `materialize` the live
+vault into a face, resolve in the face what must not cross, then
+`auto-okf import` the face into a fresh vault in a new directory, with `_id`
+adoption. The new vault's metadata records the predecessor's key, and
+import checks that the new vault's notes match the face. The CouchDB homage.
 **Not this:** not an op — no in-log operation reclaims bytes. Not lossless of
-history: old revisions and per-op attribution are shed by design.
+history: old revisions and per-op attribution are shed by design. Not
+lossless of a value that the face cannot hold (SPEC §10).
 
 ---
 

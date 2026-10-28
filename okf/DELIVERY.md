@@ -25,9 +25,11 @@ verification: `../orchestration/results/OKF-FINAL-VERIFICATION.md`
 agents co-write, dumped as plain markdown anyone can read. Two stacks in one
 repo: the frozen `vault-ld/` and the new `okf/` (`@auto-okf/*`), sharing no
 imports (copy-don't-depend). Identity is CouchDB-homage `_id`/`_rev`; path is
-a Kleppmann-safe LWW register; deletion is whole-vault append-only with
-epoch-cycle compaction; red links are a `wanted/` demand index (Cunningham's
-Incremental principle); `log.md` is a real op-log projection.
+a Kleppmann-safe LWW register; deletion is whole-vault append-only, and
+bytes are reclaimed by a generation (materialize, then `auto-okf import`
+into a fresh vault; T24 replaced the original one-command cycle); red links
+are a `wanted/` demand index (Cunningham's Incremental principle); `log.md`
+is a real op-log projection.
 
 ## Artifact paths
 
@@ -37,7 +39,7 @@ Incremental principle); `log.md` is a real op-log projection.
 | Spec review chain | `../orchestration/results/OKF-SPEC-REVIEW-{1,2,3}.md`, `OKF-SPEC-DISPOSITIONS-1.md` |
 | Core (ops, apply, keyspace/canonical/revhash copies, MemView) | `core` (`@auto-okf/core`) |
 | Store (vault lifecycle on autobee, metadata, governance, replication) | `store` (`@auto-okf/store`) |
-| Faces (materialize +index.md/log.md, ingest, wanted, compact) | `faces` (`@auto-okf/faces`) |
+| Faces (materialize +index.md/log.md, ingest, wanted, import) | `faces` (`@auto-okf/faces`) |
 | CLI | `cli` (`@auto-okf/cli`, bin `auto-okf`) |
 | Invariant + regression suite (I1..I11) | `test`, `test/regressions` |
 | Multi-process fault harness + S1..S10 + fuzz + soak | `harness` |
@@ -55,8 +57,8 @@ Incremental principle); `log.md` is a real op-log projection.
 | #21 | 10/okf-core → 8/vault-ld | T2/T3 core + invariant suite |
 | #22 | 11/okf-store → 10/okf-core | T4 store on autobee |
 | #23 | 12/okf-faces → 11/okf-store | T5 faces (+ codex cross-model review) |
-| #24 | 13/okf-compact → 12/okf-faces | T6 epoch compact + I11 |
-| #25 | 14/okf-cli → 13/okf-compact | T7 cli |
+| #24 | branch 13 (T6) → 12/okf-faces | T6 epoch cycle + I11 (the cycle is now materialize, then import: T24) |
+| #25 | 14/okf-cli → branch 13 (T6) | T7 cli |
 | #26 | 15/okf-examples → 14/okf-cli | T8 three examples |
 | #27 | 16/okf-harness → 15/okf-examples | T9 fault harness + matrix |
 | #29 | 17/okf-review → 16/okf-harness | T10 review + F1/F2 fixes |

@@ -7,7 +7,8 @@ bundle on disk. `materialize` projects a converged view into a
 byte-deterministic directory of markdown files; the ingest watcher folds
 human edits back into the log as *minimal* ops; `wanted` reports what the
 graph is asking to have written; `status` reports each file's state against
-the log, read-only (ADR-002). The log stays the source of truth — a face
+the log, read-only (ADR-002); `importFace` fills a new vault from a face (a
+generation, SPEC §10). The log stays the source of truth — a face
 can always be regenerated, byte-for-byte, and human edits always re-enter as
 ops (SPEC §2, §9).
 
@@ -126,7 +127,7 @@ against the head revision:
 - `_id`/`_rev` are stripped from the diff (identity and derived output are
   never fields, SPEC §5);
 - a known `_id` at a new path → `SetPath`; a missing `_id` → mint; an
-  **unknown** `_id` → **adopt** it (the generation-cycle contract, SPEC §10);
+  **unknown** `_id` → **adopt** it (the generation contract, SPEC §10);
 - a file deleted on disk → `DeleteConcept`, behind a confirmation guard that
   is **on by default** (no confirmer ⇒ nothing is deleted);
 - links go to apply's normative extractor; unresolved targets feed
@@ -142,96 +143,82 @@ against the head revision:
 > hand-written note that ends in one newline holds a body with no trailing
 > newline, and a note that ends in two holds a body that ends in one.
 
-### Generation-cycle compaction (SPEC §10, the CouchDB homage)
+### Generations: materialize, then import (SPEC §10, the CouchDB homage)
 
-Byte reclamation in auto-okf is an **operator act via the hydrated face**,
-never an op — the SPEC §8 wire contract has no prune/compact/byte-destroying
-message at all. `compact` performs one **generation cycle**: it materializes the
-live bundle, spins up a **fresh vault**, and ingests the bundle back with
-`_id` **adoption**. Live **state and identity survive byte-for-byte** — every
+Byte reclamation in auto-okf is an **operator act via the face**, never an
+op — the SPEC §8 wire contract has no prune or byte-destroying message at
+all. A **generation** is two steps: `materialize` the live vault into a
+face, then `importFace` that face into a **fresh vault** with `_id`
+**adoption**. Live **state and identity survive byte-for-byte** — every
 live concept's `_id`, `type`, fields, tags, path and head body — while
-**history is shed by design**: old revisions, per-op attribution and clocks
-do not cross the boundary (this is what compaction *means*, and I11 asserts it
-positively). Tombstoned concepts are dropped; `_rev` and `log.md` necessarily
-re-derive in the new generation (a head that was an *edit* re-roots at `base:null`,
-so its revHash changes even though the body text is identical — SPEC §14).
+**history is shed by design**: old revisions, per-op attribution and
+clocks do not cross (I11 asserts it positively). Tombstoned concepts are
+not in the face; `_rev` and `log.md` re-derive in the new generation (a
+head that was an *edit* re-roots at `base:null`, so its revHash changes
+even though the body text is identical — SPEC §14).
 
 ```js
 import { Bundle } from '@auto-okf/store'
-import { compact } from '@auto-okf/faces'
+import { materialize, importFace } from '@auto-okf/faces'
 
-const res = await compact(old, {
-  toDir: './generation-face',   // where the hydrated OKF bundle is written
-  vaultDir: './vault-e1',       // storage dir for the fresh vault
-  initBundle: Bundle.init       // the @auto-okf/store factory (substrate is injected)
+// 1. the face of the live vault
+await materialize(old, './generation-face')
+// 2. resolve in the face what must not cross: a .conflict- copy is refused
+// 3. a fresh vault, filled from the notes of the face
+const res = await importFace(Bundle.init, './generation-face', './vault-e1', {
+  metadata: old.metadata,     // carries limits, rate and schemaVersion
+  predecessorKey: old.keyHex  // records the generation chain
+  // encryptionKey: a 32-byte key encrypts the new vault
 })
-// res.vault           — the fresh, OPEN vault (the caller closes it)
-// res.generation      — the fresh per-generation corestore namespace id
-// res.predecessorPath — the OLD vault's dir; compact NEVER deletes it —
-//                       the operator archives or destroys it out-of-band
-// res.predecessorCheckpoint — { viewHash, writerLengths } anchoring the chain
-// res.conflictCopies  — [{ from, to, id }] carried across (only under force)
-// res.logPath         — the log/generation.json entry written into the new vault
-// res.counts          — { walked, staged, ingested } concept notes
-// res.warnings        — [{ kind, path, message }], e.g. a note the stage skipped
+// res.vault      — the fresh, OPEN vault (the caller closes it)
+// res.generation — the per-generation corestore namespace id
+// res.counts     — { notes, imported }: notes read, notes that made a concept
+// res.warnings   — [{ kind, path, message }], e.g. a note without `type`
 await res.vault.close()
 ```
 
-The fresh vault uses a **fresh writer keypair** (`@auto-okf/store` derives
-writer cores under a per-generation namespace keyed by the predecessor fields —
-SPEC §10/N2), which is exactly why adopting the predecessor's mint-shaped ids
-never trips `mint-collision-risk`. For the same reason compact takes no
-`keyPair`: a supplied one bypasses that namespace, so compact refuses it
-(`COMPACT_KEYPAIR_REFUSED`) before it reads, creates or writes anything.
-The fresh vault pins the predecessor's `limits`. compact **refuses without
-`force: true`** (`COMPACT_REFUSED`) while any `flag/conflict` or
-`flag/pathcollision` is open (a live conflict must never be silently frozen
-into a new generation); with `force`, carried-across conflicted copies are
-enumerated in the new vault's `log/generation.json`. `_id`, `type`, fields,
-tags, path and head body cross the boundary intact; drained conflicts and
-resolved renames land as their settled state with no history. Without
-`force`, a face directory that holds pending-ingest files throws
-`COMPACT_DIRTY_TARGET`. A missing `initBundle`, `toDir` or `vaultDir`
-throws `COMPACT_NO_INITBUNDLE`, `COMPACT_NO_TODIR` or `COMPACT_NO_VAULTDIR`.
+The face is **inert source**: `importFace` reads it once, into memory,
+writes nothing to it, and opens no predecessor vault. The old vault is
+never touched: archive or destroy it out-of-band.
 
-**compact checks its own output.** After the ingest it materializes the
-fresh vault into a verification directory and byte-compares it with the
-face (`_rev` lines and `log.md` excluded, SPEC §14). It also compares the
-live state of the fresh vault with the predecessor's. Any difference
-throws `COMPACT_FIDELITY`, which names every difference (also in
-`err.differences`), and compact removes what it wrote to `vaultDir`.
+**Before it writes anything**, `importFace` refuses, by name: a `dir` that
+is pinned, not empty, or not a directory (`IMPORT_DIR_NOT_EMPTY`); a key
+that is not a 32-byte Buffer or Uint8Array (`IMPORT_ENCRYPTION_KEY_INVALID`,
+and no value is read as no key); metadata that says encrypted, without a
+key (`IMPORT_ENCRYPTION_KEY_REQUIRED`: a generation of an encrypted vault
+is never unencrypted); a `predecessorKey` that is not a vault key
+(`IMPORT_PREDECESSOR_INVALID`); and a face that holds an entry that is not
+a regular file or a directory, such as a symlink (`IMPORT_FACE_ENTRY`), a
+`.conflict-<hex>` note (`IMPORT_CONFLICT_COPY`: resolve the collision in
+the face first) or a note at a reserved `.okf-` name
+(`IMPORT_RESERVED_NAME`). A missing `initBundle` throws
+`IMPORT_NO_INITBUNDLE`.
 
-**Compaction never drops encryption.** When the predecessor is encrypted,
-`opts.encryptionKey` is required. Without it compact throws
-`COMPACT_ENCRYPTION_KEY_REQUIRED`. A value that is not a 32-byte Buffer or
-Uint8Array throws `COMPACT_ENCRYPTION_KEY_INVALID`. Both come before
-compact reads, creates or writes anything. No option makes an unencrypted
-copy, and the key is never carried over: the caller names the fresh
-vault's key. With a key, a fresh vault whose metadata does not say
-`encrypted: true` throws `COMPACT_SUCCESSOR_NOT_ENCRYPTED`. `materialize` is
-the plaintext export. For an encrypted vault, `materialize` and `compact`
-(for its face) put a `{ kind: 'plaintext', path, message }` warning in
-`warnings`, and await `opts.onPlaintext(warning)` before their first
-write.
+**Import-mode ingest** (`IngestWatcher.importNote`) ignores the emission
+manifest of the face, treats every `_rev` as absent (each head becomes the
+concept's first revision), and imports dot-segment paths such as
+`.drafts/idea`. Before it appends an op it checks the encoded op against
+the new vault's `maxOpBytes` (`IMPORT_OVERSIZE`), and an op that core
+rejects fails the import (`IMPORT_REJECTED`, with core's reason).
 
-**compact guards its paths.** Before it writes or removes anything, it
-resolves `toDir`, `vaultDir` and `stageDir` (a trailing slash names the
-same directory) and follows symlinks. Then:
+**importFace checks its own output.** After the import, the notes of a
+materialize of the new vault (its byte plan, in memory) must equal the
+notes of the face, byte for byte, without `_rev` lines. `index.md` and
+`log.md` are regenerated faces that import never reads, so the check
+leaves them out. A difference throws `IMPORT_FIDELITY`, with every
+difference in the message and in `err.differences`. On any failure after
+the new vault exists, `importFace` closes it and removes what it created
+in `dir`. No verification copy is written to disk.
 
-- The predecessor directory, `vaultDir`, `toDir`, the stage and the
-  verification directory must be separate. Two that are equal, or one
-  inside another, throw `COMPACT_PATH_OVERLAP` (`err.areas` names the two).
-- `vaultDir` must be new or an empty directory, else
-  `COMPACT_OUT_DIR_NOT_EMPTY`.
-- The stage (default `<vaultDir>.compact-src`) must not exist, else
-  `COMPACT_STAGE_EXISTS`. compact creates the stage for this run only, and
-  it removes the stage and the verification directory on success and on
-  failure.
-
-Known limitation: these checks run before compaction writes. Another
-process that writes into the out-dir or the stage during a compaction can
-still lose its files. The fix, a private build directory and an atomic
-rename, is [#59](https://github.com/indexzero/hyperdown/issues/59).
+The fresh vault uses a **fresh writer keypair**: `@auto-okf/store` derives
+writer cores under a per-generation namespace derived from
+`predecessorKey` (SPEC §10), which is why adopting the predecessor's
+mint-shaped ids never trips `mint-collision-risk`. The face is a lossy
+projection: a field value that it cannot hold (a scalar `null`, a second
+`type` value, a reference or an object) comes back as the face holds it,
+and `importFace` cannot see that change (SPEC §10, known limit). The face
+of an encrypted vault holds its contents as plaintext: `materialize`
+announces it (`opts.onPlaintext`), and `importFace` writes no plaintext.
 
 ## Install
 
@@ -245,7 +232,7 @@ npm install @auto-okf/faces
 | --- | --- |
 | `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; `opts.onPlaintext` is awaited with the plaintext warning before the first write of an encrypted vault; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root, warnings }` |
 | `createIngestWatcher(vault, dir, opts)` | start the watcher; `opts`: `confirmDelete`, `debounce`, `settle`, `watch:false` (drive `ingestFile`/`scan` manually) |
-| `compact(vault, opts)` | SPEC §10 generation cycle; `opts`: `initBundle` (required store factory, `Bundle.init`), `toDir`, `vaultDir`, `force`, `encryptionKey`, `sign`, `stageDir`, `onPlaintext`; returns `{ ok, vault, vaultDir, generation, predecessorKey, predecessorPath, predecessorCheckpoint, bundleDir, conflictCopies, logEntry, logPath, ingestOps, counts, warnings }`; errors carry a `COMPACT_*` code (above) |
+| `importFace(initBundle, faceDir, dir, opts)` | SPEC §10 generation: a new vault in a new or empty `dir`, filled from the notes of the face; `initBundle` is the store factory (`Bundle.init`); `opts`: `encryptionKey`, `metadata` (carries `limits`, `rate`, `schemaVersion`), `predecessorKey`; returns `{ vault, dir, generation, counts, warnings }`; errors carry an `IMPORT_*` code (above) |
 | `status(vault, dir)` | read-only per-file state rows `[{ path, state }]` (ADR-002) |
 | `wanted(vault)` | `[{ path, count, referrers }]`, most-wanted first (from `wanted/` + `wantedrank/`) |
 | `readView(reader)` / `readLog(reader)` | the pure view→model projection materialize builds on |
@@ -266,13 +253,14 @@ corestore on disk, no stubs): materialize byte-determinism across two runs,
 a replicated peer, and a from-scratch rebuild (I9); ingest minimality (one
 field edit → one op); the full `materialize → edit → ingest → materialize`
 round-trip; a rename + concurrent-edit merge across the round-trip; the N3
-human-file-preservation case; conflict-copy round-trip; the **I11 generation-cycle**
+human-file-preservation case; conflict-copy round-trip; the **I11 generation**
 suite (`okf/test/i11-roundtrip.test.js`: a non-trivial bundle round-trips
-byte-identically modulo `_rev`/`log.md`, identity + state fidelity per live
-concept, history shed positively asserted, the conflict-drain guardrail, a
-length-2 generation chain, `--force` conflict-copy carry-across, the
-`COMPACT_FIDELITY` self-check, dot-segment paths, exact body bytes and the
-pinned `limits`, the `keyPair` refusal, and the path guards); and an
+through materialize and import byte-identically modulo `_rev`/`log.md`,
+identity + state fidelity per live concept, history shed positively
+asserted, a second generation that keeps even `_rev`, dot-segment paths,
+exact body bytes, the carried `limits`, `rate` and `schemaVersion`, the
+encoded-op preflight and core rejections, a truncated note that fails
+`IMPORT_FIDELITY`, and the refusals); and an
 **independent** OKF v0.1 conformance check (`okf/test/okf-conformance.js`,
 written from scratch against the OKF spec — it does not call this package's
 emitter).

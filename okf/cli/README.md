@@ -3,7 +3,7 @@
 The `auto-okf` command line (okf SPEC §13): a thin veneer over
 [`@auto-okf/store`](../store) (vault lifecycle + §8 governance ops) and
 [`@auto-okf/faces`](../faces) (materialize, ingest watcher, the `wanted/`
-demand index, generation-cycle compaction). The CLI never writes the view or the
+demand index, the import of a face into a new vault). The CLI never writes the view or the
 face itself — every effect flows through the packages, so anything it does is
 exactly what a library caller does. The command surface is declared once as a
 [paparam](https://github.com/holepunchto/paparam) command tree (Holepunch's
@@ -77,7 +77,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
-| `compact <dir> <out-dir> [--force]` | generation-cycle compaction (§10): materialize the live bundle, init a fresh vault at `<out-dir>`, and ingest with `_id` adoption. Live state and identity survive; history is shed. Refuses while any `flag/conflict`/`flag/pathcollision` is open unless `--force`. The hydrated face is written to `<out-dir>.face` (override with `--face <dir>`). The predecessor is never deleted. `<out-dir>` must be new or empty, and the paths must not overlap (see [Compaction paths](#compaction-paths)). compact checks the fresh vault against the face and the predecessor's live state, and exits 1 on a difference (`COMPACT_FIDELITY`). The fresh vault is encrypted only with `--encryption-key <hex64>`: compaction never carries a key over. An encrypted vault needs `--encryption-key`: without it, `compact` refuses (`COMPACT_ENCRYPTION_KEY_REQUIRED`, exit 1), and no flag makes an unencrypted copy. The face holds the vault's contents as plaintext, and for an encrypted vault `compact` prints a `warning:` line that names it (see [Encryption and plaintext](#encryption-and-plaintext)) |
+| `import <face-dir> <dir>` | a generation's second step (§10): create a new vault at `<dir>` and fill it from the notes of a face, such as one that `materialize` wrote, with `_id` adoption. Live state and identity survive; history is shed. `<dir>` must be new or empty. `--metadata <okf-vault.json>` carries `limits`, `rate` and `schemaVersion` from the predecessor's metadata; `--predecessor <vault-key>` records the predecessor; `--encryption-key <hex64>` encrypts the new vault. import refuses a face that holds a conflicted copy, and checks the new vault against the face (`IMPORT_FIDELITY`, exit 1). The face is never written. See [Generations](#generations-materialize-then-import) |
 | `resolve <dir> <id> --keep <revHash> [--supersede <h>…] [--text <s>]` | resolve open body conflicts on `<id>`: pin the head to `--keep`, clearing the cited `flag/conflict` entries (§5). `--supersede` is repeatable |
 | `undelete <dir> <id>` | restore a tombstoned concept (writes the `flag/undelete` audit, §8) |
 
@@ -220,12 +220,13 @@ the log — everything that appears came from it.
 A vault made with `--encryption-key` is encrypted at rest. Two rules make
 sure that its contents never become plaintext without a word:
 
-- **Compaction never drops encryption.** `compact` of an encrypted vault
-  needs `--encryption-key <hex64>` for the fresh vault. Without it, `compact`
-  refuses with `COMPACT_ENCRYPTION_KEY_REQUIRED` and exits 1, before it
-  creates or writes anything. No flag makes an unencrypted copy. Compaction
-  never carries a key over, so you name the key of the new generation: the
-  same key or a new one.
+- **A generation never drops encryption.** The import of a generation of
+  an encrypted vault needs `--encryption-key <hex64>` for the new vault.
+  With `--metadata` of an encrypted predecessor and no key, `import`
+  refuses with `IMPORT_ENCRYPTION_KEY_REQUIRED` and exits 1, before it
+  creates or writes anything. No flag makes an unencrypted copy. A key is
+  never carried over, so you name the key of the new generation: the same
+  key or a new one.
 - **A plaintext write is announced.** `materialize` is the plaintext export.
   For an encrypted vault it prints this line on stderr, where `<dir>` is the
   bundle directory. The exit code does not change.
@@ -234,48 +235,57 @@ sure that its contents never become plaintext without a word:
   warning: <dir>: now holds the contents of an encrypted vault as plaintext
   ```
 
-  `compact` prints the same warning for its face (`<out-dir>.face`, or
-  `--face <dir>`). It prints it also when the compaction fails after it
-  wrote the face.
+The face of a generation is that plaintext export: it holds the live
+contents of the vault as plaintext. Keep it as safe as the key, or
+destroy it out-of-band once the import succeeded. `import` reads the face
+and writes no plaintext: no stage, no verification copy and no side file
+in `<dir>`, so it prints no warning.
 
-The face is the plaintext artifact that compaction leaves: it holds the
-live contents of the vault as plaintext. Keep it as safe as the key, or
-destroy it out-of-band. Compaction also writes two plaintext copies for its
-own work: a staging copy (`<out-dir>.compact-src`) and a verification copy
-beside it. It removes both, on success and on failure. It never removes a
-staging directory that existed before it ran: it refuses to start (see
-below).
+## Generations: materialize, then import
 
-## Compaction paths
+A generation reclaims bytes (SPEC §10). It is two commands, and the old
+vault is never touched:
 
-`compact` normalizes a trailing slash on each path argument: `<out-dir>/`
-names the same directory as `<out-dir>`, so the face `<out-dir>.face` and
-the stage `<out-dir>.compact-src` stay siblings of the out-dir. Then it
-checks its paths before it opens the predecessor, so a refusal leaves the
-predecessor's bytes as they were. Each refusal exits 1, names the paths,
-and writes nothing:
+```sh
+auto-okf flags ./vault conflict            # resolve open body conflicts first
+auto-okf materialize ./vault ./face        # 1. the face of the live vault
+# 2. resolve in ./face what must not cross: give each conflicted copy
+#    (*.conflict-<hex>.md) a path of its own, or merge it and remove it
+auto-okf import ./face ./vault-e1 \
+  --metadata ./vault/okf-vault.json \
+  --predecessor <vault key of ./vault>      # 3. the new vault
+```
 
-- `COMPACT_PATH_OVERLAP`: two of the predecessor, the out-dir, the face,
-  the stage and the verification directory are the same directory, or one
-  is inside another. The check follows symlinks.
-- `COMPACT_OUT_DIR_NOT_EMPTY`: `<out-dir>` exists and is not an empty
-  directory, for example an earlier generation. Give a new out-dir.
-- `COMPACT_STAGE_EXISTS`: `<out-dir>.compact-src` exists, for example
-  from a run that stopped. It can hold plaintext: examine it and remove
-  it, or give another out-dir.
+`import` refuses, by name and before it writes anything (exit 1):
 
-After the ingest, `compact` materializes the fresh vault into the
-verification directory and compares it with the face (`_rev` lines and
-`log.md` excluded), and it compares the live state of the fresh vault with
-the predecessor's. A difference exits 1 with `COMPACT_FIDELITY`, which
-names each difference, and `compact` removes what it wrote to
-`<out-dir>`. On success it prints the note counts
-(`notes: <n> walked, <n> staged, <n> ingested`) and a `fidelity:` line.
+- `IMPORT_DIR_NOT_EMPTY`: `<dir>` is a vault (`okf-vault.json` exists), is
+  not empty, or is not a directory. Give a new `<dir>`.
+- `IMPORT_CONFLICT_COPY`: the face holds a `.conflict-<hex>` note, so a
+  path collision is still open. Resolve it in the face.
+- `IMPORT_RESERVED_NAME`: the face holds a note at a reserved `.okf-` name.
+- `IMPORT_FACE_ENTRY`: the face holds an entry that is not a regular file
+  or a directory, such as a symlink.
+- `IMPORT_ENCRYPTION_KEY_REQUIRED`: see above.
 
-Known limitation: these checks run before compaction writes. Another
-process that writes into the out-dir or the stage during a compaction can
-still lose its files. The fix, a private build directory and an atomic
-rename, is [#59](https://github.com/indexzero/hyperdown/issues/59).
+A bad key or predecessor key is a usage error (exit 2). `--metadata` must
+be an `okf-vault.json` of this release, else exit 1, by name.
+
+Then `import` reads every `.md` note of the face, dot paths included, and
+imports it with `_id` adoption. It ignores the emission manifest and every
+`_rev` line. An op larger than `maxOpBytes` when encoded fails with
+`IMPORT_OVERSIZE`, and an op that apply rejects fails with
+`IMPORT_REJECTED`. After the import, the notes of the new vault must equal
+the notes of the face, byte for byte, without `_rev` lines (`index.md` and
+`log.md` are not compared). A difference exits 1 with `IMPORT_FIDELITY`,
+which names each difference. On each failure, `import` removes what it
+created in `<dir>`. On success it prints the note counts
+(`notes: <n> read, <n> imported`), a `fidelity:` line, and the file that a
+joiner passes as `--metadata`: a joiner of the new vault needs it to derive
+the same generation namespace.
+
+The face holds the head body of each concept only. So resolve each open
+`flag/conflict` in the vault before you materialize the face, or the
+losing body stays behind in the old vault.
 
 ## Exit codes
 
@@ -311,10 +321,10 @@ per command) and exits 0.
   issuing peer is not a confirmed indexer, apply rejects the op
   (`flag/rejected`, reason `policy-governance`) and the command exits 1 with
   the reason.
-- The encryption key is needed at `init`/`join`, and at `compact` of an
-  encrypted vault, for the fresh vault. The store pins the encrypted bit in
-  vault metadata, and autobee keeps the key in the local core's user data,
-  so a reopen needs no key.
+- The encryption key is needed at `init`/`join`, and at `import` of a
+  generation of an encrypted vault, for the new vault. The store pins the
+  encrypted bit in vault metadata, and autobee keeps the key in the local
+  core's user data, so a reopen needs no key.
 - A single body may not exceed `maxOpBytes` — 65,536 bytes; `ingest` refuses
   an oversize file by name (exit 1, siblings unaffected) — split the document
   into smaller linked concepts.
@@ -330,24 +340,25 @@ From the repo root: `pnpm test` (or `pnpm test:okf`). The CLI smoke suite
 vaults on disk: init→materialize produces a bundle; a hand-authored file
 ingests to the expected ops; path-scoped ingest folds only the named files;
 `status` reports the five per-file states read-only; add-writer/remove-writer round trip; `wanted`
-lists an unresolved link; `flags` lists a seeded conflict; `compact` refuses
-on an open conflict and succeeds after `resolve`; `compact` refuses an
-encrypted vault without `--encryption-key`, and with a key makes an
-encrypted vault whose raw blocks lack the plaintext; `materialize` and
-`compact` warn when they write an encrypted vault as plaintext; `compact`
-leaves no staging or verification copy; `compact` refuses an existing stage,
-a re-run into an existing generation and overlapping paths before it opens
-the predecessor, and normalizes a trailing slash; an unadmitted peer
-cannot issue `add-writer`; `undelete`
-restores a tombstone; `watch` ingests a foreground edit and exits cleanly on SIGINT;
+lists an unresolved link; `flags` lists a seeded conflict, and after
+`resolve` a generation runs as `materialize`, then `import`; `materialize`
+warns when it writes an encrypted vault as plaintext, before the first
+plaintext write; `import` prints its counts and its fidelity check, writes
+nothing to the face, carries `--metadata` and records `--predecessor`;
+`import --encryption-key` makes a vault in which no file holds the
+plaintext of the face, checked against an unencrypted control, and prints
+no warning; `import` refuses a pinned or non-empty `<dir>`, a vault-ld
+`<dir>`, a face with an open collision, a missing face, and an encrypted
+predecessor without a key, before it writes; its usage errors exit 2;
+`IMPORT_FIDELITY` names every difference; an unadmitted peer cannot issue
+`add-writer`; `undelete` restores a tombstone; `watch` ingests a foreground
+edit and exits cleanly on SIGINT;
 `keys` prints the writer key and the swarm key, and the swarm key before a
 vault exists; `init --swarm-allow` pins the keys; `add-writer --swarm-key`
 puts the key on `gov/writer`; `watch --swarm` refuses by name without
 `--bootstrap` or `--public-dht`; `bootstrap` refuses a bad port or host,
 and runs a node through which `watch --swarm --bootstrap` replicates to an
 admitted peer.
-`okf/test/i11-roundtrip.test.js` also spawns `auto-okf compact`: it reports
-its counts and its fidelity check, and exits 1 on `COMPACT_FIDELITY`.
 
 ## License
 
