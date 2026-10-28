@@ -382,9 +382,16 @@ test('G9a (s4): after the governance race, the race writer\'s next op claims its
     await until(() => all(async (v) => (await v.val(K.govRemoved(aHex))) !== undefined && ((await v.val(K.seen(aHex))) ?? 0) >= add.seq + 1), 30000),
     'every peer folds the revocation and the AddWriter'
   )
+  // N10: with AD7, every node of c reaches apply, so the count of c's ops
+  // that apply saw equals each position, and a count-based seq passed this
+  // test (D-047 mutation M5). An empty block (documented db.append) takes
+  // position 1 and reaches no apply (index.js:1444). So Z takes position 2
+  // while apply has seen one op of c, and only the position ordinal claims
+  // Z's seq.
+  await c.db.append(Buffer.alloc(0))
   const Z = await c.setField(a1.tag, 'status', ['z'])
-  assert.equal(Z.seq, 1, 'Z takes position 1 in c\'s core')
-  assert.equal(c.db.local.length, 2)
+  assert.equal(Z.seq, 2, 'Z takes position 2 in c\'s core, after the empty block')
+  assert.equal(c.db.local.length, 3)
   assert.ok(await until(() => all(async (v) => ((await v.val(K.seen(cHex))) ?? 0) >= Z.seq + 1), 30000), 'every peer folds Z')
   const hs = []
   for (const v of peers) {
