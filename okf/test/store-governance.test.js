@@ -44,3 +44,20 @@ test('writers.add, writers.remove and writers.setPolicy refuse a key that is not
   assert.deepEqual(govKeys.sort(), [K.govWriter(hex(a.localKey)), K.govWriter(hex(b.localKey))].sort())
   assert.deepEqual((await a.val(K.govWriter(hex(b.localKey)))).namespacePrefixes, ['b'])
 })
+
+test('writers.setPolicy before open waits for open, and takes the default ceiling from the pinned metadata (D-047 N13)', async (t) => {
+  // The default rateCeiling comes from this.metadata, which open loads.
+  // Before the fix, setWriterPolicy read it before open, so a call before
+  // ready() threw a TypeError. Every other append helper waits for open.
+  const dir = await tmpDir('policy-before-open')
+  const v = await Bundle.init(dir, { metadata: { rate: { defaultCeiling: 8 } } })
+  const self = hex(v.localKey)
+  await v.close()
+
+  const a = new Bundle(dir)
+  t.after(() => a.close())
+  const res = await a.writers.setPolicy(self, { namespacePrefixes: ['team'] })
+  assert.equal(res.seq, 0, 'the policy op is the first op of the vault')
+  await a.update()
+  assert.deepEqual(await a.val(K.govWriter(self)), { indexer: true, namespacePrefixes: ['team'], rateCeiling: 8 })
+})

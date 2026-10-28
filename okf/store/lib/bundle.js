@@ -1019,10 +1019,16 @@ export class Bundle extends EventEmitter {
     return this.append('remove-writer', { key: writerKey })
   }
 
-  /** rateCeiling is a required wire uint; defaults to the metadata ceiling. */
-  setWriterPolicy(key, { namespacePrefixes = [], rateCeiling } = {}) {
+  /**
+   * rateCeiling is a required wire uint. It defaults to the ceiling of the
+   * pinned metadata, which open loads, so a call before open waits for open,
+   * as every append does (D-047 N13). After open, the call appends at once,
+   * so it keeps its place among the caller's appends.
+   */
+  async setWriterPolicy(key, { namespacePrefixes = [], rateCeiling } = {}) {
     const writerKey = toKeyBuffer(key)
-    if (!writerKey) return Promise.reject(badWriterKeyError())
+    if (!writerKey) throw badWriterKeyError()
+    if (!this.metadata) await this.ready()
     return this.append('set-writer-policy', {
       key: writerKey,
       namespacePrefixes,
