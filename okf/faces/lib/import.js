@@ -54,7 +54,9 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  *   opts.metadata        the predecessor's pinned metadata (the document in
  *               its okf-vault.json). The new vault carries its `limits`,
  *               `rate` and `schemaVersion`, and no other field. Without it,
- *               the new vault takes the defaults.
+ *               the new vault takes the defaults. When it says `encrypted:
+ *               true`, opts.encryptionKey is required (decision 8: a
+ *               generation of an encrypted vault is never unencrypted).
  *   opts.predecessorKey  the predecessor's vault key (64 hex characters, or
  *               32 bytes). The new vault records it as `predecessorKey`, and
  *               its generation id derives from it (§10). Without it, the
@@ -64,6 +66,8 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  *   IMPORT_NO_INITBUNDLE           initBundle is not a function
  *   IMPORT_ENCRYPTION_KEY_INVALID  a key that is not 32 bytes (the message
  *                                  never holds it); no value is read as no key
+ *   IMPORT_ENCRYPTION_KEY_REQUIRED opts.metadata says encrypted, and no key
+ *                                  was given
  *   IMPORT_PREDECESSOR_INVALID     a predecessorKey that is not a vault key
  *   IMPORT_DIR_NOT_EMPTY           `dir` is pinned (it holds okf-vault.json),
  *                                  is not empty, or is not a directory
@@ -102,6 +106,14 @@ export async function importFace(initBundle, faceDir, dir, opts = {}) {
     throw new TypeError('importFace(initBundle, faceDir, dir, opts): faceDir and dir must be paths')
   }
   const encryptionKey = keyOption(opts.encryptionKey)
+  if (encryptionKey === undefined && opts.metadata != null && opts.metadata.encrypted === true) {
+    throw importError(
+      'IMPORT_ENCRYPTION_KEY_REQUIRED',
+      "the predecessor's metadata says encrypted, and a generation never makes an unencrypted copy of an " +
+        'encrypted vault (decision 8): give the new vault a key (opts.encryptionKey, auto-okf import ' +
+        '--encryption-key <hex64>). The face is the plaintext export'
+    )
+  }
   const metadata = carriedMetadata(opts.metadata, predecessorOption(opts.predecessorKey))
   const vaultDir = resolve(dir)
   await refuseUsedDir(vaultDir)

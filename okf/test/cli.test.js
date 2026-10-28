@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { createSocket } from 'node:dgram'
+import { readFileSync } from 'node:fs'
 import { mkdir, readdir, readFile, rm, writeFile, access, symlink } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1651,4 +1652,29 @@ test('F02 (T24): the in-process import refuses a key that is not 32 bytes by nam
   )
   assert.deepEqual(created, [], 'the import wrote content to the unencrypted vault')
   assert.deepEqual(await entries(base), ['face', 'old'])
+})
+
+test('T24, decision 8: import refuses to make an unencrypted generation of an encrypted vault, by name, before it writes', async () => {
+  // The face of an encrypted vault is its plaintext export. --metadata says
+  // that the predecessor is encrypted, and a generation never makes an
+  // unencrypted copy of an encrypted vault, so import needs a key for it.
+  const base = await tmpDir('imp-keyreq')
+  await oldWithFace(base, seedSecret, { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
+  const face = join(base, 'face')
+  const meta = join(base, 'old', 'okf-vault.json')
+  assert.equal((await pinned(join(base, 'old'))).encrypted, true, 'setup: the predecessor must be encrypted')
+
+  const refused = await cli(['import', face, join(base, 'out'), '--metadata', meta])
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr)
+  assert.match(refused.stderr, /^auto-okf import: IMPORT_ENCRYPTION_KEY_REQUIRED: .*--encryption-key/m)
+  await assert.rejects(
+    () => importFace(Bundle.init, face, join(base, 'out'), { metadata: JSON.parse(readFileSync(meta, 'utf8')) }),
+    (err) => err.code === 'IMPORT_ENCRYPTION_KEY_REQUIRED'
+  )
+  assert.deepEqual(await entries(base), ['face', 'old'], 'the refusal created something')
+
+  const ok = await cli(['import', face, join(base, 'out'), '--metadata', meta, '--encryption-key', NEW_KEY])
+  assert.equal(ok.code, 0, ok.stdout + ok.stderr)
+  assert.equal((await pinned(join(base, 'out'))).encrypted, true)
+  assert.deepEqual(await plaintextFiles(join(base, 'out'), SECRET), [])
 })
