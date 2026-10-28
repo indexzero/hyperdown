@@ -8,8 +8,8 @@ autobee@2.12.1, writes vault metadata version 2 and opens no other version
 ## The round of 2026-10-28
 
 A generation is now two commands, `materialize`, then
-`auto-okf import <face-dir> <dir>`, and the `compact` command is gone
-(SPEC §10, `faces/lib/import.js`). The swarm is private by default. Its
+`auto-okf import <face-dir> <dir>`. They replace the one-command cycle of
+the milestone (SPEC §10, `faces/lib/import.js`). The swarm is private by default. Its
 firewall admits only the swarm keys of the invite, of live `gov/writer`
 records and of the peer's local list. The public DHT needs
 `--public-dht` (`store/lib/bundle.js` `swarm()`). The store pins autobee
