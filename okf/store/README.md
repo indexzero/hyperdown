@@ -103,9 +103,9 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
   unsigned by default. `compact()` adds a `signer` and a `signature` only
   when its caller passes the optional `sign` hook
   (`okf/faces/lib/compact.js:358-362`), and `auto-okf compact` passes no
-  hook (`okf/cli/lib/run.js:712-719`). The store checks only that each of
+  hook (`okf/cli/lib/run.js:845-852`). The store checks only that each of
   the two fields, when present, is a hex string
-  (`okf/store/lib/metadata.js:177-181`). Nothing in okf verifies a
+  (`okf/store/lib/metadata.js:217-221`). Nothing in okf verifies a
   signature. A consumer that needs one verifies it outside okf.
 - **`generation`** — the per-generation corestore namespace, derived purely from the
   predecessor fields (`'root'` when null). Writer cores derive under
@@ -176,7 +176,7 @@ and `fastForward: false`, and grants every writer at weight 0 (SPEC §8,
 - `writable` signals substrate admission: autobee has added this writer
   (autobee@2.12.1 `index.js:196-198`). Until then `writable` is false, and
   `append` fails `VAULT_NOT_WRITABLE` (`err.writerKey` names the key)
-  before the op takes a seq (`okf/store/lib/bundle.js:791-799`).
+  before the op takes a seq (`okf/store/lib/bundle.js:846-854`).
 - `writable` is not okf membership. Core grants the key of every
   `add-writer` op that it folds at the substrate, a rejected one too
   (`okf/core/lib/apply.js:375`). So a writer that is not an indexer can
@@ -186,7 +186,7 @@ and `fastForward: false`, and grants every writer at weight 0 (SPEC §8,
   rejects each of its ops.
 - okf membership comes only from `gov/`. Only an `add-writer` op that
   apply accepts writes the `gov/writer` record that admits a key
-  (`okf/core/lib/apply.js:526-534`). Apply accepts that op only from an
+  (`okf/core/lib/apply.js:533-546`). Apply accepts that op only from an
   issuer that is an indexer at the op's linearized position
   (`okf/core/lib/apply.js:407-418`). Only the content ops of an admitted
   key take effect.
@@ -236,7 +236,8 @@ core's §8 clock rule — the applied/rejected partition is replay-stable
 
 ### Replication
 
-`replicate(isInitiator | stream)` returns a direct replication stream.
+`replicate(isInitiator | stream)` returns a direct replication stream. It
+passes no firewall: the caller chooses the peer at the other end.
 
 `swarm({ bootstrap, publicDht })` replicates over a private hyperswarm.
 The vault key is not a capability to connect:

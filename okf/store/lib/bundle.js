@@ -56,8 +56,11 @@
 // plain node from a writer autobee has not added stops earlier, in that
 // writer's _next (lib/writers.js:613-615). autobee still reads such a node,
 // checks its links and resolves its weight before the drop
-// (lib/writers.js:177-206, :547-618), and an outsider still reaches the
-// wakeup protocol (G44, which the owner accepted as a residual).
+// (lib/writers.js:177-206, :547-618), and a connected peer reaches the
+// wakeup protocol (G44). swarm() connects only peers whose swarm key is in
+// its allowlist (T25), so an outsider with the vault key gets no
+// connection from it. A stream that a caller opens with replicate() passes
+// no such check: the caller chooses that peer.
 // So a joiner writes only after an indexer's AddWriter op has linearized
 // and core has granted its key (HostAdapter). Until then db.writable is
 // false (index.js:196-198, lib/writers.js:208-216), and append() refuses
