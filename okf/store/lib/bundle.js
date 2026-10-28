@@ -120,6 +120,22 @@ const SWARM_NAMESPACE = 'auto-okf/2'
 // generations, apart from its writer keys.
 const SWARM_KEY_NAME = 'auto-okf/swarm'
 
+// G3-P9 F02: the most ban records that swarm() keeps for the keys that its
+// firewall rejected. hyperswarm bans each rejected key (index.js:315-319),
+// puts it in swarm.peers (:418-424) and never collects a banned record
+// (lib/peer-info.js:113-115), so a flood of fresh keys grows the swarm
+// without a bound. A ban record changes no decision: the firewall decides
+// every attempt, banned or not (index.js:204-208, :309-322), and an
+// incoming attempt costs one handshake either way (hyperdht
+// lib/server.js:239-262). The record serves one honest case: a joiner that
+// dials before its admission folds is unbanned at once when it comes in
+// (_allowPeer). So the bound needs room only for keys that come back soon.
+// 64 is hyperswarm's default maxPeers (index.js:13), the most connections
+// that a swarm keeps, so the table never holds more rejected peers than
+// the swarm holds admitted ones. Past the bound the oldest ban is lifted
+// and its record is freed (_recordBan).
+const MAX_BANNED_PEERS = 64
+
 // Defaults for the opt-in append backpressure (vault-ld M2 ancestry, the
 // measured finding ported wholesale: a local-fold-only throttle is NOT
 // enough — a fast writer's own fold stays cheap precisely because the
@@ -163,6 +179,8 @@ export class Bundle extends EventEmitter {
     this._swarmTopic = null
     this._discovery = null // the topic session of swarm()
     this._onConnection = null
+    this._onBan = null
+    this._banned = new Set() // G3-P9 F02: banned keys (hex), oldest first, at most MAX_BANNED_PEERS
     this._allowed = new Set() // T25: the swarm keys the firewall admits (hex)
     this._revokedPeers = new Set() // T25: revokePeer() keys, out for the life of the Bundle
     this._allowChain = Promise.resolve() // serializes _refreshAllowlist()
@@ -1104,6 +1122,10 @@ export class Bundle extends EventEmitter {
       }
       swarm.on('connection', this._onConnection)
     }
+    if (!this._onBan) {
+      this._onBan = (info) => this._recordBan(info)
+      swarm.on('ban', this._onBan) // hyperswarm README.md:162-164
+    }
     await this._refreshAllowlist()
     await swarm.listen()
     for (const key of this._listedPeers()) swarm.joinPeer(key)
@@ -1127,6 +1149,11 @@ export class Bundle extends EventEmitter {
       swarm.off('connection', this._onConnection)
       this._onConnection = null
     }
+    if (this._onBan) {
+      swarm.off('ban', this._onBan)
+      this._onBan = null
+    }
+    this._banned.clear()
     await swarm.destroy()
   }
 
@@ -1224,6 +1251,7 @@ export class Bundle extends EventEmitter {
   _allowPeer(hex) {
     const swarm = this.swarmInstance
     if (!swarm) return
+    this._banned.delete(hex)
     const info = swarm.peers.get(hex)
     if (info && info.banned) {
       info.ban(false)
@@ -1231,6 +1259,33 @@ export class Bundle extends EventEmitter {
     }
     if (this.metadata.swarm.allow.includes(hex) && hex !== b4a.toString(this.swarmKey, 'hex')) {
       swarm.joinPeer(b4a.from(hex, 'hex'))
+    }
+  }
+
+  /**
+   * The 'ban' handler (G3-P9 F02, see MAX_BANNED_PEERS). hyperswarm emits
+   * 'ban' when its firewall rejects a key (index.js:315-319, :481-485,
+   * README.md:162-164). The table keeps the newest MAX_BANNED_PEERS keys.
+   * Past the bound, the oldest ban is lifted with the documented
+   * PeerInfo.ban(false) (README.md:202-204), and leavePeer() (README.md:
+   * 126-132) frees the record: it deletes a record that is not banned,
+   * queued, explicit or waiting and has no connection (index.js:556-564,
+   * :431-439, lib/peer-info.js:113-115). The firewall still rejects the key
+   * at its next attempt, and bans it again.
+   */
+  _recordBan(info) {
+    const swarm = this.swarmInstance
+    if (!swarm) return
+    const hex = b4a.toString(info.publicKey, 'hex')
+    this._banned.delete(hex)
+    this._banned.add(hex)
+    for (const oldest of this._banned) {
+      if (this._banned.size <= MAX_BANNED_PEERS) break
+      this._banned.delete(oldest)
+      const record = swarm.peers.get(oldest)
+      if (!record || !record.banned) continue
+      record.ban(false)
+      swarm.leavePeer(record.publicKey)
     }
   }
 }

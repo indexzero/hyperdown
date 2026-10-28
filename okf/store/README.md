@@ -255,6 +255,13 @@ The vault key is not a capability to connect:
   key and the invite, but no admitted swarm key, gets no connection, so it
   reaches neither the replication nor autobee's wakeup protocol (G44 in
   [SECURITY_MODEL.md](../SECURITY_MODEL.md)).
+- **A bounded ban table.** hyperswarm bans each key that the firewall
+  rejects, and keeps a record of it until the ban is lifted. The store
+  keeps at most 64 such records, hyperswarm's default `maxPeers`. Past
+  that bound it lifts the oldest ban and frees its record. The firewall
+  still rejects that key at its next attempt. So a flood of fresh keys
+  costs one handshake per attempt and at most 64 records (G44 in
+  [SECURITY_MODEL.md](../SECURITY_MODEL.md)).
 - **Revocation.** `revokePeer(swarmKey)` takes a key out of this peer's
   allowlist, destroys its open connections, and stops the direct dials to
   it (`leavePeer`), until this Bundle closes. A folded `remove-writer` has
@@ -304,9 +311,9 @@ rebuild equality, hyperswarm replication on the `auto-okf/2` topic over a
 local testnet, the private swarm (the swarm key, the firewall against a
 peer with the vault key and no admitted swarm key, the cut of a removed
 writer and of `revokePeer`, the cut of a removed writer whose swarm key a
-live record also carries, across a reopen, a pre-provisioned pair over
-`joinPeer`, a joiner admitted after a ban), and the dependency resolution
-of the store.
+live record also carries, across a reopen, at most 64 ban records after a
+flood of fresh keys, a pre-provisioned pair over `joinPeer`, a joiner
+admitted after a ban), and the dependency resolution of the store.
 
 ## License
 

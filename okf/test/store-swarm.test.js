@@ -22,12 +22,14 @@ import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { Bundle, K, METADATA_FILE, loadMetadata, tmpDir, until } from './store-helpers.js'
+import { Bundle, K, METADATA_FILE, loadMetadata, sleep, tmpDir, until } from './store-helpers.js'
 
 const storeRequire = createRequire(new URL('../store/index.js', import.meta.url))
 const Hyperswarm = storeRequire('hyperswarm')
 const Corestore = storeRequire('corestore')
-const createTestnet = createRequire(storeRequire.resolve('hyperswarm'))('hyperdht/testnet')
+const swarmRequire = createRequire(storeRequire.resolve('hyperswarm'))
+const createTestnet = swarmRequire('hyperdht/testnet')
+const DHT = swarmRequire('hyperdht')
 
 // The bound on each wait for a result that must come (ms).
 const DEADLINE = 30000
@@ -347,6 +349,64 @@ test("a removed writer's swarm key leaves the allowlist though a live record car
   const leakedAfterReopen = await until(async () => connected(a, b) || (await folds(b, reopened, 50)), QUIET)
   assert.equal(leakedAfterReopen, false, 'after the reopen, b gets no connection and no new op')
   assert.equal(swarmA.peers.get(bHex)?.banned, true, "the reopened a's firewall rejected b")
+})
+
+test('a flood of fresh swarm keys leaves at most 64 ban records, and the firewall still rejects every key (G3-P9 F02)', { timeout: TEST_TIMEOUT }, async (t) => {
+  // The bound that bundle.js names (MAX_BANNED_PEERS). The test pins it.
+  const N = 64
+  const tn = await testnet()
+  const target = await Bundle.init(await tmpDir('ban-target'))
+  const attacker = tn.createNode()
+  t.after(async () => {
+    await target.close()
+    await attacker.destroy()
+    await tn.destroy()
+  })
+  const swarm = await withDeadline(target.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'target.swarm()')
+  const seen = watchSwarm(swarm)
+  await attacker.ready()
+
+  // One attempt: an authenticated Noise handshake with the target under a
+  // key that nobody admitted. hyperswarm bans the key that the firewall
+  // rejects (index.js:315-319), and keeps a banned record until it is
+  // unbanned (lib/peer-info.js:113-115). A rejected attempt gets no reply
+  // (hyperdht lib/server.js:258-261), so the test reads the target's ban
+  // events and then drops its own sockets.
+  const keyPairs = Array.from({ length: 2 * N + 8 }, () => DHT.keyPair())
+  const keys = keyPairs.map((kp) => hex(kp.publicKey))
+  const opened = []
+  const sockets = []
+  const dialAll = () => {
+    for (const keyPair of keyPairs) {
+      const conn = attacker.connect(target.swarmKey, { keyPair })
+      conn.on('error', () => {})
+      conn.once('open', () => opened.push(hex(keyPair.publicKey)))
+      sockets.push(conn)
+    }
+  }
+  const dropAll = () => {
+    for (const conn of sockets.splice(0)) conn.destroy()
+  }
+  const bans = (k) => seen.bans.filter((b) => b === k).length
+  const retained = () => keys.filter((k) => swarm.peers.has(k)).length
+
+  dialAll()
+  assert.ok(await until(() => keys.every((k) => bans(k) >= 1), DEADLINE), 'the firewall rejected every key')
+  dropAll()
+  assert.ok(retained() <= N, `${retained()} records of rejected keys stay, at most ${N}`)
+  const lifted = keys.filter((k) => !swarm.peers.has(k))
+  assert.ok(lifted.length >= keys.length - N, `the bound freed the records of ${lifted.length} keys`)
+
+  // The bound lifted the oldest bans, and the firewall still decides every
+  // attempt: each key whose record was freed is rejected, and banned, again.
+  dialAll()
+  assert.ok(await until(() => lifted.every((k) => bans(k) >= 2), DEADLINE), 'the firewall rejected each freed key again')
+  await sleep(1000) // the attempts of the keys that are still banned
+  dropAll()
+  assert.deepEqual(opened, [], 'no attempt opens a connection')
+  assert.deepEqual(seen.connections.filter((k) => keys.includes(k)), [], 'no rejected key gets a connection')
+  assert.equal(swarm.connections.size, 0)
+  assert.ok(retained() <= N, `after the second attempts, ${retained()} records stay, at most ${N}`)
 })
 
 test('revokePeer cuts a live connection, leaves the peer, and keeps the key out across later folds (T25)', { timeout: TEST_TIMEOUT }, async (t) => {
