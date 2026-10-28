@@ -326,8 +326,14 @@ export class IngestWatcher extends EventEmitter {
    * maxOpBytes, else null. `bytes` is the size of the body.
    *
    * No op of the file is appended yet, so the encoded op is a lower bound:
-   * - The id is the file's `_id`, or a minted tag of 65 characters (the
-   *   shortest tag, makeTag), whichever is shorter. A copy gets a minted id.
+   * - The id is the file's `_id`, or a minted tag of 65 ASCII bytes (the
+   *   shortest tag, makeTag), whichever has fewer UTF-8 bytes. A copy gets
+   *   a minted id. The codec writes an id as a length prefix and its UTF-8
+   *   bytes (hyperschema c.string), and the prefix never gets shorter as
+   *   the length grows. So the id with fewer UTF-8 bytes gives the shorter
+   *   op (G3-P8 F03: a count of UTF-16 code units can choose the longer).
+   *   Core takes only a hex `_id` (SPEC §6), so an `_id` with more UTF-8
+   *   bytes than code units is one that core rejects bad-id.
    * - The base is the file's `_rev`, or none. Without `_rev`, the op of a
    *   concept with a head cites the head.
    * - The clock is clock(0), whose self entry is the smallest position.
@@ -344,7 +350,7 @@ export class IngestWatcher extends EventEmitter {
     } else if (text === '') {
       return null
     }
-    const id = rawId !== undefined && rawId.length < MIN_TAG.length ? rawId : MIN_TAG
+    const id = rawId !== undefined && Buffer.byteLength(rawId, 'utf8') < MIN_TAG.length ? rawId : MIN_TAG
     const base = typeof fm._rev === 'string' && HEX64.test(nfc(fm._rev)) ? nfc(fm._rev) : null
     const limit = this.vault.metadata.limits.maxOpBytes
     const op = { id, base, text, clock: await this.vault.clock(0), at: Date.now() }

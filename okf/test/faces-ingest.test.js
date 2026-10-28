@@ -269,6 +269,50 @@ test('the oversize preflight encodes the set-body op: a body just below maxOpByt
   assert.equal(await readFile(join(dir, 'over.md'), 'utf8'), before, 'materialize keeps over.md')
 })
 
+test('the oversize preflight counts the UTF-8 bytes of an _id, as the codec does: an _id of 32 code units and 96 bytes is not the shorter id (G3-P8 F03)', async (t) => {
+  // The preflight takes the file's _id or the shortest tag (65 ASCII
+  // bytes), whichever gives the shorter op. The codec writes the UTF-8
+  // bytes of an id. Before the fix, the preflight compared UTF-16 code
+  // units, took this _id (32 code units, 96 bytes) as the shorter id, and
+  // refused the file as oversize: an `error:` line that names a body
+  // shorter than maxOpBytes.
+  //
+  // Core takes only an _id that matches ^[0-9a-f]{2,128}$ (SPEC §6), so no
+  // concept holds this _id, and no copy of it can exist. The ingest adopts
+  // it, and core names the cause: bad-id. The file stays pending.
+  const limit = 400
+  const unicodeId = '界'.repeat(32)
+  const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
+  const dir = await tmpDir('bundle')
+  const w = await createIngestWatcher(v, dir, { watch: false })
+  t.after(async () => {
+    await w.close()
+    await v.close()
+  })
+  await materialize(v, dir)
+  // The set-body op that the preflight encodes: no base, and clock(0).
+  const clock = await v.clock(0)
+  const opBytes = (id, n) => encodeOp('set-body', { id, base: null, text: 'b'.repeat(n), clock, at: Date.now() }).byteLength
+  let n = limit
+  while (opBytes('0'.repeat(65), n) > limit) n--
+  assert.equal(opBytes('0'.repeat(65), n), limit, 'under the shortest tag, the op is exactly maxOpBytes')
+  assert.ok(opBytes(unicodeId, n) > limit, 'under the _id, the op is over maxOpBytes')
+  await writeFile(join(dir, 'note.md'), `---\n_id: ${unicodeId}\ntype: note\n---\n${'b'.repeat(n)}\n`)
+
+  const oversize = []
+  const rejected = []
+  w.on('oversize', (e) => oversize.push(e))
+  w.on('rejected', (e) => rejected.push(e))
+  const ops = await w.ingestFile('note.md')
+
+  assert.deepEqual(oversize, [], 'the preflight does not take the 96-byte _id as the shorter id')
+  assert.deepEqual(rejected[0], { path: 'note.md', op: 'create-concept', reason: 'bad-id' }, 'core names the _id')
+  assert.equal(rejected.length, ops.length, 'core rejects each op of the file')
+  await v.update()
+  assert.equal(await v.val(K.cMeta(unicodeId)), undefined, 'no concept holds the _id')
+  assert.ok((await materialize(v, dir)).pendingIngest.includes('note.md'), 'the file stays pending')
+})
+
 test('a body that core rejects on an established concept is not recorded as ingested: it stays pending, materialize keeps it, and ingest names the rejection (D-048 F02)', async (t) => {
   // The writer may write under team/ only, so core rejects its set-body on
   // other/x policy-namespace. Before the fix, ingest recorded the file as
