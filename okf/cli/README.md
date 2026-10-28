@@ -287,6 +287,12 @@ The face holds the head body of each concept only. So resolve each open
 `flag/conflict` in the vault before you materialize the face, or the
 losing body stays behind in the old vault.
 
+A signal such as Ctrl-C stops `import` before its cleanup, so `<dir>` can
+keep a partial vault. A rerun refuses that `<dir>` by name
+(`IMPORT_DIR_NOT_EMPTY`): remove it and run `import` again. The face is
+never written, and with `--encryption-key` the partial vault is
+encrypted too.
+
 ## Exit codes
 
 `0` success · `1` operational error (including a governance op that apply

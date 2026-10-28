@@ -58,6 +58,8 @@ const RESERVED_FRONTMATTER = new Set(['_id', '_rev'])
  * `update`), its pinned `metadata.limits` (the oversize preflight reads
  * `maxOpBytes` there), and the content-op helpers (`createConcept`,
  * `setField`, `addTag`, `remTag`, `setBody`, `setPath`, `deleteConcept`).
+ * importNote also reads `clock([seq])`, the §3 clock of an op, to encode
+ * each op before it is appended.
  * Options:
  *
  *   confirmDelete   async (id, relPath) => boolean — the §9 deletion guard
