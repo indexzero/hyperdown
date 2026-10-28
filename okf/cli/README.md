@@ -302,8 +302,11 @@ per command) and exits 0.
   that `--bootstrap` or `--public-dht` chooses. The firewall admits only
   members' swarm keys, so an outsider with the vault key gets no connection
   and cannot reach autobee's wakeup protocol (G44 in
-  [SECURITY_MODEL.md](../SECURITY_MODEL.md)). On the public DHT, any peer
-  that knows the vault key can still find the peers' addresses.
+  [SECURITY_MODEL.md](../SECURITY_MODEL.md)). On the public DHT, a peer
+  that knows the vault key can still look up the topic announcement. It
+  names the swarm keys of the announcing peers and the DHT nodes that
+  relay to them. Each attempt of a rejected peer also costs a member one
+  handshake message.
 - Governance commands verify their effect in the view after appending: if the
   issuing peer is not a confirmed indexer, apply rejects the op
   (`flag/rejected`, reason `policy-governance`) and the command exits 1 with
