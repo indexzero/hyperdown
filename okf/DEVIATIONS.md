@@ -1,4 +1,4 @@
-## okf (auto-okf) deviations — okf/SPEC.md v1.2
+## okf (auto-okf) deviations — okf/SPEC.md v1.11
 
 **okf §5 `revHash` length prefix: copied code wins (u64 BE, not u32 LE).**
 okf SPEC §5 describes `len()` as "u32 LE", but the same sentence pins the
@@ -97,8 +97,8 @@ guard.
 
 ## okf §10 — generations: materialize, then import (T24)
 
-**okf §10 `auto-okf import` replaces compaction (T24, decision 10).** SPEC
-v1.2 §10 made byte reclamation one `compact` command: materialize the live
+**okf §10 `auto-okf import` replaces compaction (T24, decision 10).** Up
+to v1.9, SPEC §10 made byte reclamation one `compact` command: materialize the live
 vault, stage a manifest-free, `_rev`-stripped copy of its notes, init a
 fresh vault, ingest the stage, check the fresh vault against the face and
 against the live state of the predecessor, and write a generation entry
