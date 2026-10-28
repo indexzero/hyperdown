@@ -50,6 +50,8 @@ const { nfc, canonicalArray, canonicalValue, byteForm } = canonical
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}$/
 const HEX64 = /^[0-9a-f]{64}$/
 const RESERVED_FRONTMATTER = new Set(['_id', '_rev'])
+// The shortest tag (§3 makeTag): a 64-hex writer key and one hex digit of seq.
+const MIN_TAG = '0'.repeat(65)
 
 /**
  * Create (and start) the ingest watcher for `dir`.
@@ -58,8 +60,8 @@ const RESERVED_FRONTMATTER = new Set(['_id', '_rev'])
  * `update`), its pinned `metadata.limits` (the oversize preflight reads
  * `maxOpBytes` there), and the content-op helpers (`createConcept`,
  * `setField`, `addTag`, `remTag`, `setBody`, `setPath`, `deleteConcept`).
- * importNote also reads `clock([seq])`, the §3 clock of an op, to encode
- * each op before it is appended.
+ * The oversize preflight also reads `clock([seq])`, the §3 clock of an op,
+ * to encode an op before it is appended.
  * Options:
  *
  *   confirmDelete   async (id, relPath) => boolean — the §9 deletion guard
@@ -257,17 +259,14 @@ export class IngestWatcher extends EventEmitter {
       const { fm, body, warnings } = parseNote(raw.toString('utf8'))
       for (const wmsg of warnings) this.emit('warning', { path: rel, message: wmsg })
 
-      // §9 oversize preflight (ADR-005): a body that would exceed the §3
-      // maxOpBytes limit is refused HERE, by name, before any op for this
-      // file is appended — apply's oversize-op reject stays as defense in
-      // depth. The file stays pending; sibling files are unaffected. The
-      // limit is the vault's pinned maxOpBytes, the one that apply checks
-      // (G26). The import of a face checks the encoded op instead
-      // (_preflightImport).
-      const limit = this.vault.metadata.limits.maxOpBytes
-      const bodyBytes = Buffer.byteLength(nfc(body), 'utf8')
-      if (bodyBytes > limit) {
-        this.emit('oversize', { path: rel, bytes: bodyBytes, limit })
+      // §9 oversize preflight (ADR-005, D-048 F02): a body whose set-body
+      // op would exceed the vault's pinned maxOpBytes (G26) is refused
+      // HERE, by name, before any op for this file is appended. The file
+      // stays pending; sibling files are unaffected. The import of a face
+      // checks each op (_preflightImport).
+      const refused = await this._preflightBody(fm || {}, body)
+      if (refused !== null) {
+        this.emit('oversize', { path: rel, ...refused })
         return []
       }
 
@@ -291,6 +290,42 @@ export class IngestWatcher extends EventEmitter {
       this.emit('ops', { path: rel, ops })
       return ops
     })
+  }
+
+  /**
+   * The oversize preflight of ingestFile (ADR-005, D-048 F02). apply
+   * measures the encoded op (apply.js `raw.length > maxOpBytes`), and a
+   * set-body op holds the id, the base, the clock and `at` beside the body.
+   * So the preflight encodes the set-body op that the file leads to, and
+   * returns `{ bytes, limit, opBytes }` when that op exceeds the pinned
+   * maxOpBytes, else null. `bytes` is the size of the body.
+   *
+   * No op of the file is appended yet, so the encoded op is a lower bound:
+   * - The id is the file's `_id`, or a minted tag of 65 characters (the
+   *   shortest tag, makeTag), whichever is shorter. A copy gets a minted id.
+   * - The base is the file's `_rev`, or none. Without `_rev`, the op of a
+   *   concept with a head cites the head.
+   * - The clock is clock(0), whose self entry is the smallest position.
+   * So the preflight never refuses an op that core takes. An op within a
+   * few bytes of the limit can pass it, and core then rejects that op.
+   * A file whose body equals its concept's head emits no set-body, so the
+   * preflight does not check it.
+   */
+  async _preflightBody(fm, body) {
+    const text = nfc(body)
+    const rawId = typeof fm._id === 'string' ? nfc(fm._id) : undefined
+    if (rawId !== undefined && (await this.vault.val(K.cMeta(rawId))) !== undefined) {
+      if (text === (await this._conceptState(rawId)).headText) return null
+    } else if (text === '') {
+      return null
+    }
+    const id = rawId !== undefined && rawId.length < MIN_TAG.length ? rawId : MIN_TAG
+    const base = typeof fm._rev === 'string' && HEX64.test(nfc(fm._rev)) ? nfc(fm._rev) : null
+    const limit = this.vault.metadata.limits.maxOpBytes
+    const op = { id, base, text, clock: await this.vault.clock(0), at: Date.now() }
+    const opBytes = encodeOp('set-body', op).byteLength
+    if (opBytes <= limit) return null
+    return { bytes: Buffer.byteLength(text, 'utf8'), limit, opBytes }
   }
 
   /**

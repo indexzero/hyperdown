@@ -195,15 +195,20 @@ async function treeHash(root) {
 
 test("T15: the ordinary ingest preflight checks a body against the vault's own maxOpBytes (G26)", async () => {
   // The preflight refuses a body before apply does (ADR-005), so it uses
-  // the limit that apply uses: the vault's pinned maxOpBytes. (The import
-  // of a face checks the encoded op: the D-048 F02 tests below.)
+  // the limit that apply uses: the vault's pinned maxOpBytes. It measures
+  // the encoded set-body op, as apply does (D-048 F02), and its event names
+  // the body bytes and the op bytes. The import of a face checks each op:
+  // the D-048 F02 tests below.
   const ingestOne = async (name, maxOpBytes, bodyBytes) => {
     const dir = await tmpDir(`pre-${name}`)
     await writeTree(dir, new Map([[`${name}.md`, `---\ntype: note\n---\n\n${'x'.repeat(bodyBytes)}\n`]]))
     const v = await Bundle.init(await tmpDir(`pre-${name}-vault`), { metadata: { limits: { maxOpBytes } } })
     const w = await createIngestWatcher(v, dir, { watch: false })
     const oversize = []
-    w.on('oversize', (e) => oversize.push(e))
+    w.on('oversize', ({ opBytes, ...e }) => {
+      assert.ok(opBytes > e.bytes, `${name}: the encoded op (${opBytes} bytes) holds more than the body`)
+      oversize.push(e)
+    })
     const ops = await w.ingestFile(`${name}.md`)
     await w.close()
     await v.update()

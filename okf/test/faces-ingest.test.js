@@ -5,11 +5,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { encodeOp } from '../core/index.js'
 import {
   Bundle,
   materialize,
   createIngestWatcher,
   K,
+  makeTag,
   tmpDir,
   readBundle,
   bundleDiff,
@@ -193,8 +195,8 @@ test('oversize body preflight: named refusal, zero ops, siblings unaffected (ADR
   await materialize(v, dir) // establish the manifest + reserved faces
 
   // One byte over the limit, plus a comfortably-under sibling. The preflight
-  // boundary is body bytes vs maxOpBytes; the per-op encoding overhead on top
-  // of the body stays apply's defense-in-depth territory (oversize-op).
+  // encodes the set-body op, so the op of the big body is over the limit by
+  // the body's extra byte and the op's other fields (D-048 F02).
   const limit = 65536
   await writeFile(join(dir, 'big.md'), `---\ntype: note\n---\n${'x'.repeat(limit + 1)}\n`)
   await writeFile(join(dir, 'small.md'), `---\ntype: note\n---\n${'y'.repeat(60000)}\n`)
@@ -204,7 +206,10 @@ test('oversize body preflight: named refusal, zero ops, siblings unaffected (ADR
   w.on('oversize', (e) => oversize.push(e))
   const ops = await w.scan()
 
-  assert.deepEqual(oversize, [{ path: 'big.md', bytes: limit + 1, limit }])
+  assert.equal(oversize.length, 1)
+  const { opBytes, ...named } = oversize[0]
+  assert.deepEqual(named, { path: 'big.md', bytes: limit + 1, limit })
+  assert.ok(opBytes > limit + 1, `the encoded op (${opBytes} bytes) holds more than the body`)
   assert.ok(!ops.some((o) => o.payload && o.payload.path === 'big'), 'zero ops for the oversize file')
   await v.update()
   assert.equal(await v.val(K.path('big')), undefined, 'no concept claims the oversize path')
@@ -212,3 +217,61 @@ test('oversize body preflight: named refusal, zero ops, siblings unaffected (ADR
   await w.close()
   await v.close()
 })
+
+// ---------- D-048 F02: the preflight checks the encoded op ----------
+
+test('the oversize preflight encodes the set-body op: a body just below maxOpBytes whose op is over it appends nothing and stays pending (D-048 F02)', async (t) => {
+  // apply measures the encoded op (core apply.js `raw.length > maxOpBytes`),
+  // and the set-body op adds the id, the base, the clock and `at` to the
+  // body. A body under the limit can encode to an op over it. Before the
+  // fix, ingest appended such a file, core rejected its set-body
+  // oversize-op, ingest recorded the file as ingested, and the next
+  // materialize overwrote it with the empty concept.
+  const limit = 4096
+  const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
+  const dir = await tmpDir('bundle')
+  const w = await createIngestWatcher(v, dir, { watch: false })
+  t.after(async () => {
+    await w.close()
+    await v.close()
+  })
+  await materialize(v, dir)
+  const self = v.localKey.toString('hex')
+  // The set-body op of a new note, as the store appends it in this vault:
+  // a minted id of seq 0 or 2 (65 hex characters), no base, and a clock
+  // that holds only self, at seq 1 or 3.
+  const opBytes = (n, seq) =>
+    encodeOp('set-body', { id: makeTag(v.localKey, seq - 1), base: null, text: 'x'.repeat(n), clock: [[self, seq]], at: Date.now() }).byteLength
+  let edge = limit
+  while (opBytes(edge, 1) > limit) edge--
+  assert.equal(opBytes(edge, 1), limit, 'the op of the edge body is exactly maxOpBytes')
+  assert.equal(opBytes(edge + 1, 3), limit + 1)
+  assert.ok(edge + 1 < limit, `the over body (${edge + 1} bytes) is below maxOpBytes`)
+  await writeFile(join(dir, 'edge.md'), `---\ntype: note\n---\n${'x'.repeat(edge)}\n`)
+  await writeFile(join(dir, 'over.md'), `---\ntype: note\n---\n${'x'.repeat(edge + 1)}\n`)
+
+  const oversize = []
+  w.on('oversize', (e) => oversize.push(e))
+  const ops = await w.scan()
+
+  assert.deepEqual(oversize, [{ path: 'over.md', bytes: edge + 1, limit, opBytes: limit + 1 }])
+  assert.deepEqual(ops.map((o) => o.type), ['create-concept', 'set-body'], 'the ops of edge.md, and none of over.md')
+  await v.update()
+  assert.equal(await v.val(K.path('over')), undefined, 'no concept claims the path of over.md')
+  const edgeId = await v.val(K.path('edge'))
+  const head = await v.val(K.cBody(edgeId))
+  assert.equal((await v.val(K.cRev(edgeId, head))).text, 'x'.repeat(edge), 'an op of exactly maxOpBytes takes effect')
+  assert.deepEqual(await rejectedOf(v), {}, 'core rejects no op')
+
+  const before = await readFile(join(dir, 'over.md'), 'utf8')
+  const report = await materialize(v, dir)
+  assert.ok(report.pendingIngest.includes('over.md'), 'over.md stays pending')
+  assert.equal(await readFile(join(dir, 'over.md'), 'utf8'), before, 'materialize keeps over.md')
+})
+
+/** Every flag/rejected record in a vault's view, as { key: reason }. */
+async function rejectedOf(v) {
+  const out = {}
+  for await (const { key, value } of v.scan('flag/rejected/')) out[key] = value.reason
+  return out
+}
