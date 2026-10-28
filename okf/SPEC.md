@@ -1,18 +1,30 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.10 (2026-10-28). RFC 2119
+**Status:** Normative build instruction, v1.11 (2026-10-28). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.10 makes a generation two commands: `materialize`, then
+**Changelog:** v1.11 pins autobee at exactly 2.12.1 and corestore at
+exactly 7.16.1 (§1). It states the order of concurrent writes and its
+two-hour bound (§8), and that the revocation check binds only the ops
+that sort after the removal, so revocation stops cooperating clients
+only (§8). It states the `swarmKey` field of `AddWriter`, the rejection
+of a bad key, and the rejection of an `AddWriter` that demotes the last
+live indexer (§3, §8). It states re-admission (§8), the default rate ceiling (§8),
+the events of `log.md` (§9), the claim of an import and its cleanup, the
+swarm allowlist across a generation, and redaction (§10). P7 leaves
+"Known limitations": ingest strips every trailing reserved suffix, and
+the regression test of #28 holds (§9, §12).
+v1.10 makes a generation two commands: `materialize`, then
 `auto-okf import` of the face into a new directory (§10). The staging
 step, the verification copy, the live-state check against a predecessor,
-`--force`, the generation `log/` entry and the predecessor checkpoint are
-gone. The metadata records `predecessorKey` alone, and the generation id
-derives from it. `materialize` reports every value that the face cannot
-hold, and `auto-okf materialize` exits 1 on one (§9, §10, §11, §13).
+`--force`, the generation `log/` entry and the record of the
+predecessor's view hash and writer lengths are gone. The metadata
+records `predecessorKey` alone, and the generation id derives from it.
+`materialize` reports every value that the face cannot hold, and
+`auto-okf materialize` exits 1 on one (§9, §10, §11, §13).
 v1.9 states the transport contract for autobee@2.12.1
 only (§1): the constructor options that the store passes, the apply, host
-and instance surfaces that okf uses, and the corestore floor 7.12.6 under
-the pin `^7.16.1`. Every statement about autobee cites the installed
+and instance surfaces that okf uses, and the corestore floor 7.12.6. Every
+statement about autobee cites the installed
 source as `file:line`. `DEVIATIONS.md` records each substrate behaviour
 that okf relies on (§0, §1, §2, §3, §7, §8, §12).
 v1.8 bounds the clock. An op's clock carries the self
@@ -30,7 +42,7 @@ v1.6 makes an autobee grant follow every `AddWriter` op:
 apply calls `host.addWriter(key, { weight: 0 })` for every `AddWriter` op
 it folds, accepted or rejected, before any check that can reject it. okf
 membership comes only from `gov/`. The uniform weight is 0 (§8).
-v1.5 deletes optimistic onboarding: a writer's ops take
+v1.5 makes admission come before effect: a writer's ops take
 effect only once an indexer's `AddWriter` has admitted it. A content op
 from any other writer is rejected `not-a-writer`, and a governance op from
 it is rejected `policy-governance` (§8, `okf/core/lib/apply.js:407-426`).
@@ -47,8 +59,8 @@ the corresponding Known-limitations entry is removed. v1.3 upstreams the
 auto-okf delivery + deviation learnings
 (sources: `DELIVERY.md`, `DEVIATIONS.md`) so the spec matches delivered
 reality: revHash length prefix corrected to u64 BE (§5); uniform writer
-weight pinned (§8; v1.6 sets it to 0); optimistic onboarding resolved
-(§8; v1.5 deletes it); the per-writer seen-count ordinal resolution
+weight pinned (§8; v1.6 sets it to 0); the onboarding of a new writer
+resolved (§8; v1.5 replaces it); the per-writer seen-count ordinal resolution
 settled (§3; v1.7 replaces it); `flag/copydetect`
 corrected to an ingest watcher event, not a view row (no core op writes it —
 §4, §9); conflicted-copy face deletion skip and deferred `_id` write-back
@@ -114,9 +126,11 @@ paths.
   files, conformance. Normative for everything materialize emits.
 - autobee README **and source** (`https://github.com/holepunchto/autobee`,
   read `index.js`). The contract below is verified against the installed
-  **autobee@2.12.1**, pinned `^2.12.1` in `okf/store/package.json`: a
-  standalone multiwriter Hyperbee on hyperbee2 and hypercore 11, with no
-  autobase dependency (autobee `package.json`). A citation such as
+  **autobee@2.12.1**, pinned at exactly `2.12.1` in
+  `okf/store/package.json` (test: "the store pins autobee at exactly
+  2.12.1" in `okf/test/store-deps.test.js`): a standalone multiwriter
+  Hyperbee on hyperbee2 and hypercore 11, with no autobase dependency
+  (autobee `package.json`). A citation such as
   `index.js:95` is relative to the autobee package root. `DEVIATIONS.md`
   ("Substrate behaviour that okf relies on") records each behaviour that
   okf relies on, with its source, and the parts of it that the README does
@@ -156,8 +170,9 @@ paths.
   (`index.js:346`), `write()` (`index.js:151`) with `tryPut`, `tryDelete`
   and `flush` (`lib/write.js:46`, `:51`, `:84`), and `createReadStream`
   (`index.js:211`).
-- corestore, hyperswarm READMEs. The corestore pin is `^7.16.1`
-  (`okf/store/package.json`). The floor is 7.12.6, the first release that
+- corestore, hyperswarm READMEs. The corestore pin is exactly `7.16.1`
+  (`okf/store/package.json`, test: "the store pins corestore at exactly
+  7.16.1"). The floor is 7.12.6, the first release that
   honours a per-core `manifestVersion` (corestore@7.16.1 `index.js:714`).
   autobee asks for its system and view cores at manifest version 3
   (`index.js:213-221`), and its view encryption refuses a view core below
@@ -192,7 +207,7 @@ SetPath       { id, path }                        // rename: LWW register (§7)
 DeleteConcept { id }                              // tombstone only (§8)
 UndeleteConcept { id }
 ResolveConflict { id, keep: revHash, supersede: [revHash...], text? }
-AddWriter     { key, indexer: bool }              // governance (§8)
+AddWriter     { key, indexer: bool, swarmKey? }   // governance (§8)
 RemoveWriter  { key }
 SetWriterPolicy { key, namespacePrefixes, rateCeiling }
 ```
@@ -505,7 +520,14 @@ saga is the cautionary tale). The rules are frozen:
   never called (below). The autobee grant of an `AddWriter` op does not
   depend on the op's disposition (the grant rule below). A `RemoveWriter` that
   would leave zero indexers is rejected (reason `policy-governance`) — a
-  vault can never become permanently ungovernable. Genesis: the vault
+  vault can never become permanently ungovernable. An `AddWriter` with
+  `indexer: false` that would demote the last live indexer is rejected the
+  same way. An `AddWriter` whose key is not 32 bytes is rejected
+  `bad-writer-key`, and one whose `swarmKey` is not 32 bytes is rejected
+  `bad-swarm-key`. Neither writes a `gov/` key
+  (`okf/core/lib/apply.js:554-567`). An accepted `AddWriter` stores its
+  `swarmKey` on `gov/writer/<key>`, and the swarm firewall of every peer
+  admits that key (`okf/store/README.md`, Replication). Genesis: the vault
   creator's key is the first indexer, seeded deterministically.
 - **Revocation is causal, in-band, never positional** (vault-ld B1
   ancestry, harness-proven): apply records `gov/removed/<key>` = the
@@ -527,15 +549,39 @@ saga is the cautionary tale). The rules are frozen:
   cross-checked against unforgeable position: `gov/removed/<key>` also records
   `seqAtRemoval` = the revocation clock's entry for the removed writer,
   which is the last position of that writer that the remover had folded
-  (§3). Any node from that writer whose actual seq, its position
-  `node.length - 1`, is above `seqAtRemoval` is rejected (reason
-  `revoked`) **regardless of its claimed clock**. The claimed-clock
-  strict-precedence test applies only to the window of ops at
-  `seq <= seqAtRemoval` that sort after the removal. Every entry of every
-  clock is a position, so `seqAtRemoval` and the seq of an op have the
-  same unit. Additionally, apply rejects any op whose claimed self-clock
-  entry does not equal its actual seq, its position (reason
+  (§3). A node from that writer that sorts after the removal, and whose
+  actual seq, its position `node.length - 1`, is above `seqAtRemoval`,
+  is rejected (reason `revoked`) **regardless of its claimed clock**. The
+  claimed-clock strict-precedence test applies only to the window of ops
+  at `seq <= seqAtRemoval` that sort after the removal. Every entry of
+  every clock is a position, so `seqAtRemoval` and the seq of an op have
+  the same unit. Additionally, apply rejects any op whose claimed
+  self-clock entry does not equal its actual seq, its position (reason
   `forged-clock`).
+- **The revocation check binds only the ops that sort after the
+  removal.** Apply runs it only when `gov/removed/<key>` exists at the
+  op's linearized position (`okf/core/lib/apply.js:399-403`). Apply runs
+  in the substrate's order (the order bullet below), and it cannot reject
+  an op that sorts before the removal. **Revocation stops cooperating
+  clients only. A revoked key with a modified client can keep writing
+  until the next generation. Quorum-signed revocation epochs are the
+  planned fix.** The mechanism: the client stamps its node below the
+  `RemoveWriter`'s timestamp and leaves the removal out of the node's
+  links. The node then sorts before the removal on every peer
+  (autobee@2.12.1 `lib/topo.js:168-179`), and its op takes effect. No
+  `flag/rejected` entry records it. okf cannot stop that without changing
+  autobee. The store of a revoked writer refuses its own appends
+  (`VAULT_REVOKED`, test "writer add/remove round trip: causal
+  revocation, uniform on every peer"), so a cooperating client stops.
+  `SECURITY_MODEL.md` (the trust model, G5, G34) states the residual and
+  the eviction ladder.
+- **Re-admission.** An accepted `AddWriter` that names a revoked writer
+  deletes `gov/removed/<key>` (`okf/core/lib/apply.js:579-581`). From
+  that position on, the writer's ops pass the revocation check. That
+  includes an op that the writer made while it was partitioned from the
+  removal, when the op sorts after the re-admission. Such an op is
+  concurrent with the revocation, every peer decides it the same way,
+  and I10 holds.
 - **The clock carries self and the writers with a `gov/writer` record.**
   The store puts the self entry into the clock of every op. It also puts
   an entry for each writer that has a `gov/writer/<key>` record and a
@@ -619,16 +665,40 @@ saga is the cautionary tale). The rules are frozen:
   `AddWriter` grants its key, a rejected one too (the grant rule above,
   `okf/core/lib/apply.js:375`). So a writer that is not an indexer can
   make a key writable with an `AddWriter` that apply rejects
-  `policy-governance`. The appends of that key then resolve, and apply
+  `policy-governance`. A member can also forge an approval that names a
+  key, and autobee then adds that key at weight 0 (`index.js:1432-1441`,
+  `lib/system.js:75`). The appends of such a key then resolve, and apply
   rejects each of its ops. Only an `AddWriter` that apply accepts writes
-  the `gov/writer/<key>` record (`okf/core/lib/apply.js:526-534`), so only
+  the `gov/writer/<key>` record (`okf/core/lib/apply.js:554-575`), so only
   it grants okf membership and lets the key's content ops take effect.
+- **Order.** Every writer stands at weight 0, so autobee orders nodes by
+  timestamp, then writer key, then length (autobee@2.12.1
+  `lib/topo.js:168-179`). A writer stamps a node with its own wall clock,
+  and never below the newest node that its system holds (`index.js:1540-1543`,
+  `lib/system.js:233`). So concurrent writes sort by the clocks of their
+  writers, and a writer with a slow clock loses each LWW race (§5)
+  against a concurrent write. A peer does not process a node whose
+  timestamp is more than two hours past the peer's own clock
+  (`lib/writers.js:15`, `:595-597`, `:649`). That node waits, with each
+  node that links it, until the peer's clock reaches it. autobee bounds no
+  timestamp in the past, so a writer can choose where its node sorts
+  (test "A7b G5: a member backdated node flips the winner on every peer
+  (residual)"; `SECURITY_MODEL.md`, G5). The op field `at` (§3) orders
+  nothing.
 - Rate limiting is a writer-local token bucket (vault-ld §8.5 ancestry —
   never a global window): each writer's bucket gains 1 token per accepted
   op *authored by any indexer*, capped at that writer's `rateCeiling`.
   Buckets start full (at ceiling) at admission, and the genesis indexer's
   bucket starts full at its first op — the accept/reject partition is
-  pinned, not implementation-chosen.
+  pinned, not implementation-chosen. A writer's ceiling is the
+  `rateCeiling` of its `gov/writer` record (`SetWriterPolicy`), else the
+  pinned `rate.defaultCeiling`, which is 1024 unless the metadata at
+  `init` sets another value (`okf/store/lib/metadata.js:52-59`,
+  `okf/core/lib/apply.js:491-494`). So a writer that is not an indexer has
+  a budget of 1024 ops by default, and only accepted indexer ops refill
+  it. An indexer's accepted op takes one token and adds one to every
+  bucket, its own too (`okf/core/lib/apply.js:473-482`, `:496-512`).
+  Test: "I10: token buckets refill from accepted indexer ops".
 - `encryptionKey` (+ `encrypted: true`) supported end to end: autobee
   encrypts the writer cores, the system and the view (autobee@2.12.1
   `README.md:308-320`, `index.js:52`, `:219`, `:263`). The view needs
@@ -652,7 +722,9 @@ saga is the cautionary tale). The rules are frozen:
   shape pinned: one `# Update Log` title, then `## YYYY-MM-DD` UTC date
   headings (OKF §7 MUST), newest first, entries
   generated from the `log/` family: creations, renames (old → new),
-  deletions, conflict resolutions, generation notes. The narration is a
+  deletions, undeletions, conflict resolutions and path collisions
+  (`okf/core/lib/apply.js` events, `okf/faces/lib/materialize.js:555-585`).
+  A generation writes no entry (§10). The narration is a
   *projection of the actual op log* — auto-okf's structural upgrade over
   hand-maintained convention. Dates come from each op's `at` field (§3),
   truncated to UTC `YYYY-MM-DD` (informational, never used for merge);
@@ -835,6 +907,11 @@ generation is two commands:
    predecessor exist.
 4. The old vault is archived or destroyed out-of-band.
 
+Within a generation the log only grows (§8). So a generation is also the
+one way to redact. The new vault holds only what the face holds. The old
+log stays on every replica of the old vault until each replica is
+destroyed.
+
 Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
 `okf/faces/lib/ingest.js`):
 
@@ -845,6 +922,14 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   that is not a regular file or a directory, such as a symlink. With
   `--metadata` of an encrypted predecessor, a missing `--encryption-key`:
   a generation of an encrypted vault is never unencrypted (decision 8).
+- **One import holds `<new-dir>`.** Before it creates the vault, import
+  creates the claim file `okf-import-claim` in `<new-dir>` with an
+  exclusive open, and it removes the claim when it ends. A second import
+  into the same `<new-dir>` refuses by name (`IMPORT_DIR_CLAIMED`) and
+  removes nothing (`okf/faces/lib/import.js:42`, `:90-93`; test
+  "G3-P8 F01 (T24): a second import into the same <dir> refuses by name
+  before its initBundle and deletes nothing; the vault, pin and files of
+  the first import stay, for an absent and an existing empty <dir>").
 - **Import-mode ingest.** import reads every regular `.md` file of the
   face at any depth, dot segments included, except the regenerated faces
   `index.md` and `log.md`. It ignores the emission manifest of the face:
@@ -864,7 +949,11 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   directory.
 - **Metadata.** `--metadata` carries `limits`, `rate` and `schemaVersion`
   from the predecessor's `okf-vault.json`, so a note that fitted the
-  predecessor's limits fits the new vault's. `--predecessor` records
+  predecessor's limits fits the new vault's. It never carries the `swarm`
+  allowlist (`okf/faces/lib/import.js:44`, `:380-390`): a generation is
+  the eviction point. The new vault's invite lists only the swarm key of
+  the peer that ran the import, and an indexer admits each writer again
+  (`add-writer --swarm-key`). `--predecessor` records
   `predecessorKey`, the generation chain. The generation id is `'root'`
   without a predecessor, else `sha256(predecessorKey bytes)`. A joiner
   needs the new `okf-vault.json` as its invite metadata to derive the same
@@ -878,8 +967,16 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   notes read from the face, byte for byte, without each `_rev` frontmatter
   line. `index.md` and `log.md` are regenerated faces that import never
   reads, so the check leaves them out. A difference fails the import by
-  name (`IMPORT_FIDELITY`, each difference listed), and import removes the
-  new directory. No verification copy is written to disk.
+  name (`IMPORT_FIDELITY`, each difference listed). No verification copy
+  is written to disk.
+- **Cleanup on a failure.** After any failure that comes once the new
+  vault exists (`IMPORT_FIDELITY`, `IMPORT_OVERSIZE`, `IMPORT_REJECTED`,
+  `IMPORT_NOT_ENCRYPTED`), import closes the new vault and removes what it
+  created while it held the claim, and then the claim. A `<new-dir>` that
+  import made is removed. An existing empty `<new-dir>` stays, empty
+  (`okf/faces/lib/import.js:95-103`; test "T13 (T24): a truncated note
+  fails the import by name with IMPORT_FIDELITY, and import removes the
+  new directory").
 - **Encryption.** `--encryption-key` encrypts the new vault. import reads
   plaintext and writes none, so it prints no plaintext warning.
 
@@ -952,10 +1049,9 @@ are honest scale/edge caveats recorded by the delivery (`DELIVERY.md`,
   nothing about memory under load); the okf-attributable lead is
   uncoalesced OR-set add-tokens (§5 `tags`). A fix is architectural and
   risks determinism on green code, so it is deliberately deferred;
-  sign-off pending.
-- **P7 — double `.conflict-<hex>` suffix ingest.** A file carrying two
-  stacked `.conflict-<hex>` suffixes lands in a permanent pending-ingest
-  state (GitHub issue #28).
+  sign-off pending. These figures come from the v1 milestone of
+  2026-07-14 (`DELIVERY.md`), on the substrate release of that milestone.
+  This document states no figure for autobee 2.12.1.
 - **P4 — empty-string `type` on ingest.** Apply already rejects an empty
   `type` register at the op level (§5, reason `empty-type`); the ingest edge
   around an empty-string `type` in an authored file is a documented
