@@ -181,6 +181,7 @@ async function opAt(v, seq) {
 test('store: the seq of an op is its node\'s position in the local core, also after an empty block and a restart', async (t) => {
   const dir = await tmpDir('ordinal-pos')
   const a = await Bundle.init(dir)
+  t.after(() => a.close()) // a no-op once the test has closed it
   const self = hex(a.localKey)
   const c0 = await a.createConcept('notes/pos', 'note')
   assert.equal(c0.seq, 0)

@@ -79,12 +79,19 @@ test('appendOnly is immutable: unrepresentable off, refused when tampered', asyn
   // a tampered on-disk document cannot open
   const dir = await tmpDir('meta-tamper')
   const v = await Bundle.init(dir)
+  let reopened = null
+  t.after(async () => {
+    await v.close() // a no-op once the test has closed it
+    if (reopened) await reopened.close()
+  })
   await v.close()
   const path = join(dir, METADATA_FILE)
   const doc = JSON.parse(await readFile(path, 'utf8'))
   doc.appendOnly = false
   await writeFile(path, JSON.stringify(doc))
-  await assert.rejects(() => Bundle.open(dir), /appendOnly/)
+  await assert.rejects(async () => {
+    reopened = await Bundle.open(dir)
+  }, /appendOnly/)
 })
 
 test('a vault of this release writes rate with defaultCeiling as its only key', async (t) => {

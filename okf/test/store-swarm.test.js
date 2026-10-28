@@ -620,9 +620,14 @@ test("a new vault lists its creator's swarm key in metadata.swarm.allow, and the
   assert.deepEqual(again.metadata.swarm.allow, [own, listed].sort())
 })
 
-test('a vault of this release records metadata version 2, and loadMetadata refuses every other version', { timeout: TEST_TIMEOUT }, async () => {
+test('a vault of this release records metadata version 2, and loadMetadata refuses every other version', { timeout: TEST_TIMEOUT }, async (t) => {
   const dir = await tmpDir('meta-v2')
   const a = await Bundle.init(dir)
+  let reopened = null
+  t.after(async () => {
+    await a.close() // a no-op once the test has closed it
+    if (reopened) await reopened.close()
+  })
   assert.equal(a.metadata.version, 2, 'the open vault records version 2')
   await a.close()
 
@@ -641,7 +646,9 @@ test('a vault of this release records metadata version 2, and loadMetadata refus
     )
   }
   await assert.rejects(
-    Bundle.open(dir),
+    async () => {
+      reopened = await Bundle.open(dir)
+    },
     /unsupported vault metadata version/,
     'a vault without version 2 does not open'
   )
