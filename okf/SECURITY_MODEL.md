@@ -5,6 +5,99 @@ defenses stand between them and the [view](GLOSSARY.md#view), and where the
 guarantees stop. Terms are pinned in [GLOSSARY.md](GLOSSARY.md). Spec §
 references cite [SPEC.md](SPEC.md).
 
+## The trust model
+
+**Membership is total trust for the life of a generation.** A member is a
+key that autobee has added (point (d) below): genesis, each key that an
+`AddWriter` op granted, and each key that an approval on a folded node
+named. Any member can do these things, and okf cannot stop them without
+changing autobee:
+
+- halt every peer that folds its node (G2),
+- choose where its writes sort, and so pick the winner of a race (G5),
+- make every peer open writer cores (G44).
+
+The owner accepted that (decision 1). A generation is one vault, one key
+set and one log. The next generation starts with one member, the peer
+that ran its import (the eviction ladder below).
+
+**Revocation stops cooperating clients only. A revoked key with a
+modified client can keep writing until the next generation. Quorum-signed
+revocation epochs are the planned fix.**
+
+- A `RemoveWriter` records `gov/removed/<key>`
+  (`core/lib/apply.js:590-611`). apply rejects each op of the key that
+  sorts after that record and lies past `seqAtRemoval`
+  (`core/lib/apply.js:399-403`). The store of the revoked key refuses its
+  own appends (`VAULT_REVOKED`), so a cooperating client stops. Test:
+  `test/store-writers.test.js` "writer add/remove round trip: causal
+  revocation, uniform on every peer".
+- A modified client does not stop. It stamps its node below the
+  timestamp of the `RemoveWriter`, and it leaves the removal out of the
+  node's links. The node then sorts before the removal on every peer
+  (autobee `lib/topo.js:168-179`), where no `gov/removed/<key>` record
+  exists yet. So its op takes effect, and no `flag/rejected` entry
+  records it. autobee bounds a timestamp two hours ahead
+  (`lib/writers.js:15`, `:595`), and never in the past.
+- The key also keeps its substrate standing, because okf never calls
+  `host.removeWriter` (G34 below). So its `AddWriter` ops still grant keys
+  at the substrate: the grant (`core/lib/apply.js:375`) comes before the
+  revocation check (`:399-403`).
+- okf cannot reject such an op without changing autobee. apply runs in
+  the order that autobee sorts, after autobee has sorted the node (point
+  (e) below).
+
+### The eviction ladder
+
+1. **Cut the delivery.** `Bundle.revokePeer(swarmKey)` takes the key out
+   of this peer's allowlist, destroys its open connections and calls
+   `leavePeer` (`store/lib/bundle.js:1227-1233`, `:1296-1305`). A folded
+   `RemoveWriter` does the same on each peer that folds it, for the swarm
+   key on the removed writer's record (`store/lib/bundle.js:1267-1293`).
+   Tests in `test/store-swarm.test.js`: "revokePeer cuts a live
+   connection, leaves the peer, and keeps the key out across later folds
+   (T25)" and "a removed writer's connection is destroyed when the removal
+   folds, though the invite lists its key (T25)".
+2. **Evict.** A new generation is the full eviction: `materialize`, then
+   `auto-okf import` into a new directory. The new vault has a new vault
+   key and new writer keys (test `test/i11-roundtrip.test.js` "I11 (T24):
+   materialize, then import, round-trips a non-trivial bundle with
+   identity and byte fidelity"). Its only member is the peer that ran the
+   import. `--metadata` carries `limits`, `rate` and `schemaVersion`, and
+   never the `swarm` allowlist (`faces/lib/import.js:44`, `:380-390`). The
+   invite of the new vault lists only the swarm key of the peer that ran
+   the import (`store/lib/bundle.js:348-362`). An indexer admits each
+   writer again with `add-writer --swarm-key`, and leaves the evicted key
+   out.
+
+Step 1 retracts nothing. A block of the cut key that a member already
+holds stays in that member's store. Members still replicate it to each
+other, because every admitted connection runs `db.replicate`, which
+replicates the cores of the store (`store/lib/bundle.js:1176-1177`,
+DEVIATIONS "The store session, replication and close"), and okf never
+removes the key at the substrate. Each peer cuts only its own connections, so a peer that has not
+folded the removal still admits the key. The old vault stays on each
+replica that holds it, until that replica is destroyed (SPEC §10).
+
+**The planned fix.** Quorum-signed revocation epochs give retroactive
+containment inside a generation. This release does not build them.
+Decision 9 makes them a dedicated follow-up run.
+
+### When every indexer directory is lost
+
+Only an indexer can admit, revoke or set the policy of a writer. apply
+rejects a governance op whose issuer is not an indexer at the op's
+linearized position (`core/lib/apply.js:407-412`). Test:
+`test/i10-governance.test.js` "I10: governance requires an indexer
+issuer; an unauthorized AddWriter still grants at weight 0 and never
+admits". An indexer's writer key lives in its vault directory. The store
+derives the writer core from the directory's corestore, under the
+generation namespace (`store/lib/bundle.js:292`, `:304-316`). The
+exception is a caller that passes its own `keyPair`. So if every indexer
+directory is lost, nobody can admit a writer in that generation. Back up
+an indexer directory, or admit two indexers. A new generation has a new
+genesis indexer.
+
 ## The adversaries
 
 There are two, because okf has two doors.
@@ -32,15 +125,19 @@ into ops, so the watched tree is untrusted input by design (§9).
   is rejected `policy-governance` and changes no `gov/` key, so it confers
   no okf membership. It still grants its key at the substrate, because the
   grant follows every `AddWriter` op that apply folds (point (f) below). A
-  `RemoveWriter` that would leave zero indexers is rejected: a vault cannot
-  become permanently ungovernable.
+  `RemoveWriter` that would leave zero indexers is rejected, and so is an
+  `AddWriter` that would demote the last live indexer
+  (`core/lib/apply.js:563-567`, `:592-596`): a vault cannot become
+  permanently ungovernable.
 - **Causal revocation (§8):** after `RemoveWriter`, an op from the removed
   writer applies only if its clock strictly precedes the revocation. The
   claimed clock is cross-checked against unforgeable position. The actual
   seq of a node is its position in its writer's core (§3). Any node past
   the recorded `seqAtRemoval` is rejected regardless of its claim, and an
   op whose self-clock entry disagrees with that position is rejected as
-  `forged-clock`.
+  `forged-clock`. These checks bind only the ops that sort after the
+  removal (`core/lib/apply.js:399-403`). A modified client sorts its ops
+  before the removal ("The trust model" above).
 - **Admission before effect (§8):** a writer's ops take effect only once an
   indexer-authored `AddWriter` has admitted it, at that op's linearized
   position. A content op from a writer with no `gov/writer` record is
@@ -48,13 +145,17 @@ into ops, so the watched tree is untrusted input by design (§9).
   reject it first (`core/lib/apply.js:361-403`). A governance op from that
   writer is rejected `policy-governance`, because the indexer-issuer check
   comes first (`core/lib/apply.js:407-412`). Neither op reaches the content
-  pipeline or changes a `c/` key. There is no hold buffer and no optimistic
-  onboarding. A joiner that
-  only holds the vault key writes nothing at all. The store refuses every
-  append until autobee reports the local writer writable
-  (`VAULT_NOT_WRITABLE`, test `test/store-writers.test.js` "an append from
-  a writer that is not writable fails fast"). That gate reads `db.writable`
-  (`store/lib/bundle.js:772-780`), which is substrate state. So a key that
+  pipeline or changes a `c/` key. There is no hold buffer: apply rejects
+  such an op, and it never holds one. A joiner that only holds the vault
+  key changes nothing in the view. Its store refuses every append until
+  autobee reports the local writer writable (`VAULT_NOT_WRITABLE`, test
+  `test/store-writers.test.js` "an append from a writer that is not
+  writable fails fast"). A modified client of such a key can still append
+  nodes to its own core. A peer that connects to it downloads those nodes
+  and drops them before apply (point (a), tests "A1 G3" and "A4 G1" to
+  "A7 G5"). The firewall of `swarm()` gives such a key no connection
+  (point (b)). The store gate reads `db.writable`
+  (`store/lib/bundle.js:884-892`), which is substrate state. So a key that
   a member admitted at the substrate alone passes it and does append. okf
   membership is a separate thing, and it is not retroactive. apply rejects
   every op of such a key and flags it ("What the substrate decides" points
@@ -106,15 +207,15 @@ regression test:
   on a tombstoned concept was a silent no-op, so the delete won. Three
   changes close it. A file on disk that bears a tombstoned `_id` is
   intent-to-keep, so ingest undeletes it before it moves it
-  (`faces/lib/ingest.js:326-336`). A vanished path is never deleted from
+  (`faces/lib/ingest.js:393-403`). A vanished path is never deleted from
   inside the event that noticed it: the delete waits for a quiet window, so
-  the moved file's `SetPath` lands first (`:184-207`). A directory event
-  schedules one coalesced rescan instead of being dropped (`:127-153`).
+  the moved file's `SetPath` lands first (`:194-231`). A directory event
+  schedules one coalesced rescan instead of being dropped (`:137-173`).
   Tests: `test/regressions/dirmove-dataloss.test.js` "#30(1)" to "#30(4)".
 - [#28](https://github.com/indexzero/hyperwiki2/issues/28) (**minor**,
   repaired): a human-authored double `.conflict-` suffix became permanent
   pending-ingest. Ingest now strips every trailing reserved suffix
-  (`faces/lib/ingest.js:307-315`). Test:
+  (`faces/lib/ingest.js:374-382`). Test:
   `test/regressions/double-conflict-suffix-ingest.test.js` "P7 (#28)".
 
 What remains at this boundary is a non-goal and not a defect. Subtree moves
@@ -124,7 +225,8 @@ subtree moved. #30 was that gap observed from the disk side.
 
 ### What the substrate decides, and what okf decides
 
-The substrate is autobee@2.12.1 with autobee-wakeup@1.1.3, both pinned.
+The substrate is autobee@2.12.1, pinned exactly, with autobee-wakeup@1.1.3
+from the lockfile.
 Every path reference below is a file and line of those releases, and every
 test reference is a test name in `okf/test/`. The store configures autobee
 with `optimistic: false`, `bootstrapWeight: 0` and `fastForward: false`,
@@ -146,9 +248,13 @@ still be in autobee's writer set, because a member can put it there
 what its ops cost.
 
 With `optimistic: false`, autobee drops every node of a writer it has not
-added, before `_applyBatch` (`index.js:1357-1364`), and that writer's own
-reader stops earlier (`lib/writers.js:613-615`). A dropped node's
-`approvals` add
+added, before `_applyBatch` (`index.js:1357-1364`). A plain node of such a
+writer stops earlier, in that writer's reader (`lib/writers.js:613-615`).
+A node with the optimistic bit passes that check, as every outsider node
+of the tests does (`test/attack-helpers.js` `outsiderAppend`). It enters
+the pending buffer, and autobee resolves its weight
+(`lib/writers.js:195`), with the witness read of G43, before the drop. A
+dropped node's `approvals` add
 nothing, because autobee reads approvals inside `_applyBatch`
 (`index.js:1432-1441`), which the dropped node never reaches. Measured in
 `test/store-substrate-attacks.test.js`: "A1 G3" (a forged approval that
@@ -160,28 +266,40 @@ proves that every peer holds it. Then it shows four things on every peer.
 No outsider node reaches apply, no `seen/` entry counts it, autobee records
 no outsider key, and the view hash does not change.
 
-**(b) An outsider still reaches the wakeup protocol (G44, accepted).** The
-configuration does not close this one, and the owner accepted it as a
-residual for every vault.
+**(b) The wakeup protocol (G44): the firewall keeps an outsider out, and
+a member can still flood it.**
 
-- The trigger is possession of the vault key. An outsider sends one wakeup
-  announce of N keys that belong to nobody. A receiver hints every
+- The mechanism. A peer sends one wakeup announce of N keys that belong
+  to nobody. A receiver hints every
   announced key (`autobee-wakeup/index.js:24-26`), and the drain turns each
   hint into an opened writer core (`index.js:807`, `:878-893`,
   `lib/writers.js:67-89`, `:239-294`).
+- Only a peer with a replication connection reaches the protocol.
+  `swarm()` connects only the swarm keys of its allowlist, on a private
+  DHT and on the public DHT (`store/lib/bundle.js:1164-1168`). So an
+  outsider that holds the vault key and the invite gets no connection.
+  Test: `test/store-swarm.test.js` "a peer with the vault key and the
+  invite, and a swarm key outside the allowlist, never connects (T25,
+  G44)". A stream that a caller opens with `Bundle.replicate()` passes no
+  firewall: the caller chooses the peer at the other end
+  (`store/lib/bundle.js:60-63`). A member with a connection can send the
+  announce.
 - autobee's untrusted-writer cap does not bound it. The cap is skipped
   while the local writer is trusted (`lib/writers.js:262`), and with no
   `isTrusted` and no `mostRecentTrusted` hook every key is trusted
   (`lib/trusted.js:30-32`, `index.js:231-233`).
-- The measured cost, test "A8 G44": 200 announced keys open exactly 200
-  writer cores, which is past the default cap of 128
+- The measured cost, test "A8 G44". The test connects the flooding peer
+  with a direct stream, which passes no firewall. 200 announced keys open
+  exactly 200 writer cores, which is past the default cap of 128
   (`lib/writers.js:13`). The vault grows on disk, and every sampled core is
   still in the store after a close and a reopen. Apply latency grows with
   the count, because every drain pass walks every active writer
   (`lib/writers.js:149-171`, called at `index.js:826`). The test records
   the ratio of 20 appends after the flood against 20 before it.
-- It is a cost, never a brick. In "A8 G44" the vault still appends, and it
-  still reopens and folds.
+- The cost has no bound. The sender chooses N, and the cost grows with N.
+  In "A8 G44", at N = 200, the vault still appends, reopens and folds. The
+  suite measures no larger N, so this document claims nothing past that
+  run.
 - A second trigger needs no announce: a node whose links name keys that the
   receiver does not hold. The link check runs before the membership drop
   (`lib/writers.js:603-606` against `:613-615`). A witness link joins the
@@ -189,8 +307,9 @@ residual for every vault.
   (`:706`), and every missing link is woken (`:719`). So one such node opens
   one core per missing link, and it leaves one wait per writer. The node
   itself reaches no apply while a link stays missing, so okf's rate check
-  and its rejection flag never run for it. A member can send such a node,
-  and an outsider's node reaches the same check before the drop.
+  and its rejection flag never run for it. A member can send such a node.
+  An outsider's node reaches the same check before the drop, on a
+  connection that passes no firewall.
 - **The suite does not measure that second trigger.** autobee's own local
   flush gate refuses to flush a node whose links are missing
   (`lib/writers.js:641-664`). A test attacker that appends through autobee
@@ -208,17 +327,13 @@ residual for every vault.
   The flood reaches one hop past the peers the attacker spoke to. The flood
   itself comes from a modified client, which the test writes itself
   (`test/attack-helpers.js` `announce`).
-- **Public-swarm caveat.** `Bundle.swarm()` and `auto-okf watch --swarm`
-  announce the vault on the public hyperswarm DHT, so any peer that learns
-  the vault key can connect from anywhere and reach the wakeup protocol.
-  An operator that never joins the swarm, and that replicates over streams
-  it opens itself (`Bundle.replicate()`), limits the trigger to the peers
-  it connects to.
-- The mitigation that was measured is **not adopted**: a members-only
-  `wakeupCapability` (`index.js:543-547`) puts an outsider on a different
-  wakeup topic, so its announce reaches no member. It needs a shared
-  secret that an outsider lacks, which a public vault does not have, and
-  the option is outside autobee's documented surface.
+- A members-only `wakeupCapability` is **not adopted**. It is a
+  constructor option that autobee reads at `index.js:543-547`, and the
+  README does not list it, as it does not list `bootstrapWeight`. It
+  would put a peer without the shared secret on another wakeup topic.
+  The firewall of `swarm()` already gives an outsider no connection, and
+  every member would hold the secret. So it would not bound the member
+  trigger, which is the residual.
 
 **(c) Ordering is uniform, and no honest peer approves.** Every writer
 stands at weight 0, genesis included, so nodes sort by timestamp, then
@@ -259,12 +374,12 @@ needed.
 
 | Attack | Trigger | Effect, as measured | Evidence |
 |---|---|---|---|
-| G2, an approval at an unbounded weight | a member | every peer that folds the node walks one tier per unit of weight (`lib/system.js:424`, `lib/promotions.js:137`, `:144`), inside `_applyBatch` and before any okf apply (`index.js:1432-1441`, `:1462`). Above V8's `Set` limit that peer dies with `Set maximum size exceeded`, and it appends no more. Below the limit every peer pays the walk, and the named key lands in the system of the peer that folds it, with no okf op | "A5c G2" (delivery proved first, then the victim), "A5b G2" (the sender arm, both weights). Both in a child process |
-| G5, a node whose timestamp the attacker chooses | a member | it reorders concurrent writes and picks the LWW winner on every peer. The reorder is uniform, so the peers still converge: a consistent rewrite, never a split. autobee bounds the future by two hours (`lib/writers.js:15`, `:595`, `:649`) and does not bound the past | "A7b G5" |
+| G2, an approval at an unbounded weight | a member | every peer that folds the node walks one tier per unit of weight in `system.flush` (`lib/system.js:424`, `lib/promotions.js:132-144`). `_applyBatch` calls that flush after okf's apply has run (`index.js:1447-1455`, then `:1462`), and nothing that apply returns stops it. Above V8's `Set` limit that peer dies with `Set maximum size exceeded`, and it appends no more. Below the limit the cost stays on every peer for good. At weight 0 nobody approves (point (c)), so the pending promotion at weight W never clears (`lib/promotions.js:111-126`). Each flush writes a digest of W entries into the system info record (`lib/promotions.js:143-144`, `lib/system.js:449-460`, `:456`). Each later flush that carries a grant or a pending update walks the W tiers again (`lib/promotions.js:76-87`, `:132-144`). Every `AddWriter` grant is such a flush, because a host grant carries `pending` 0 (`lib/system.js:78`). The named key lands in the system of the peer that folds it, with no okf op | "A5c G2" (delivery proved first, then the victim), "A5b G2" (the sender arm, both weights). Both in a child process |
+| G5, a node whose timestamp the attacker chooses | a member, a revoked member too | it reorders concurrent writes and picks the LWW winner on every peer. The reorder is uniform, so the peers still converge: a consistent rewrite, never a split. autobee bounds the future by two hours (`lib/writers.js:15`, `:595`, `:649`) and does not bound the past. A revoked member writes past its revocation the same way: a node stamped below the `RemoveWriter`, which does not link it, sorts before the removal, and its op takes effect with no `flag/rejected` entry (`core/lib/apply.js:399-403`, `lib/topo.js:168-179`, "The trust model" above) | "A7b G5" for the reorder. The revocation bypass: the cited lines. No test in this suite sends it |
 | G32, unmetered growth through free identities | a member, or any key a member approves | one `flag/rejected` entry per op on every peer, no rate token (the op is rejected before the bucket), and no change in `c/`: the test compares the whole ordered `c/` range, keys and values, against the range before the attack, on every peer. Its `AddWriter` ops grant more autobee writers at weight 0, so the identity supply is free | "G32" |
-| G34, a revoked member keeps its substrate standing | a revoked member | okf never calls `host.removeWriter`, so the key stays an autobee writer. Its later ops keep reaching apply and keep being rejected, each with a flag (I4). Calling `removeWriter` would be worse: `canApply` turns false for a removed writer (`lib/system.js:242-251`), so its node reaches the system of some peers and the apply of others, which is the split that point (f) exists to prevent | `test/store-writers.test.js` "writer add/remove round trip", "G32" |
-| G43, a forged witness | a member | measured inert on the claimant's weight, because the claim never verifies at weight 0 (point (c)). The resolution is not free: autobee resolves a node's weight before any drop (`index.js:1374`, `lib/writers.js:195`), and a claim makes it open the cited core and read one block (`lib/witness.js:33-41`, `:53-62`). That read takes no rate token | "A2 G4", "G50", "A6 G43" |
-| G44, a node whose links are missing, and the wakeup flood of point (b) | a member. An outsider, a peer with the vault key and no admitted swarm key: **Close (T25)**, on a private DHT (`--bootstrap`) and on the public DHT (`--public-dht`). The firewall does not depend on the DHT. `swarm()` gives hyperswarm the same `keyPair` and `firewall` for both choices (`okf/store/lib/bundle.js:1123-1127`). The firewall admits only the keys of `metadata.swarm.allow`, the swarm keys of live `gov/writer` records and the keys of the peer's own local list (`swarm({ allow })`), minus the swarm key of every removed writer (`:1135`, `:1226-1252`). So the outsider gets no connection and reaches neither trigger. The outsider costs a peer three things, on either DHT, and nothing else. First, the topic announcement: the outsider can look it up, and it names the swarm keys of the announcing peers and the DHT nodes that relay to them. Second, one handshake per attempt: hyperdht reads the first Noise message of each attempt before the firewall rejects it (hyperdht `lib/server.js:242-262`). Third, a bounded ban table: hyperswarm bans each rejected key and keeps its record in `swarm.peers` (hyperswarm `index.js:315-319`, `:418-424`, `lib/peer-info.js:113-115`). The store keeps at most 64 such records and lifts the oldest ban past that bound (`MAX_BANNED_PEERS`, `bundle.js:137`, `_recordBan` at `:1299`). The firewall still rejects a key whose ban was lifted, at its next attempt. Test: `test/store-swarm.test.js` "a flood of fresh swarm keys leaves at most 64 ban records, and the firewall still rejects every key (G3-P9 F02)" | the receiver opens one writer core per missing link and keeps one retained wait, before the membership drop (`lib/writers.js:603-606`, `:673-678`, `:706`, `:719` against `:613-615`). The node reaches no apply while a link stays missing, so it takes no rate token and leaves no flag | point (b), which also states why the suite does not measure the member trigger. The outsider: `test/store-swarm.test.js` "a peer with the vault key and the invite, and a swarm key outside the allowlist, never connects (T25, G44)". The test runs on a private testnet, and the same code runs on the public DHT |
+| G34, a revoked member keeps its substrate standing | a revoked member | okf never calls `host.removeWriter`, so the key stays an autobee writer. Its ops that sort after the `RemoveWriter` reach apply and are rejected `revoked`, each with a flag (I4). Its ops that sort before the removal take effect (the G5 row): revocation stops cooperating clients only, until the next generation (decision 9). Its `AddWriter` ops still grant keys at the substrate, because the grant (`core/lib/apply.js:375`) comes before the revocation check (`:399-403`). A folded `RemoveWriter` takes its swarm key out of the allowlist of each peer that folds it (the eviction ladder). Calling `removeWriter` would be worse: `canApply` turns false for a removed writer (`lib/system.js:242-251`), so its node reaches the system of some peers and the apply of others, which is the split that point (f) exists to prevent | `test/store-writers.test.js` "writer add/remove round trip", "G32", and `test/store-swarm.test.js` "a removed writer's connection is destroyed when the removal folds, though the invite lists its key (T25)" |
+| G43, a forged witness | a member. An outsider's node with the optimistic bit reaches the same read before the drop (point (a)), on a connection that passes no firewall | measured inert on the claimant's weight, because the claim never verifies at weight 0 (point (c)). The resolution is not free: autobee resolves the weight of a pending node before the drop (`lib/writers.js:195`), and again before apply (`index.js:1374`). A claim makes it open the cited core and read one block (`lib/witness.js:33-41`, `:53-62`). That read takes no rate token | "A3 G1" sends a member's forged witness, and the claimant stays at weight 0. "A6 G43" is the outsider arm: its node reaches no apply |
+| G44, a node whose links are missing, and the wakeup flood of point (b) | a member. An outsider, a peer with the vault key and no admitted swarm key: **Close (T25)**, on a private DHT (`--bootstrap`) and on the public DHT (`--public-dht`). The firewall does not depend on the DHT. `swarm()` gives hyperswarm the same `keyPair` and `firewall` for both choices (`okf/store/lib/bundle.js:1164-1168`). The firewall admits only the keys of `metadata.swarm.allow`, the swarm keys of live `gov/writer` records and the keys of the peer's own local list (`swarm({ allow })`), minus the swarm key of every removed writer (`:1176`, `:1267-1293`). So the outsider gets no connection and reaches neither trigger. A stream that a caller opens with `replicate()` passes no firewall (point (b)). The outsider costs a peer three things, on either DHT, and nothing else. First, the topic announcement: the outsider can look it up, and it names the swarm keys of the announcing peers and the DHT nodes that relay to them. Second, one handshake per attempt: hyperdht reads the first Noise message of each attempt before the firewall rejects it (hyperdht `lib/server.js:242-262`). Third, a bounded ban table: hyperswarm bans each rejected key and keeps its record in `swarm.peers` (hyperswarm `index.js:315-319`, `:418-424`, `lib/peer-info.js:113-115`). The store keeps at most 64 such records and lifts the oldest ban past that bound (`MAX_BANNED_PEERS`, `bundle.js:137`, `_recordBan` at `:1340`). The firewall still rejects a key whose ban was lifted, at its next attempt. Test: `test/store-swarm.test.js` "a flood of fresh swarm keys leaves at most 64 ban records, and the firewall still rejects every key (G3-P9 F02)" | the receiver opens one writer core per missing link and keeps one retained wait, before the membership drop (`lib/writers.js:603-606`, `:673-678`, `:706`, `:719` against `:613-615`). The node reaches no apply while a link stays missing, so it takes no rate token and leaves no flag | point (b), which also states why the suite does not measure the member trigger. The outsider: `test/store-swarm.test.js` "a peer with the vault key and the invite, and a swarm key outside the allowlist, never connects (T25, G44)". The test runs on a private testnet, and the same code runs on the public DHT |
 
 Two notes on the G2 row. First, the sender's own cost is not a bound on the
 attack. autobee folds a local node (`index.js:818`) before the drain
@@ -291,6 +406,10 @@ the table runs before or outside okf's apply:
   before `apply` runs (`index.js:1430-1455`).
 - A wakeup announce opens cores in the drain (`index.js:807`, `:878-893`),
   with no node and no op involved.
+- autobee sorts each node by its timestamp before apply sees it
+  (`lib/topo.js:168-179`). apply folds in that order, so it cannot reject
+  an op of a revoked member that sorts before the `RemoveWriter`
+  (`core/lib/apply.js:399-403`).
 
 apply has no veto over any of it. autobee executes an approval, resolves a
 witness and takes a timestamp, all before apply runs. It offers the
@@ -300,7 +419,7 @@ system when apply starts, and nothing apply returns puts it back.
 apply does SEE those fields. autobee hands the original node objects of the
 batch to the application, every node that carries a value
 (`index.js:1444`), and it projects nothing away. The store forwards them
-unwrapped (`store/lib/bundle.js:359-368`). So an approval, a witness and a
+unwrapped (`store/lib/bundle.js:477-479`). So an approval, a witness and a
 timestamp are visible and inert, which is a lack of control and not a lack
 of visibility. A wakeup hint reaches apply in no form at all, as the last
 bullet above states.
@@ -308,8 +427,9 @@ bullet above states.
 okf's product code uses autobee's constructor options,
 its documented instance API and the host API passed to apply, and nothing
 else, so the remedy for every row above is a change inside autobee. The
-owner accepted these residuals: a vault trusts its members with liveness,
-and G44 with the cost in point (b).
+owner accepted these residuals: a vault trusts its members for the life
+of a generation (decision 1, decision 9), and G44 with the cost in point
+(b).
 
 **(f) An autobee grant follows every `AddWriter` op, and okf membership
 comes only from `gov/`.** apply calls `host.addWriter(key, { weight: 0 })`
@@ -347,8 +467,9 @@ A generation is an operator act via the face, never an op (§10):
 records `predecessorKey` in its metadata, from `--predecessor`
 (`faces/lib/import.js`, `carriedMetadata`).
 
-**That record is the operator's claim.** No checkpoint and no signature
-exist: import opens no predecessor vault, and the operator gives the key.
+**That record is the operator's claim.** No signature and no record of the
+predecessor's state exist: import opens no predecessor vault, and the
+operator gives the key.
 Nothing in okf checks it against a vault. So the chain is a recorded
 claim, and not an attestation.
 
@@ -374,17 +495,22 @@ holdership.
 ## Guaranteed versus best-effort
 
 Measured. [I1–I11](GLOSSARY.md#invariant-i1i11) each map to at least one
-test; the multi-process fault harness runs the full scenario matrix at
-three fault profiles (clean, lossy, partitioned) with no divergence, and
-its S8 revocation scenario converges where vault-ld's analogous B1 run
-originally diverged; the generation roundtrip (I11) is an acceptance criterion
-(§14).
+test. The multi-process fault harness runs its scenario matrix at three
+fault profiles: `pnpm test:okf-harness:clean`, `:lossy` and
+`:partitioned`. On autobee 2.12.1 each profile passes, and every scenario
+asserts convergence. Its S8 revocation scenario converges where
+vault-ld's analogous B1 run originally diverged. The generation roundtrip
+(I11, S9) is an acceptance criterion (§14). No harness writer chooses
+the timestamp of a node (`okf/harness/` holds no such code), so the
+harness does not show the revocation bypass of the trust model.
 
 Best-effort, and open. **C1** (**major**, awaiting sign-off): under a
 22-minute sustained lossy multi-writer flood with backpressure on, RSS grew
 from ~85 MB to ~3.1 GB with no plateau, and a third peer failed to converge
-within the 5-minute heal window. What that run verified is liveness and
-throughput degrading. What it did not touch is determinism: caught-up peers
+within the 5-minute heal window. These figures come from the v1 milestone
+of 2026-07-14 ([DELIVERY.md](DELIVERY.md)), on the substrate release of
+that milestone. This document states no figure for autobee 2.12.1. What
+that run verified is liveness and throughput degrading. What it did not touch is determinism: caught-up peers
 stayed byte-identical under every seed, file descriptors stayed flat,
 nothing crashed. Per the glossary's [severity](GLOSSARY.md#severity)
 definition that is a major, not a blocker — a scale concern, no invariant
