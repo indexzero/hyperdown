@@ -310,19 +310,21 @@ const encoding8 = {
 const encoding9 = {
   preencode(state, m) {
     c.buffer.preencode(state, m.key)
-    state.end++ // max flag is 4 so always one byte
+    state.end++ // max flag is 8 so always one byte
 
     if (m.clock) c.json.preencode(state, m.clock)
     if (m.at) c.uint.preencode(state, m.at)
+    if (m.swarmKey) c.buffer.preencode(state, m.swarmKey)
   },
   encode(state, m) {
-    const flags = (m.indexer ? 1 : 0) | (m.clock ? 2 : 0) | (m.at ? 4 : 0)
+    const flags = (m.indexer ? 1 : 0) | (m.clock ? 2 : 0) | (m.at ? 4 : 0) | (m.swarmKey ? 8 : 0)
 
     c.buffer.encode(state, m.key)
     c.uint.encode(state, flags)
 
     if (m.clock) c.json.encode(state, m.clock)
     if (m.at) c.uint.encode(state, m.at)
+    if (m.swarmKey) c.buffer.encode(state, m.swarmKey)
   },
   decode(state) {
     const r0 = c.buffer.decode(state)
@@ -332,7 +334,8 @@ const encoding9 = {
       key: r0,
       indexer: (flags & 1) !== 0,
       clock: (flags & 2) !== 0 ? c.json.decode(state) : null,
-      at: (flags & 4) !== 0 ? c.uint.decode(state) : 0
+      at: (flags & 4) !== 0 ? c.uint.decode(state) : 0,
+      swarmKey: (flags & 8) !== 0 ? c.buffer.decode(state) : null
     }
   }
 }

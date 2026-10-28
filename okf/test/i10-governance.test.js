@@ -71,6 +71,51 @@ test('I10: the AddWriter grant comes before every check that can reject the op, 
   )
 })
 
+test('I10: an AddWriter stores its 32-byte swarm key on the gov/writer record, and a later governance op without one keeps it', async () => {
+  const env = new Env({ genesis: 'A' })
+  const swarmB = writerKey('swarm-B')
+  env.op('A', 'add-writer', { key: writerKey('B'), indexer: false, swarmKey: swarmB })
+  env.op('A', 'add-writer', { key: writerKey('C'), indexer: false }) // no swarm key
+  env.op('A', 'set-writer-policy', { key: writerKey('B'), namespacePrefixes: ['team'], rateCeiling: 8 })
+  env.op('A', 'add-writer', { key: writerKey('B'), indexer: true }) // promotion, no swarm key
+  const view = await env.run()
+
+  assert.deepEqual(rejectedReasons(view), {})
+  assert.deepEqual(await view.get('gov/writer/' + env.hex('B')).then((n) => JSON.parse(n.value)), {
+    indexer: true,
+    namespacePrefixes: ['team'],
+    rateCeiling: 8,
+    swarmKey: swarmB.toString('hex')
+  })
+  assert.deepEqual(
+    await view.get('gov/writer/' + env.hex('C')).then((n) => JSON.parse(n.value)),
+    { indexer: false, namespacePrefixes: [], rateCeiling: null },
+    'a record without a swarm key has no swarmKey field'
+  )
+})
+
+test('I10: an AddWriter whose swarm key is not 32 bytes is rejected bad-swarm-key, admits nobody, and still grants at weight 0', async () => {
+  const env = new Env({ genesis: 'A' })
+  const A = env.hex('A')
+  env.op('A', 'add-writer', { key: writerKey('E1'), indexer: false, swarmKey: Buffer.alloc(31, 1) })
+  env.op('A', 'add-writer', { key: writerKey('E2'), indexer: false, swarmKey: Buffer.alloc(33, 2) })
+  const host = hostStub()
+  const view = await env.run(env.nodes, { host })
+
+  assert.deepEqual(rejectedReasons(view), {
+    [`${A}/000000000000`]: 'bad-swarm-key',
+    [`${A}/000000000001`]: 'bad-swarm-key'
+  })
+  for (const e of ['E1', 'E2']) {
+    assert.equal(await view.get('gov/writer/' + env.hex(e)), null, `${e} never admitted`)
+  }
+  // §8 (AD7): the grant reads the op bytes alone, before every check.
+  assert.deepEqual(
+    host.calls.filter(([m]) => m === 'addWriter'),
+    ['E1', 'E2'].map((w) => ['addWriter', env.hex(w), { weight: 0 }])
+  )
+})
+
 test('I10: apply does not return before host.addWriter settles', async () => {
   // autobee@2's host.addWriter reads the system before it records the
   // grant (lib/system.js addWriter), and the system flush runs as soon as

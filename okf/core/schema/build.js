@@ -149,7 +149,14 @@ okf.register({
     { name: 'key', type: 'buffer', required: true },
     { name: 'indexer', type: 'bool', required: true },
     { name: 'clock', type: 'json' },
-    { name: 'at', type: 'uint' }
+    { name: 'at', type: 'uint' },
+    // The writer's 32-byte hyperswarm public key, or null. apply checks the
+    // length and stores it hex on gov/writer/<key> (§8), and the store's
+    // swarm firewall admits the swarm keys of live records (T25). It is a
+    // field of schema version 1: no vault of an earlier release is carried
+    // over (AD5), so the schema was regenerated, not appended, and the
+    // codec has no branch for an older version.
+    { name: 'swarmKey', type: 'buffer' }
   ]
 })
 

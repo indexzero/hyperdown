@@ -45,7 +45,7 @@ const OPTIONALS = {
   'delete-concept': ['clock', 'at'],
   'undelete-concept': ['clock', 'at'],
   'resolve-conflict': ['text', 'clock', 'at'],
-  'add-writer': ['clock', 'at'],
+  'add-writer': ['clock', 'at', 'swarmKey'],
   'remove-writer': ['clock', 'at'],
   'set-writer-policy': ['clock', 'at']
 }

@@ -523,14 +523,26 @@ class Applier {
     }
   }
 
+  /**
+   * §8 admission. The optional swarm key (T25) is the writer's 32-byte
+   * hyperswarm public key. A key of any other length rejects the op
+   * 'bad-swarm-key' before it writes a gov/ key. The record stores the key
+   * hex. An op without one keeps the key that the record already holds, as
+   * it keeps the policy fields.
+   */
   async opAddWriter(op) {
     const target = keyHex(op.key)
+    if (op.swarmKey != null && !(op.swarmKey instanceof Uint8Array && op.swarmKey.byteLength === 32)) {
+      return { rejected: true, reason: 'bad-swarm-key' }
+    }
     const existing = await this.val(K.govWriter(target))
     const rec = {
       indexer: op.indexer === true,
       namespacePrefixes: existing ? existing.namespacePrefixes : [],
       rateCeiling: existing ? existing.rateCeiling : null
     }
+    const swarmKey = op.swarmKey != null ? keyHex(op.swarmKey) : existing && existing.swarmKey
+    if (swarmKey !== undefined) rec.swarmKey = swarmKey
     this.put(K.govWriter(target), rec)
     // Re-admission clears a prior revocation record so the writer's new
     // ops pass the §8 clock rule (resolution where the spec is silent;
@@ -584,11 +596,13 @@ class Applier {
     // Policy on a non-writer would confirm an unadmitted key; reject
     // (resolution where the spec is silent; vault-ld ancestry).
     if (!existing) return { rejected: true, reason: 'policy-governance' }
-    this.put(K.govWriter(target), {
+    const rec = {
       indexer: existing.indexer,
       namespacePrefixes: (op.namespacePrefixes || []).map(nfc),
       rateCeiling: op.rateCeiling
-    })
+    }
+    if (existing.swarmKey !== undefined) rec.swarmKey = existing.swarmKey // T25: a policy keeps it
+    this.put(K.govWriter(target), rec)
     return null
   }
 
