@@ -171,7 +171,7 @@ and `fastForward: false`, and grants every writer at weight 0 (SPEC §8,
 - `writable` signals substrate admission: autobee has added this writer
   (autobee@2.12.1 `index.js:196-198`). Until then `writable` is false, and
   `append` fails `VAULT_NOT_WRITABLE` (`err.writerKey` names the key)
-  before the op takes a seq (`okf/store/lib/bundle.js:846-854`).
+  before the op takes a seq (`okf/store/lib/bundle.js:827-835`).
 - `writable` is not okf membership. Core grants the key of every
   `add-writer` op that it folds at the substrate, a rejected one too
   (`okf/core/lib/apply.js:375`). So a writer that is not an indexer can

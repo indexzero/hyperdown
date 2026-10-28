@@ -66,7 +66,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | command | what it does |
 | --- | --- |
 | `init <dir>` | create a new vault at `<dir>`; prints the vault key, this peer's writer key and swarm key, and the generation namespace; refuses a dir already pinned. `<dir>/okf-vault.json` is the invite: share it with the vault key. `--swarm-allow <hex64,...>` pins those swarm keys in the invite (`metadata.swarm.allow`); the creator's own swarm key is always pinned. See [Private swarm](#private-swarm) |
-| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry the invite (a private swarm needs it: it names the swarm keys that the peer can reach first); when `<dir>` is already pinned the key is optional (reopen + reprint keys). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:846-854`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key and swarm key to an indexer (`add-writer --swarm-key`), then replicate (`watch --swarm --bootstrap`). See [Joining a vault](#joining-a-vault) |
+| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry the invite (a private swarm needs it: it names the swarm keys that the peer can reach first); when `<dir>` is already pinned the key is optional (reopen + reprint keys). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:827-835`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key and swarm key to an indexer (`add-writer --swarm-key`), then replicate (`watch --swarm --bootstrap`). See [Joining a vault](#joining-a-vault) |
 | `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8). `--swarm-key` puts the writer's swarm key on its `gov/writer` record, and the swarm firewall of every peer admits it once it folds the op |
 | `keys <dir>` | print the vault key, this peer's writer key and its swarm key. A `<dir>` without a vault prints the swarm key only: it already exists (the store derives it from the directory's corestore, which `keys` creates when it is new), so a pre-provisioned fleet can collect every key before `init --swarm-allow` |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
@@ -88,7 +88,7 @@ There is no content-write command: content flows in through `ingest`/`watch`
 
 `join` prints this peer's own writer key and swarm key. The store refuses
 every append of the peer until autobee adds that key as a writer
-(`okf/store/lib/bundle.js:846-854`). The ops of the peer take effect only
+(`okf/store/lib/bundle.js:827-835`). The ops of the peer take effect only
 once an indexer admits the key with `add-writer`
 (`okf/core/lib/apply.js:426`, `:533-546`):
 
@@ -106,7 +106,7 @@ $ auto-okf add-writer ./vault 0cf03548… --swarm-key 9e41d2a7…
 
 Until the peer has replicated an `add-writer` op that names its key, the
 store refuses every append on it (`VAULT_NOT_WRITABLE`,
-`okf/store/lib/bundle.js:846-854`), and nothing is appended. `ingest`,
+`okf/store/lib/bundle.js:827-835`), and nothing is appended. `ingest`,
 `add-writer`, `remove-writer`, `resolve` and `undelete` then exit 1 when
 they would append an op. `watch` exits 1 the same way when its first scan
 finds an edit. After that it prints each refusal as a `watch error:` line

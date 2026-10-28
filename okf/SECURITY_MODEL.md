@@ -54,7 +54,7 @@ into ops, so the watched tree is untrusted input by design (§9).
   append until autobee reports the local writer writable
   (`VAULT_NOT_WRITABLE`, test `test/store-writers.test.js` "an append from
   a writer that is not writable fails fast"). That gate reads `db.writable`
-  (`store/lib/bundle.js:791-799`), which is substrate state. So a key that
+  (`store/lib/bundle.js:772-780`), which is substrate state. So a key that
   a member admitted at the substrate alone passes it and does append. okf
   membership is a separate thing, and it is not retroactive. apply rejects
   every op of such a key and flags it ("What the substrate decides" points
@@ -106,7 +106,7 @@ regression test:
   on a tombstoned concept was a silent no-op, so the delete won. Three
   changes close it. A file on disk that bears a tombstoned `_id` is
   intent-to-keep, so ingest undeletes it before it moves it
-  (`faces/lib/ingest.js:329-339`). A vanished path is never deleted from
+  (`faces/lib/ingest.js:326-336`). A vanished path is never deleted from
   inside the event that noticed it: the delete waits for a quiet window, so
   the moved file's `SetPath` lands first (`:184-207`). A directory event
   schedules one coalesced rescan instead of being dropped (`:127-153`).
@@ -114,7 +114,7 @@ regression test:
 - [#28](https://github.com/indexzero/hyperwiki2/issues/28) (**minor**,
   repaired): a human-authored double `.conflict-` suffix became permanent
   pending-ingest. Ingest now strips every trailing reserved suffix
-  (`faces/lib/ingest.js:310-318`). Test:
+  (`faces/lib/ingest.js:307-315`). Test:
   `test/regressions/double-conflict-suffix-ingest.test.js` "P7 (#28)".
 
 What remains at this boundary is a non-goal and not a defect. Subtree moves
@@ -264,7 +264,7 @@ needed.
 | G32, unmetered growth through free identities | a member, or any key a member approves | one `flag/rejected` entry per op on every peer, no rate token (the op is rejected before the bucket), and no change in `c/`: the test compares the whole ordered `c/` range, keys and values, against the range before the attack, on every peer. Its `AddWriter` ops grant more autobee writers at weight 0, so the identity supply is free | "G32" |
 | G34, a revoked member keeps its substrate standing | a revoked member | okf never calls `host.removeWriter`, so the key stays an autobee writer. Its later ops keep reaching apply and keep being rejected, each with a flag (I4). Calling `removeWriter` would be worse: `canApply` turns false for a removed writer (`lib/system.js:242-251`), so its node reaches the system of some peers and the apply of others, which is the split that point (f) exists to prevent | `test/store-writers.test.js` "writer add/remove round trip", "G32" |
 | G43, a forged witness | a member | measured inert on the claimant's weight, because the claim never verifies at weight 0 (point (c)). The resolution is not free: autobee resolves a node's weight before any drop (`index.js:1374`, `lib/writers.js:195`), and a claim makes it open the cited core and read one block (`lib/witness.js:33-41`, `:53-62`). That read takes no rate token | "A2 G4", "G50", "A6 G43" |
-| G44, a node whose links are missing, and the wakeup flood of point (b) | a member. An outsider, a peer with the vault key and no admitted swarm key: **Close (T25)**, on a private DHT (`--bootstrap`) and on the public DHT (`--public-dht`). The firewall does not depend on the DHT. `swarm()` gives hyperswarm the same `keyPair` and `firewall` for both choices (`okf/store/lib/bundle.js:1096-1099`). The firewall admits only the keys of `metadata.swarm.allow` and the swarm keys of live `gov/writer` records (`:1108`, `:1183-1201`). So the outsider gets no connection and reaches neither trigger. The public DHT exposes two things to the outsider, and nothing else. First, the topic announcement: the outsider can look it up, and it names the swarm keys of the announcing peers and the DHT nodes that relay to them. Second, the handshake cost of a rejected peer: hyperdht reads the first Noise message of each attempt before the firewall rejects it (hyperdht `lib/server.js:242-262`) | the receiver opens one writer core per missing link and keeps one retained wait, before the membership drop (`lib/writers.js:603-606`, `:673-678`, `:706`, `:719` against `:613-615`). The node reaches no apply while a link stays missing, so it takes no rate token and leaves no flag | point (b), which also states why the suite does not measure the member trigger. The outsider: `test/store-swarm.test.js` "a peer with the vault key and the invite, and a swarm key outside the allowlist, never connects (T25, G44)". The test runs on a private testnet, and the same code runs on the public DHT |
+| G44, a node whose links are missing, and the wakeup flood of point (b) | a member. An outsider, a peer with the vault key and no admitted swarm key: **Close (T25)**, on a private DHT (`--bootstrap`) and on the public DHT (`--public-dht`). The firewall does not depend on the DHT. `swarm()` gives hyperswarm the same `keyPair` and `firewall` for both choices (`okf/store/lib/bundle.js:1077-1080`). The firewall admits only the keys of `metadata.swarm.allow` and the swarm keys of live `gov/writer` records (`:1108`, `:1183-1201`). So the outsider gets no connection and reaches neither trigger. The public DHT exposes two things to the outsider, and nothing else. First, the topic announcement: the outsider can look it up, and it names the swarm keys of the announcing peers and the DHT nodes that relay to them. Second, the handshake cost of a rejected peer: hyperdht reads the first Noise message of each attempt before the firewall rejects it (hyperdht `lib/server.js:242-262`) | the receiver opens one writer core per missing link and keeps one retained wait, before the membership drop (`lib/writers.js:603-606`, `:673-678`, `:706`, `:719` against `:613-615`). The node reaches no apply while a link stays missing, so it takes no rate token and leaves no flag | point (b), which also states why the suite does not measure the member trigger. The outsider: `test/store-swarm.test.js` "a peer with the vault key and the invite, and a swarm key outside the allowlist, never connects (T25, G44)". The test runs on a private testnet, and the same code runs on the public DHT |
 
 Two notes on the G2 row. First, the sender's own cost is not a bound on the
 attack. autobee folds a local node (`index.js:818`) before the drain
@@ -300,7 +300,7 @@ system when apply starts, and nothing apply returns puts it back.
 apply does SEE those fields. autobee hands the original node objects of the
 batch to the application, every node that carries a value
 (`index.js:1444`), and it projects nothing away. The store forwards them
-unwrapped (`store/lib/bundle.js:362-371`). So an approval, a witness and a
+unwrapped (`store/lib/bundle.js:359-368`). So an approval, a witness and a
 timestamp are visible and inert, which is a lack of control and not a lack
 of visibility. A wakeup hint reaches apply in no form at all, as the last
 bullet above states.
