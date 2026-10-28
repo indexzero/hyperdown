@@ -108,6 +108,13 @@ const GENERATION_NS = 'okf/generation/'
 // key, so a peer that announces on another topic never finds the vault.
 const SWARM_NAMESPACE = 'auto-okf/2'
 
+// T25: the name of the swarm key pair. The Bundle derives it from its own
+// root store with corestore's documented createKeyPair (corestore
+// README.md:163, index.js:662-665, :806-815: a seed key pair from the
+// store's primary key), so a peer keeps one swarm key across restarts and
+// generations, apart from its writer keys.
+const SWARM_KEY_NAME = 'auto-okf/swarm'
+
 // Defaults for the opt-in append backpressure (vault-ld M2 ancestry, the
 // measured finding ported wholesale: a local-fold-only throttle is NOT
 // enough — a fast writer's own fold stays cheap precisely because the
@@ -148,6 +155,7 @@ export class Bundle extends EventEmitter {
     this.metadata = null
     this.generation = null
     this.swarmInstance = opts.swarm || null
+    this._swarmKeyPair = null // T25: see swarmKey
     this._swarmTopic = null
     this._ownSwarm = false
     this._onConnection = null
@@ -293,24 +301,34 @@ export class Bundle extends EventEmitter {
 
     await this.db.ready()
     this._swarmTopic = swarmTopic(this.db.discoveryKey)
+    this._swarmKeyPair = await this.store.createKeyPair(SWARM_KEY_NAME)
 
     const vaultKeyHex = b4a.toString(this.db.key, 'hex')
+    // T25: the creator of a vault (its local writer key is the vault key,
+    // see the header) lists its own swarm key in metadata.swarm.allow. The
+    // invite then names one peer that every joiner admits and dials, so a
+    // joiner can reach the vault before it has folded any gov/writer record.
+    const creator = b4a.equals(this.db.key, this.db.local.key)
     let meta = stored
     if (!meta) {
-      meta = createMetadata({
-        ...(overrides || {}),
-        genesisKey: (overrides && overrides.genesisKey) || vaultKeyHex,
-        encrypted
-      })
+      meta = createMetadata(
+        this._withOwnSwarmKey(creator, {
+          ...(overrides || {}),
+          genesisKey: (overrides && overrides.genesisKey) || vaultKeyHex,
+          encrypted
+        })
+      )
       if (metaPath) await saveMetadata(metaPath, meta)
     } else if (overrides) {
       // A re-supplied invite must agree with the pinned document (I2:
       // metadata is convergence-relevant; silent divergence is the bug).
-      const invited = createMetadata({
-        ...overrides,
-        genesisKey: overrides.genesisKey || meta.genesisKey,
-        encrypted: overrides.encrypted === undefined ? meta.encrypted : overrides.encrypted
-      })
+      const invited = createMetadata(
+        this._withOwnSwarmKey(creator, {
+          ...overrides,
+          genesisKey: overrides.genesisKey || meta.genesisKey,
+          encrypted: overrides.encrypted === undefined ? meta.encrypted : overrides.encrypted
+        })
+      )
       if (metadataHash(invited) !== metadataHash(meta)) {
         throw vaultError('VAULT_METADATA_MISMATCH', 'invite metadata differs from pinned metadata')
       }
@@ -355,6 +373,14 @@ export class Bundle extends EventEmitter {
   _setApply(meta) {
     this._coreApply = createApply(applyConfig(meta))
     this._applyBarrierResolve()
+  }
+
+  /** The metadata input, with the creator's own swarm key in swarm.allow (T25). */
+  _withOwnSwarmKey(creator, input) {
+    if (!creator) return input
+    const swarm = input.swarm || {}
+    const allow = Array.isArray(swarm.allow) ? swarm.allow : []
+    return { ...input, swarm: { ...swarm, allow: [...allow, this._swarmKeyPair.publicKey] } }
   }
 
   // ---------- apply wiring (core apply over the autobee contract) ----------
@@ -419,6 +445,15 @@ export class Bundle extends EventEmitter {
   /** This peer's writer key (what an indexer passes to writers.add). */
   get localKey() {
     return this.db && this.db.local ? this.db.local.key : null
+  }
+
+  /**
+   * This peer's hyperswarm public key (T25), stable across restarts: what
+   * an indexer passes to writers.add as `swarmKey`, or lists in
+   * metadata.swarm.allow.
+   */
+  get swarmKey() {
+    return this._swarmKeyPair ? this._swarmKeyPair.publicKey : null
   }
 
   get writable() {
@@ -896,8 +931,23 @@ export class Bundle extends EventEmitter {
   // Governance ops (§8: apply rejects these unless the ISSUER is a
   // confirmed indexer at the op's linearized position; revocation is
   // causal — core's clock rule — never host.removeWriter).
-  addWriter(key, { indexer = false } = {}) {
-    return this.append('add-writer', { key: toKeyBuffer(key), indexer })
+  /**
+   * `swarmKey` (T25, optional): the writer's swarm key, 32 bytes or 64 hex.
+   * Core stores it on gov/writer/<key>, and every peer's swarm firewall then
+   * admits it (swarm()). A bad key is refused before anything is appended.
+   */
+  addWriter(key, { indexer = false, swarmKey = null } = {}) {
+    const payload = { key: toKeyBuffer(key), indexer }
+    if (swarmKey !== null && swarmKey !== undefined) {
+      const buf = swarmKeyBuffer(swarmKey)
+      if (!buf) {
+        return Promise.reject(
+          vaultError('VAULT_BAD_SWARM_KEY', 'swarmKey must be 32 bytes or 64 hex characters')
+        )
+      }
+      payload.swarmKey = buf
+    }
+    return this.append('add-writer', payload)
   }
 
   removeWriter(key) {
@@ -1093,6 +1143,13 @@ function swarmTopic(discoveryKey) {
 
 function toKeyBuffer(key) {
   return b4a.from(keyHex(key), 'hex')
+}
+
+/** A 32-byte swarm key from 32 bytes or 64 hex characters, else null. */
+function swarmKeyBuffer(key) {
+  if (key instanceof Uint8Array) return key.byteLength === 32 ? b4a.from(key) : null
+  if (typeof key === 'string' && /^[0-9a-f]{64}$/i.test(key)) return b4a.from(key.toLowerCase(), 'hex')
+  return null
 }
 
 function closedError() {

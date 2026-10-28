@@ -88,6 +88,40 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
   assert.equal(aOthers.indexer, false)
 })
 
+test('addWriter carries the swarm key onto gov/writer, and refuses a bad one before it appends (T25)', async (t) => {
+  const a = await Bundle.init(await tmpDir('wr-swarm-a'))
+  const b = await Bundle.join(await tmpDir('wr-swarm-b'), a.key)
+  const c = await Bundle.join(await tmpDir('wr-swarm-c'), a.key)
+  t.after(async () => {
+    await a.close()
+    await b.close()
+    await c.close()
+  })
+  const bHex = b.localKey.toString('hex')
+  const cHex = c.localKey.toString('hex')
+
+  await a.addWriter(b.localKey, { swarmKey: b.swarmKey })
+  await a.writers.add(c.localKey, { indexer: true, swarmKey: c.swarmKey.toString('hex').toUpperCase() })
+  await a.update()
+  assert.deepEqual(await a.val(K.govWriter(bHex)), {
+    indexer: false,
+    namespacePrefixes: [],
+    rateCeiling: null,
+    swarmKey: b.swarmKey.toString('hex')
+  })
+  assert.equal((await a.val(K.govWriter(cHex))).swarmKey, c.swarmKey.toString('hex'), 'hex input, any case')
+
+  const length = a.db.local.length
+  for (const bad of [Buffer.alloc(31, 1), Buffer.alloc(33, 1), 'ab', 'zz'.repeat(32), 42]) {
+    await assert.rejects(
+      a.addWriter(b.localKey, { swarmKey: bad }),
+      (err) => err.code === 'VAULT_BAD_SWARM_KEY',
+      `refused: ${String(bad)}`
+    )
+  }
+  assert.equal(a.db.local.length, length, 'a refused swarm key appends no node')
+})
+
 test('an append from a writer that is not writable fails fast: VAULT_NOT_WRITABLE, autobee stays open, no seq used (G12)', async (t) => {
   // Ported from ab2-review/scratch-A/s3-plain-fresh.mjs. autobee's own
   // append refuses only a writer it records as removed (autobee

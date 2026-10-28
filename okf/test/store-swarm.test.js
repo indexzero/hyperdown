@@ -19,6 +19,7 @@ import { Bundle, K, METADATA_FILE, loadMetadata, tmpDir, until } from './store-h
 
 const storeRequire = createRequire(new URL('../store/index.js', import.meta.url))
 const Hyperswarm = storeRequire('hyperswarm')
+const Corestore = storeRequire('corestore')
 const createTestnet = createRequire(storeRequire.resolve('hyperswarm'))('hyperdht/testnet')
 
 // The bound on each wait for a result that must come (ms).
@@ -163,6 +164,49 @@ test('a stand-in peer on the bare discovery key never replicates with a namespac
   const namespaced = swarmC.join(namespacedTopic(c.discoveryKey), { server: true, client: true })
   await withDeadline(namespaced.flushed(), DEADLINE, 'stand-in namespaced join')
   assert.ok(await folds(c, id), 'the stand-in folds the op once it joins the auto-okf/2 topic')
+})
+
+test('a vault derives its swarm key from its own store, so the key is stable across a reopen (T25)', { timeout: TEST_TIMEOUT }, async (t) => {
+  const dir = await tmpDir('swarm-key')
+  const a = await Bundle.init(dir)
+  const key = a.swarmKey
+  assert.ok(Buffer.isBuffer(key) && key.length === 32, 'a 32-byte public key')
+  assert.notDeepEqual(key, a.localKey, 'the swarm key is not the writer key')
+  await a.close()
+
+  // The derivation, computed here apart from bundle.js: corestore's
+  // createKeyPair('auto-okf/swarm') on the root store of the directory.
+  const store = new Corestore(dir)
+  const { publicKey } = await store.createKeyPair('auto-okf/swarm')
+  await store.close()
+  assert.deepEqual(publicKey, key, "createKeyPair('auto-okf/swarm') of the vault's store")
+
+  const reopened = await Bundle.open(dir)
+  t.after(() => reopened.close())
+  assert.deepEqual(reopened.swarmKey, key, 'the same key after a reopen')
+  const other = await Bundle.init(await tmpDir('swarm-key-other'))
+  t.after(() => other.close())
+  assert.notDeepEqual(other.swarmKey, key, 'another store has another key')
+})
+
+test("a new vault lists its creator's swarm key in metadata.swarm.allow, and the invite carries it (T25)", { timeout: TEST_TIMEOUT }, async (t) => {
+  const dirA = await tmpDir('swarm-creator')
+  const listed = 'ab'.repeat(32)
+  const a = await Bundle.init(dirA, { metadata: { swarm: { allow: [listed] } } })
+  const own = a.swarmKey.toString('hex')
+  assert.deepEqual(a.metadata.swarm.allow, [own, listed].sort(), 'the creator adds its own key to the list')
+  assert.deepEqual((await loadMetadata(join(dirA, METADATA_FILE))).swarm.allow, [own, listed].sort())
+
+  // A joiner pins the invite as it is, and adds no key of its own.
+  const b = await Bundle.join(await tmpDir('swarm-creator-b'), a.key, { metadata: a.metadata })
+  t.after(() => b.close())
+  assert.deepEqual(b.metadata, a.metadata, 'the joiner pins the same document')
+
+  // The creator reopens with the input that created the vault.
+  await a.close()
+  const again = await Bundle.open(dirA, { metadata: { swarm: { allow: [listed] } } })
+  t.after(() => again.close())
+  assert.deepEqual(again.metadata.swarm.allow, [own, listed].sort())
 })
 
 test('a vault of this release records metadata version 2, and loadMetadata refuses every other version', { timeout: TEST_TIMEOUT }, async () => {
