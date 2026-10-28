@@ -1,4 +1,5 @@
-// Store scope (T21): the store loads without pnpm's hidden hoist.
+// Store scope (T21, T26): the store loads without pnpm's hidden hoist, and
+// it pins autobee and corestore exactly.
 //
 // pnpm links only the dependencies that a package declares. Two packages
 // in the store's tree require a package that they do not declare:
@@ -18,7 +19,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -69,6 +70,42 @@ for (const name of PUBLIC) {
       existsSync(hoisted),
       `${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_NOT_PUBLIC: ${hoisted} does not exist. ` +
         `The package that requires ${name} then resolves it only through pnpm's hidden hoist. ${FIX}`
+    )
+  })
+}
+
+// The exact pins (T26). okf/DEVIATIONS.md records behaviour of autobee
+// 2.12.1 and corestore 7.16.1 that okf relies on, and the autobee README
+// does not document all of it. A later release, a patch release too, can
+// change that behaviour. So okf/store/package.json declares each version
+// with no range, and the store must resolve that version.
+const PINS = { autobee: '2.12.1', corestore: '7.16.1' }
+const WHY =
+  'okf/DEVIATIONS.md, section "Substrate behaviour that okf relies on (autobee@2.12.1)", ' +
+  'paragraph "The pins, and the corestore floor", says why.'
+const storeManifest = JSON.parse(readFileSync(new URL('../store/package.json', import.meta.url), 'utf8'))
+
+for (const [name, version] of Object.entries(PINS)) {
+  const code = name.toUpperCase()
+
+  test(`the store pins ${name} at exactly ${version}`, () => {
+    const declared = storeManifest.dependencies[name]
+    assert.equal(
+      declared,
+      version,
+      `${code}_PIN_NOT_EXACT: okf/store/package.json declares ${name} "${declared}", not "${version}". ` +
+        `Pin it at exactly "${version}", then run pnpm install. ${WHY}`
+    )
+  })
+
+  test(`the store resolves ${name} ${version}`, () => {
+    const manifest = storeRequire.resolve(`${name}/package.json`)
+    const resolved = JSON.parse(readFileSync(manifest, 'utf8')).version
+    assert.equal(
+      resolved,
+      version,
+      `${code}_VERSION_DRIFT: the store resolves ${name} ${resolved} (${manifest}), not ${version}. ` +
+        `Run pnpm install --frozen-lockfile. ${WHY}`
     )
   })
 }
