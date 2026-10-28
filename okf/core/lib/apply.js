@@ -524,13 +524,19 @@ class Applier {
   }
 
   /**
-   * §8 admission. The optional swarm key (T25) is the writer's 32-byte
+   * §8 admission. A writer key that is not 32 bytes rejects the op
+   * 'bad-writer-key' before it writes a gov/ key (D-047 F18): grant() does
+   * not grant such a key, and its record would count as an indexer that no
+   * writer can be. The optional swarm key (T25) is the writer's 32-byte
    * hyperswarm public key. A key of any other length rejects the op
    * 'bad-swarm-key' before it writes a gov/ key. The record stores the key
    * hex. An op without one keeps the key that the record already holds, as
    * it keeps the policy fields.
    */
   async opAddWriter(op) {
+    if (!(op.key instanceof Uint8Array && op.key.byteLength === 32)) {
+      return { rejected: true, reason: 'bad-writer-key' }
+    }
     const target = keyHex(op.key)
     if (op.swarmKey != null && !(op.swarmKey instanceof Uint8Array && op.swarmKey.byteLength === 32)) {
       return { rejected: true, reason: 'bad-swarm-key' }

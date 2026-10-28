@@ -47,7 +47,7 @@ test('I10: the AddWriter grant comes before every check that can reject the op, 
   // policy-rate: F spends its one token on a rejected op, so its bucket is empty
   env.op('F', 'set-writer-policy', { key: writerKey('nobody'), namespacePrefixes: [], rateCeiling: 1 })
   env.op('F', 'add-writer', { key: writerKey('E5'), indexer: false })
-  // a key that is not 32 bytes: no grant
+  // bad-writer-key: a key that is not 32 bytes, and no grant (D-047 F18)
   env.op('A', 'add-writer', { key: Buffer.alloc(31, 7), indexer: false })
   const host = hostStub()
   const view = await env.run(env.nodes, { host })
@@ -58,8 +58,10 @@ test('I10: the AddWriter grant comes before every check that can reject the op, 
     [`${A}/000000000004`]: 'forged-clock',
     [`${env.hex('C')}/000000000000`]: 'revoked',
     [`${env.hex('F')}/000000000000`]: 'policy-governance',
-    [`${env.hex('F')}/000000000001`]: 'policy-rate'
+    [`${env.hex('F')}/000000000001`]: 'policy-rate',
+    [`${A}/000000000006`]: 'bad-writer-key'
   })
+  assert.equal(await view.get('gov/writer/' + Buffer.alloc(31, 7).toString('hex')), null, 'no record for the 31-byte key')
   for (const e of ['E1', 'E2', 'E3', 'E4', 'E5']) {
     assert.equal(await view.get('gov/writer/' + env.hex(e)), null, `${e} never admitted`)
   }
@@ -114,6 +116,29 @@ test('I10: an AddWriter whose swarm key is not 32 bytes is rejected bad-swarm-ke
     host.calls.filter(([m]) => m === 'addWriter'),
     ['E1', 'E2'].map((w) => ['addWriter', env.hex(w), { weight: 0 }])
   )
+})
+
+test('I10: an AddWriter whose key is not 32 bytes is rejected bad-writer-key, writes no gov/ key, gets no grant, and never counts as an indexer (D-047 F18)', async () => {
+  // A z-base-32 id passed where a hex key belongs decodes to no bytes
+  // (b4a.from(id, 'hex')). Before the fix, apply wrote gov/writer/ for it,
+  // and that phantom indexer let the only real indexer remove itself.
+  const env = new Env({ genesis: 'A' })
+  const A = env.hex('A')
+  env.op('A', 'add-writer', { key: Buffer.alloc(31, 7), indexer: true })
+  env.op('A', 'add-writer', { key: Buffer.alloc(33, 8), indexer: true })
+  env.op('A', 'add-writer', { key: Buffer.alloc(0), indexer: true })
+  env.op('A', 'remove-writer', { key: writerKey('A') }) // A is the only indexer
+  const host = hostStub()
+  const view = await env.run(env.nodes, { host })
+
+  assert.deepEqual(rejectedReasons(view), {
+    [`${A}/000000000000`]: 'bad-writer-key',
+    [`${A}/000000000001`]: 'bad-writer-key',
+    [`${A}/000000000002`]: 'bad-writer-key',
+    [`${A}/000000000003`]: 'policy-governance'
+  })
+  assert.deepEqual(keysUnder(view, 'gov/'), [`gov/writer/${A}`], 'no gov/ key for a bad key, and A is not removed')
+  assert.deepEqual(host.calls.filter(([m]) => m === 'addWriter'), [], 'no grant for a key that is not 32 bytes')
 })
 
 test('I10: apply does not return before host.addWriter settles', async () => {
