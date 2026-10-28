@@ -65,13 +65,15 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 
 | command | what it does |
 | --- | --- |
-| `init <dir>` | create a new vault at `<dir>`; prints the vault key (share it to invite peers), this peer's writer key, and the generation namespace; refuses a dir already pinned |
-| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry non-default invites; when `<dir>` is already pinned the key is optional (reopen + reprint keys). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:791-799`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key to an indexer (`add-writer`), then replicate (`watch --swarm`). See [Joining a vault](#joining-a-vault) |
-| `add-writer <dir> <writer-key> [--indexer]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8) |
+| `init <dir>` | create a new vault at `<dir>`; prints the vault key, this peer's writer key and swarm key, and the generation namespace; refuses a dir already pinned. `<dir>/okf-vault.json` is the invite: share it with the vault key. `--swarm-allow <hex64,...>` pins those swarm keys in the invite (`metadata.swarm.allow`); the creator's own swarm key is always pinned. See [Private swarm](#private-swarm) |
+| `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry the invite (a private swarm needs it: it names the swarm keys that the peer can reach first); when `<dir>` is already pinned the key is optional (reopen + reprint keys). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:843-851`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key and swarm key to an indexer (`add-writer --swarm-key`), then replicate (`watch --swarm --bootstrap`). See [Joining a vault](#joining-a-vault) |
+| `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8). `--swarm-key` puts the writer's swarm key on its `gov/writer` record, and the swarm firewall of every peer admits it once it folds the op |
+| `keys <dir>` | print the vault key, this peer's writer key and its swarm key. A `<dir>` without a vault prints the swarm key only: it already exists (the store derives it from the directory's corestore, which `keys` creates when it is new), so a pre-provisioned fleet can collect every key before `init --swarm-allow` |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8) |
 | `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
 | `ingest <dir> <bundle-dir> [paths…]` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9). Trailing bundle-relative paths restrict the scan to exactly those concept files (ADR-001 — concurrent-writer politeness; the shell expands globs): a named path that does not exist, escapes the bundle root, or is not a `.md` file exits 1 naming the path, with zero ops appended. Zero paths = full scan, unchanged. `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default) |
-| `watch <dir> <bundle-dir> [--swarm]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also joins the vault's `auto-okf/2` hyperswarm topic for replication (on the public DHT, see [Notes](#notes)); `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
+| `watch <dir> <bundle-dir> [--swarm --bootstrap <host:port,...> \| --swarm --public-dht]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also replicates over a swarm whose firewall admits only members' swarm keys (see [Private swarm](#private-swarm)). `--swarm` needs exactly one DHT: `--bootstrap`, the nodes of a private DHT (`auto-okf bootstrap`), or `--public-dht`, the public DHT (the commons). Without either, `watch --swarm` refuses by name (exit 2) before it opens the vault. `--confirm-deletes`, `--debounce <ms>`. No daemon — stop with Ctrl-C |
+| `bootstrap --port <n> [--host <ipv4>]` | run a DHT bootstrap node (hyperdht `DHT.bootstrapper`) in the foreground until Ctrl-C: the hub of a private DHT. It binds `<host>` only, default `127.0.0.1`, so the default node takes no packet from another machine. Peers pass `--bootstrap <host>:<n>` |
 | `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
@@ -84,26 +86,27 @@ There is no content-write command: content flows in through `ingest`/`watch`
 
 ## Joining a vault
 
-`join` prints this peer's own writer key. The store refuses every append
-of the peer until autobee adds that key as a writer
-(`okf/store/lib/bundle.js:791-799`). The ops of the peer take effect only
+`join` prints this peer's own writer key and swarm key. The store refuses
+every append of the peer until autobee adds that key as a writer
+(`okf/store/lib/bundle.js:843-851`). The ops of the peer take effect only
 once an indexer admits the key with `add-writer`
-(`okf/core/lib/apply.js:426`, `:526-534`):
+(`okf/core/lib/apply.js:426`, `:533-546`):
 
 ```sh
-$ auto-okf join ./peer <vault-key>
+$ auto-okf join ./peer <vault-key> --metadata okf-vault.json
 vault key:   6671cacb…
 writer key:  0cf03548…
-hand the writer key to an indexer (`auto-okf add-writer`), then replicate
-with `auto-okf watch <dir> <bundle-dir> --swarm`
+swarm key:   9e41d2a7…
+hand both keys to an indexer (`auto-okf add-writer <dir> <writer-key> --swarm-key <swarm-key>`),
+then replicate with `auto-okf watch <dir> <bundle-dir> --swarm --bootstrap <host:port>`
 
 # on an indexer's replica
-$ auto-okf add-writer ./vault 0cf03548…
+$ auto-okf add-writer ./vault 0cf03548… --swarm-key 9e41d2a7…
 ```
 
 Until the peer has replicated an `add-writer` op that names its key, the
 store refuses every append on it (`VAULT_NOT_WRITABLE`,
-`okf/store/lib/bundle.js:791-799`), and nothing is appended. `ingest`,
+`okf/store/lib/bundle.js:843-851`), and nothing is appended. `ingest`,
 `add-writer`, `remove-writer`, `resolve` and `undelete` then exit 1 when
 they would append an op. `watch` exits 1 the same way when its first scan
 finds an edit. After that it prints each refusal as a `watch error:` line
@@ -119,6 +122,63 @@ the key of every `add-writer` op that it folds, a rejected one too
 the peer writable. The appends of the peer then go through, but apply
 rejects each of its ops until an indexer admits it
 (`okf/core/lib/apply.js:407-412`, `:426`).
+
+## Private swarm
+
+`watch --swarm` replicates over a private hyperswarm. The vault key is not
+a capability to connect. Each peer has a persistent swarm key (`keys`),
+and the swarm firewall of each peer rejects every remote key except:
+
+- the keys of the invite, `metadata.swarm.allow`, and
+- the swarm key on each `gov/writer` record that has no `gov/removed`
+  record (`add-writer --swarm-key`).
+
+The swarm key of a removed writer leaves the allowlist when a peer folds
+the `remove-writer`, also when the invite lists the key, and its open
+connections close. A peer that holds the vault key and the invite, but no
+admitted swarm key, never connects (`okf/test/store-swarm.test.js`).
+
+**A private DHT.** One `auto-okf bootstrap` node is the hub. Every peer
+passes its address to `--bootstrap`:
+
+```sh
+$ auto-okf bootstrap --port 49737
+bootstrap node: 127.0.0.1:49737 (foreground; Ctrl-C to stop)
+
+$ auto-okf watch ./vault ./bundle --swarm --bootstrap 127.0.0.1:49737
+```
+
+For peers on more than one machine, run the node with
+`--host <its IPv4 address>`. `--public-dht` uses hyperdht's default
+bootstrap nodes instead: the public DHT, which hyperdht describes as
+"publicly served on behalf of the commons". It is explicit opt-in.
+
+**A late joiner.** The joiner runs `join --metadata okf-vault.json` and
+hands its writer key and swarm key to an indexer, who runs
+`add-writer <dir> <writer-key> --swarm-key <swarm-key>`. The joiner first
+reaches the peers of the invite. The creator's swarm key is always there.
+Each peer admits the joiner when it folds the `add-writer`, and finds it on
+the vault's `auto-okf/2` topic.
+
+**A pre-provisioned fleet.** A pre-provisioned fleet needs no topic:
+
+```sh
+# on each peer of the fleet: the swarm key exists before the vault
+$ auto-okf keys ./peer-1
+swarm key:   9e41d2a7…
+
+# the creator pins every key in the invite
+$ auto-okf init ./vault --swarm-allow 9e41d2a7…,52c0f1e8…
+
+# each peer joins with the invite
+$ auto-okf join ./peer-1 <vault-key> --metadata ./vault/okf-vault.json
+```
+
+Each peer then dials every listed key directly (hyperswarm `joinPeer`), so
+the fleet connects without a topic announcement. `watch --swarm` still
+joins the topic for writers that join later. Admit each writer with
+`add-writer --swarm-key` too, so that a later `remove-writer` also takes
+its swarm key out of every allowlist.
 
 ## Per-file state: `status`
 
@@ -235,12 +295,15 @@ per command) and exits 0.
   in `okf-vault.json`). Any other version exits 1 with
   `unsupported vault metadata version: <n>`. Vaults of an earlier release
   are not carried over.
-- All commands operate on the local replica and return; only `watch` stays in
-  the foreground (with `--swarm` it is also the replication process).
-- `watch --swarm` announces the vault on the public hyperswarm DHT, on the
-  `auto-okf/2` topic. Any peer that learns the vault key can connect, and
-  an outsider with the key can still make members open writer cores (G44
-  in [SECURITY_MODEL.md](../SECURITY_MODEL.md)).
+- All commands operate on the local replica and return; only `watch` and
+  `bootstrap` stay in the foreground (with `--swarm`, `watch` is also the
+  replication process).
+- `watch --swarm` announces the vault on the `auto-okf/2` topic of the DHT
+  that `--bootstrap` or `--public-dht` chooses. The firewall admits only
+  members' swarm keys, so an outsider with the vault key gets no connection
+  and cannot reach autobee's wakeup protocol (G44 in
+  [SECURITY_MODEL.md](../SECURITY_MODEL.md)). On the public DHT, any peer
+  that knows the vault key can still find the peers' addresses.
 - Governance commands verify their effect in the view after appending: if the
   issuing peer is not a confirmed indexer, apply rejects the op
   (`flag/rejected`, reason `policy-governance`) and the command exits 1 with
@@ -273,7 +336,13 @@ leaves no staging or verification copy; `compact` refuses an existing stage,
 a re-run into an existing generation and overlapping paths before it opens
 the predecessor, and normalizes a trailing slash; an unadmitted peer
 cannot issue `add-writer`; `undelete`
-restores a tombstone; `watch` ingests a foreground edit and exits cleanly on SIGINT.
+restores a tombstone; `watch` ingests a foreground edit and exits cleanly on SIGINT;
+`keys` prints the writer key and the swarm key, and the swarm key before a
+vault exists; `init --swarm-allow` pins the keys; `add-writer --swarm-key`
+puts the key on `gov/writer`; `watch --swarm` refuses by name without
+`--bootstrap` or `--public-dht`; `bootstrap` refuses a bad port or host,
+and runs a node through which `watch --swarm --bootstrap` replicates to an
+admitted peer.
 `okf/test/i11-roundtrip.test.js` also spawns `auto-okf compact`: it reports
 its counts and its fidelity check, and exits 1 on `COMPACT_FIDELITY`.
 

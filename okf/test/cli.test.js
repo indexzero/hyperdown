@@ -8,6 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
+import { createSocket } from 'node:dgram'
 import { mkdir, readdir, readFile, rm, writeFile, access, symlink } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -441,6 +442,184 @@ test('join + add-writer + remove-writer round trip (§8 governance plumbing)', a
   const rogue = await cli(['add-writer', peer, vaultKey])
   assert.equal(rogue.code, 1, 'an unadmitted peer add-writer must fail')
   assert.match(rogue.stderr, /Not writable|did not take effect/)
+})
+
+const SWARM_LINE = /^swarm key: {3}([0-9a-f]{64})$/m
+
+/** The metadata that a vault directory pins (okf-vault.json, the invite). */
+async function invite(dir) {
+  return JSON.parse(await readFile(join(dir, 'okf-vault.json'), 'utf8'))
+}
+
+/** A UDP port that was free a moment ago, for a DHT bootstrap node. */
+async function freeUdpPort() {
+  const s = createSocket('udp4')
+  await new Promise((resolve) => s.bind(0, '127.0.0.1', resolve))
+  const { port } = s.address()
+  await new Promise((resolve) => s.close(resolve))
+  return port
+}
+
+/** Spawn a foreground command; collects its output in `out.log`. */
+function foreground(args) {
+  const child = spawn('node', [BIN, ...args], { cwd: ROOT })
+  const out = { log: '' }
+  child.stdout.on('data', (d) => (out.log += d))
+  child.stderr.on('data', (d) => (out.log += d))
+  out.exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)))
+  out.child = child
+  return out
+}
+
+test('keys prints the writer key and the swarm key, and the swarm key before the directory holds a vault (T25)', async () => {
+  const storage = join(await tmpDir('keys'), 'vault')
+  const early = await cli(['keys', storage])
+  assert.equal(early.code, 0, early.stderr)
+  const swarmKey = early.stdout.match(SWARM_LINE)[1]
+  assert.doesNotMatch(early.stdout, WRITER_LINE, 'no writer key before a vault exists')
+  assert.match(early.stderr, /holds no vault yet/)
+
+  const init = await cli(['init', storage])
+  assert.equal(init.code, 0, init.stderr)
+  assert.equal(init.stdout.match(SWARM_LINE)[1], swarmKey, 'init prints the same swarm key')
+  assert.ok((await invite(storage)).swarm.allow.includes(swarmKey), "the invite lists the creator's swarm key")
+
+  const keys = await cli(['keys', storage])
+  assert.equal(keys.code, 0, keys.stderr)
+  assert.equal(keys.stdout.match(WRITER_LINE)[1], init.stdout.match(WRITER_LINE)[1])
+  assert.equal(keys.stdout.match(SWARM_LINE)[1], swarmKey, 'the swarm key is stable')
+  assert.equal(keys.stdout.match(KEY_LINE)[1], init.stdout.match(KEY_LINE)[1])
+})
+
+test('init --swarm-allow pins the listed keys and the creator key in the invite, and refuses a bad key (T25)', async () => {
+  const base = await tmpDir('swarm-allow')
+  const k1 = 'ab'.repeat(32)
+  const k2 = '12'.repeat(32)
+  const storage = join(base, 'vault')
+  const out = await cli(['init', storage, '--swarm-allow', `${k1},${k2.toUpperCase()}`])
+  assert.equal(out.code, 0, out.stderr)
+  const own = out.stdout.match(SWARM_LINE)[1]
+  assert.deepEqual((await invite(storage)).swarm.allow, [k1, k2, own].sort())
+
+  const bad = await cli(['init', join(base, 'bad'), '--swarm-allow', `${k1},nothex`])
+  assert.equal(bad.code, 2, 'a bad key is a usage error')
+  assert.match(bad.stderr, /--swarm-allow must be a comma-separated list of 64-hex swarm keys/)
+  await assert.rejects(access(join(base, 'bad', 'okf-vault.json')), 'nothing is pinned')
+})
+
+test('add-writer --swarm-key puts the swarm key on gov/writer, and a bad key is a usage error (T25)', async () => {
+  const base = await tmpDir('add-swarm')
+  const origin = join(base, 'origin')
+  const peer = join(base, 'peer')
+  const init = await cli(['init', origin])
+  const vaultKey = init.stdout.match(KEY_LINE)[1]
+  const joined = await cli(['join', peer, vaultKey, '--metadata', join(origin, 'okf-vault.json')])
+  assert.equal(joined.code, 0, joined.stderr)
+  const writerKey = joined.stdout.match(WRITER_LINE)[1]
+  const swarmKey = joined.stdout.match(SWARM_LINE)[1]
+  assert.match(joined.stdout, /--swarm-key/, 'join names the flag that admits its swarm key')
+
+  const before = await snapshotHash(origin)
+  const bad = await cli(['add-writer', origin, writerKey, '--swarm-key', 'nothex'])
+  assert.equal(bad.code, 2)
+  assert.match(bad.stderr, /--swarm-key must be 64 hex characters/)
+  assert.equal(await snapshotHash(origin), before, 'a refused add-writer appends nothing')
+
+  const added = await cli(['add-writer', origin, writerKey, '--swarm-key', swarmKey])
+  assert.equal(added.code, 0, added.stderr)
+  assert.match(added.stdout, new RegExp(`writer added: ${writerKey} \\(indexer: false\\)`))
+  assert.match(added.stdout, new RegExp(`swarm key: {3}${swarmKey}`))
+  const v = await Bundle.open(origin)
+  try {
+    assert.equal((await v.val(K.govWriter(writerKey))).swarmKey, swarmKey)
+  } finally {
+    await v.close()
+  }
+})
+
+test('watch --swarm refuses by name without --bootstrap or --public-dht, before it opens the vault (T25)', async () => {
+  const base = await tmpDir('watch-dht')
+  const missing = join(base, 'no-vault-here') // a refusal after the open would say "not a vault"
+  const bundle = join(base, 'bundle')
+  const cases = [
+    [['--swarm'], /--swarm needs --bootstrap <host:port,\.\.\.>.*or --public-dht/],
+    [['--bootstrap', '127.0.0.1:1'], /--bootstrap and --public-dht need --swarm/],
+    [['--public-dht'], /--bootstrap and --public-dht need --swarm/],
+    [['--swarm', '--bootstrap', '127.0.0.1:1', '--public-dht'], /--bootstrap or --public-dht, not both/],
+    [['--swarm', '--bootstrap', 'no-port'], /--bootstrap must be host:port/],
+    [['--swarm', '--bootstrap', '127.0.0.1:99999'], /--bootstrap must be host:port/]
+  ]
+  for (const [flags, re] of cases) {
+    const res = await cli(['watch', missing, bundle, ...flags])
+    assert.equal(res.code, 2, `${flags.join(' ')}: ${res.stderr}`)
+    assert.match(res.stderr, re, flags.join(' '))
+  }
+  await assert.rejects(access(missing), 'no storage was created')
+})
+
+test('bootstrap refuses a missing or bad port and a host that is not IPv4 (T25)', async () => {
+  for (const [args, re] of [
+    [['bootstrap'], /--port <n> is required/],
+    [['bootstrap', '--port', '0'], /--port must be an integer from 1 to 65535/],
+    [['bootstrap', '--port', '70000'], /--port must be an integer from 1 to 65535/],
+    [['bootstrap', '--port', '4000', '--host', 'localhost'], /--host must be an IPv4 address/],
+    [['bootstrap', '--port', '4000', '--host', '0.0.0.0'], /--host must be an IPv4 address/]
+  ]) {
+    const res = await cli(args)
+    assert.equal(res.code, 2, `${args.join(' ')}: ${res.stderr}`)
+    assert.match(res.stderr, re)
+  }
+})
+
+test('bootstrap runs a private DHT node, and watch --swarm --bootstrap replicates to an admitted peer through it (T25)', { timeout: 120000 }, async (t) => {
+  const base = await tmpDir('private-swarm')
+  const origin = join(base, 'origin')
+  const bundle = join(base, 'bundle')
+  const port = await freeUdpPort()
+  const node = foreground(['bootstrap', '--port', String(port)])
+  let watch = null
+  let peer = null
+  t.after(async () => {
+    if (peer) await peer.close()
+    for (const p of [watch, node]) {
+      if (p && p.child.exitCode === null) p.child.kill('SIGINT')
+    }
+  })
+  await waitFor(() => node.log.includes('bootstrap node: 127.0.0.1:' + port), 30000)
+
+  const init = await cli(['init', origin])
+  const vaultKey = init.stdout.match(KEY_LINE)[1]
+  await mkdir(bundle, { recursive: true })
+  await writeFile(join(bundle, 'hello.md'), '---\ntype: note\ntitle: Hello\n---\nOver the private swarm.\n')
+  assert.equal((await cli(['ingest', origin, bundle])).code, 0)
+
+  // The peer joins with the invite, which lists the origin's swarm key, and
+  // the origin admits the peer's swarm key.
+  peer = await Bundle.join(join(base, 'peer'), Buffer.from(vaultKey, 'hex'), { metadata: await invite(origin) })
+  const added = await cli([
+    'add-writer', origin, peer.localKey.toString('hex'), '--swarm-key', peer.swarmKey.toString('hex')
+  ])
+  assert.equal(added.code, 0, added.stderr)
+
+  watch = foreground(['watch', origin, bundle, '--swarm', '--bootstrap', `127.0.0.1:${port}`])
+  await waitFor(() => watch.log.includes('watching'), 30000)
+  assert.match(watch.log, /joined the private swarm/)
+
+  await peer.swarm({ bootstrap: [`127.0.0.1:${port}`] })
+  const deadline = Date.now() + 30000
+  let id
+  while (!(id = await peer.val(K.path('hello'))) && Date.now() < deadline) {
+    await peer.update()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  assert.ok(id, 'the admitted peer folds the origin ops over the private swarm')
+  await peer.close()
+  peer = null
+
+  watch.child.kill('SIGINT')
+  assert.equal(await watch.exited, 0, watch.log)
+  node.child.kill('SIGINT')
+  assert.equal(await node.exited, 0, node.log)
 })
 
 /**

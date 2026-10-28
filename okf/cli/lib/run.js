@@ -6,7 +6,7 @@
 //
 // The command surface is declared once as a paparam command tree (paparam is
 // Holepunch's own parser — pear's CLI runs on it): a root command composing
-// the 13 subcommands from command()/flag()/arg(), with --help|-h and all help
+// the 15 subcommands from command()/flag()/arg(), with --help|-h and all help
 // text generated from the declarations.
 //
 // Exit codes: 0 success, 1 operational error, 2 usage error, 3 materialize
@@ -17,11 +17,12 @@
 // validate()) missing required arguments — to 2, never letting paparam pick
 // the code. Unknown flags are rejected strictly, as before.
 import { readFile, access, stat } from 'node:fs/promises'
+import { isIPv4 } from 'node:net'
 import { join, relative, resolve, sep } from 'node:path'
 import b4a from 'b4a'
 import { command, flag, arg, rest, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
-import { Bundle, METADATA_FILE } from '@auto-okf/store'
+import { Bundle, METADATA_FILE, startBootstrapNode } from '@auto-okf/store'
 import { materialize, createIngestWatcher, wanted, compact, status } from '@auto-okf/faces'
 import { guardCompactPaths } from '@auto-okf/faces/compact'
 
@@ -140,6 +141,10 @@ function buildCli() {
       "create a new vault; this peer's key is the vault key and the genesis indexer",
       arg('<dir>', 'vault storage directory'),
       flag('--encryption-key <hex64>', 'encrypt the vault with this key (64 hex chars)'),
+      flag(
+        '--swarm-allow <hex64,...>',
+        "pin these swarm keys in the invite (metadata.swarm.allow); this peer's own swarm key is always pinned"
+      ),
       requiredArgs('<dir>')
     ),
     sub(
@@ -157,7 +162,14 @@ function buildCli() {
       arg('<dir>', 'vault storage directory'),
       arg('<writer-key>', 'writer public key (64 hex chars)'),
       flag('--indexer', 'admit the writer as an indexer'),
+      flag('--swarm-key <hex64>', "the writer's swarm key; the swarm firewall of every peer then admits it"),
       requiredArgs('<dir>', '<writer-key>')
+    ),
+    sub(
+      'keys',
+      "print this peer's writer key and swarm key (the swarm key also before <dir> holds a vault)",
+      arg('<dir>', 'vault storage directory'),
+      requiredArgs('<dir>')
     ),
     sub(
       'remove-writer',
@@ -185,10 +197,12 @@ function buildCli() {
     ),
     sub(
       'watch',
-      'foreground ingest watcher (+ optional swarm)',
+      'foreground ingest watcher (+ optional private swarm)',
       arg('<dir>', 'vault storage directory'),
       arg('<bundle-dir>', 'OKF bundle directory'),
-      flag('--swarm', "join the vault's hyperswarm topic for replication"),
+      flag('--swarm', 'replicate over a swarm that admits only members (needs --bootstrap or --public-dht)'),
+      flag('--bootstrap <host:port,...>', 'with --swarm: the bootstrap nodes of a private DHT (`auto-okf bootstrap`)'),
+      flag('--public-dht', 'with --swarm: announce on the public DHT, the commons, instead'),
       flag('--confirm-deletes', 'let a file deleted on disk emit DeleteConcept'),
       flag('--debounce <ms>', 'ingest debounce in milliseconds'),
       requiredArgs('<dir>', '<bundle-dir>')
@@ -242,6 +256,12 @@ function buildCli() {
       arg('<dir>', 'vault storage directory'),
       arg('<id>', 'concept id'),
       requiredArgs('<dir>', '<id>')
+    ),
+    sub(
+      'bootstrap',
+      'run a DHT bootstrap node for a private swarm, in the foreground until Ctrl-C',
+      flag('--port <n>', 'UDP port to bind (required)'),
+      flag('--host <ipv4>', 'IPv4 address to bind and announce (default 127.0.0.1)')
     )
   ]
 
@@ -316,6 +336,7 @@ const HANDLERS = {
   init: cmdInit,
   join: cmdJoin,
   'add-writer': cmdAddWriter,
+  keys: cmdKeys,
   'remove-writer': cmdRemoveWriter,
   materialize: cmdMaterialize,
   ingest: cmdIngest,
@@ -325,7 +346,8 @@ const HANDLERS = {
   flags: cmdFlags,
   compact: cmdCompact,
   resolve: cmdResolve,
-  undelete: cmdUndelete
+  undelete: cmdUndelete,
+  bootstrap: cmdBootstrap
 }
 
 // ---------- argument helpers ----------
@@ -334,6 +356,47 @@ function hexKey(value, what) {
   const s = String(value).toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(s)) throw new UsageError(`${what} must be 64 hex characters`)
   return b4a.from(s, 'hex')
+}
+
+/** `--swarm-allow k1,k2`: 64-hex swarm keys, comma-separated (T25). */
+function swarmAllow(value) {
+  const keys = String(value).split(',').map((k) => k.trim().toLowerCase())
+  if (!keys.every((k) => /^[0-9a-f]{64}$/.test(k))) {
+    throw new UsageError('--swarm-allow must be a comma-separated list of 64-hex swarm keys')
+  }
+  return keys
+}
+
+/**
+ * The swarm options of `watch` (T25): null without --swarm. With --swarm,
+ * exactly one DHT: --bootstrap (a private DHT) or --public-dht (the
+ * commons, explicit opt-in). Anything else is a usage error, named, and it
+ * comes before the vault opens.
+ */
+function swarmOptions(flags) {
+  if (!flags.swarm) {
+    if (flags.bootstrap !== undefined || flags.publicDht) {
+      throw new UsageError('--bootstrap and --public-dht need --swarm')
+    }
+    return null
+  }
+  if (flags.bootstrap !== undefined && flags.publicDht) {
+    throw new UsageError('give --bootstrap or --public-dht, not both')
+  }
+  if (flags.publicDht) return { publicDht: true }
+  if (flags.bootstrap === undefined) {
+    throw new UsageError(
+      '--swarm needs --bootstrap <host:port,...>, the nodes of a private DHT (run one with `auto-okf bootstrap`), ' +
+        'or --public-dht to announce the vault on the public DHT (the commons)'
+    )
+  }
+  const nodes = String(flags.bootstrap).split(',').map((n) => n.trim())
+  const valid = nodes.every((n) => {
+    const m = /^([^\s:]+):(\d+)$/.exec(n)
+    return m !== null && Number(m[2]) >= 1 && Number(m[2]) <= 65535
+  })
+  if (!valid) throw new UsageError('--bootstrap must be host:port[,host:port...] with ports from 1 to 65535')
+  return { bootstrap: nodes }
 }
 
 async function isPinned(dir) {
@@ -374,6 +437,7 @@ function oversizeLine({ path, bytes, limit }) {
 function printIdentity(vault) {
   console.log(`vault key:   ${vault.keyHex}`)
   console.log(`writer key:  ${localHex(vault)}`)
+  console.log(`swarm key:   ${b4a.toString(vault.swarmKey, 'hex')}`)
 }
 
 /** Rejection reason recorded against this peer's own op at `seq` (§3/§8), or null. */
@@ -394,12 +458,16 @@ async function cmdInit({ args, flags }) {
   if (flags.encryptionKey) {
     opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
   }
+  if (flags.swarmAllow !== undefined) {
+    opts.metadata = { swarm: { allow: swarmAllow(flags.swarmAllow) } }
+  }
   const vault = await Bundle.init(dir, opts)
   try {
     printIdentity(vault)
     console.log(`storage:     ${dir}`)
     console.log(`generation:  ${vault.generation}`)
-    console.log('this peer is the genesis indexer (§8); share the vault key to invite peers')
+    console.log('this peer is the genesis indexer (§8); to invite a peer, share the vault key and')
+    console.log(`${join(dir, METADATA_FILE)} (the invite: it lists the swarm keys every peer admits)`)
   } finally {
     await vault.close()
   }
@@ -426,8 +494,8 @@ async function cmdJoin({ args, flags }) {
     : await Bundle.join(dir, hexKey(key, 'vault key'), opts)
   try {
     printIdentity(vault)
-    console.log('hand the writer key to an indexer (`auto-okf add-writer`), then replicate')
-    console.log('with `auto-okf watch <dir> <bundle-dir> --swarm`')
+    console.log('hand both keys to an indexer (`auto-okf add-writer <dir> <writer-key> --swarm-key <swarm-key>`),')
+    console.log('then replicate with `auto-okf watch <dir> <bundle-dir> --swarm --bootstrap <host:port>`')
     return 0
   } finally {
     await vault.close()
@@ -436,8 +504,9 @@ async function cmdJoin({ args, flags }) {
 
 async function cmdAddWriter({ args, flags }) {
   const key = hexKey(args.writerKey, 'writer key')
+  const swarmKey = flags.swarmKey !== undefined ? hexKey(flags.swarmKey, '--swarm-key') : null
   return withVault(args.dir, {}, async (vault) => {
-    const { seq } = await vault.addWriter(key, { indexer: flags.indexer === true })
+    const { seq } = await vault.addWriter(key, { indexer: flags.indexer === true, swarmKey })
     await vault.update()
     const rec = await vault.val(K.govWriter(b4a.toString(key, 'hex')))
     if (!rec) {
@@ -449,8 +518,64 @@ async function cmdAddWriter({ args, flags }) {
       return 1
     }
     console.log(`writer added: ${b4a.toString(key, 'hex')} (indexer: ${rec.indexer === true})`)
+    if (rec.swarmKey) {
+      console.log(`swarm key:   ${rec.swarmKey} (each peer's swarm firewall admits it once it folds this op)`)
+    }
     return 0
   })
+}
+
+/**
+ * T25: the writer key and the swarm key of a vault directory. A directory
+ * without a vault has no writer key yet, but its swarm key already exists:
+ * the store derives it from the directory's corestore, which this creates
+ * when it is new. So a pre-provisioned fleet can collect every key before
+ * the creator runs `init --swarm-allow`.
+ */
+async function cmdKeys({ args }) {
+  const { dir } = args
+  await refuseSiblingVault(dir)
+  if (await isPinned(dir)) {
+    return withVault(dir, {}, async (vault) => {
+      printIdentity(vault)
+      return 0
+    })
+  }
+  console.log(`swarm key:   ${b4a.toString(await Bundle.readSwarmKey(dir), 'hex')}`)
+  process.stderr.write(
+    `${dir} holds no vault yet, so it has no writer key until \`auto-okf init\` or \`auto-okf join\`. ` +
+      'The swarm key stays the same: list it in the invite (`init --swarm-allow`) or hand it to an indexer\n'
+  )
+  return 0
+}
+
+/**
+ * T25: a DHT bootstrap node in the foreground until SIGINT or SIGTERM. The
+ * peers of a private swarm pass `--bootstrap <host>:<port>`. The node binds
+ * <host> alone, so the default 127.0.0.1 keeps it on this machine.
+ */
+async function cmdBootstrap({ flags }) {
+  if (flags.port === undefined) throw new UsageError('--port <n> is required')
+  const port = Number(flags.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new UsageError('--port must be an integer from 1 to 65535')
+  }
+  const host = flags.host ?? '127.0.0.1'
+  if (!isIPv4(host) || host === '0.0.0.0') {
+    throw new UsageError('--host must be an IPv4 address of this machine, such as 127.0.0.1')
+  }
+  const node = await startBootstrapNode({ port, host })
+  try {
+    console.log(`bootstrap node: ${host}:${port} (foreground; Ctrl-C to stop)`)
+    console.log(`peers replicate with: auto-okf watch <dir> <bundle-dir> --swarm --bootstrap ${host}:${port}`)
+    await new Promise((resolve) => {
+      process.once('SIGINT', resolve)
+      process.once('SIGTERM', resolve)
+    })
+    return 0
+  } finally {
+    await node.destroy()
+  }
 }
 
 async function cmdRemoveWriter({ args }) {
@@ -599,6 +724,7 @@ async function cmdIngest(parsed) {
 
 async function cmdWatch({ args, flags }) {
   const { dir, bundleDir } = args
+  const swarmOpts = swarmOptions(flags) // a usage error comes before the open
   await refuseSiblingVault(dir)
   if (!(await isPinned(dir))) {
     throw new Error(
@@ -625,10 +751,17 @@ async function cmdWatch({ args, flags }) {
     )
     watcher.on('error', (err) => process.stderr.write(`watch error: ${errorText(err)}\n`))
     vault.on('error', (err) => process.stderr.write(`vault error: ${err.message}\n`))
-    if (flags.swarm) {
-      await vault.swarm()
+    if (swarmOpts) {
+      await vault.swarm(swarmOpts)
       swarmed = true
-      console.log("joined hyperswarm on the vault's auto-okf/2 topic")
+      console.log(
+        swarmOpts.publicDht
+          ? "joined the public DHT (the commons) on the vault's auto-okf/2 topic"
+          : `joined the private swarm on the vault's auto-okf/2 topic (bootstrap ${swarmOpts.bootstrap.join(',')})`
+      )
+      console.log(
+        `swarm key:   ${b4a.toString(vault.swarmKey, 'hex')} (the firewall admits only the keys of the invite and of live writers)`
+      )
     }
     await watcher.scan() // pick up edits made while the watcher was down
     console.log(`watching ${bundleDir} (foreground; Ctrl-C to stop)`)
