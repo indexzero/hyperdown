@@ -13,13 +13,14 @@ exists to preserve; the u32-LE prose in §5 is the deviation being recorded.
 **okf §10 generation namespace derivation (spec-silent detail).** §10
 requires writer cores namespaced per generation and "recorded in vault
 metadata" but not HOW the id is minted. The store derives it purely:
-`generation = 'root'` when the chain fields are null, else
-`sha256(predecessorKey bytes || stableStringify(predecessorCheckpoint))`
-— so every peer of one vault computes the same namespace from the same
-pinned metadata, a joiner reconstructs it from the invite's chain fields
-alone, and a reused corestore directory still yields fresh writer keypairs
-across generations. Recorded as `metadata.generation` and validated
-against the chain fields at every load.
+`generation = 'root'` when `predecessorKey` is null, else
+`sha256(predecessorKey bytes)` (`okf/store/lib/metadata.js`
+`generationId`) — so every peer of one vault computes the same namespace
+from the same pinned metadata, a joiner reconstructs it from the invite's
+`predecessorKey` alone, and a reused corestore directory still yields
+fresh writer keypairs across generations. Recorded as
+`metadata.generation` and validated against `predecessorKey` at every
+load.
 
 ---
 
@@ -81,53 +82,58 @@ guard.
 
 ---
 
-## okf §10 — generation-cycle compaction (T6)
+## okf §10 — generations: materialize, then import (T24)
 
-**okf §10 generation `log/` entry is a filesystem artifact, not a view
-`log/` record.** §10 requires compact to "record a generation entry in the
-new vault's `log/`." The view's `log/<ordinal>` family is written only by
-`apply` from ops, and §3's wire contract is append-only with NO generation
-op (and none may be added — core is a fixed built interface here). compact
-therefore writes the generation entry as a durable JSON artifact at
-`<vaultDir>/log/generation.json` (`{ kind:'generation', generation,
-predecessorKey, predecessorCheckpoint, conflictCopies, at, note }`). This
-satisfies "an entry in the new vault's `log/`" literally; the entry does
-NOT appear in the regenerated `log.md` (which re-derives from the view —
-§14 excludes `log.md` from I11 fidelity anyway).
+**okf §10 `auto-okf import` replaces compaction (T24, decision 10).** SPEC
+v1.2 §10 made byte reclamation one `compact` command: materialize the live
+vault, stage a manifest-free, `_rev`-stripped copy of its notes, init a
+fresh vault, ingest the stage, check the fresh vault against the face and
+against the live state of the predecessor, and write a generation entry
+to `<vaultDir>/log/generation.json`. That pipeline is deleted. A
+generation is now two commands: `materialize`, then
+`auto-okf import <face-dir> <dir>` (SPEC v1.10 §10). The owner took
+decision 10 at G4 (2026-10-28), after the T23 doubt cycle. The reasons:
+the pipeline read a live predecessor while it could change (D-048 F01);
+it wrote a generation log with concept paths as plaintext into an
+encrypted vault's directory (D-047 F01), and a signal left its plaintext
+stage and verification copy behind (D-047 F04); and the stage and the
+verification copy needed a path guard over five areas (T18). A face on disk is inert source. import
+reads it once into memory, writes nothing to it and opens no predecessor,
+so no stage, no verification copy and no live predecessor exist. With the
+pipeline went:
 
-**okf §10 compaction stages a manifest-free, `_rev`-stripped copy for ingest.**
-Two facts about the built faces make a naive "materialize `toDir`, then ingest
-`toDir`" impossible, both proven under `sslop/033` probes:
-(1) `materialize` writes its emission manifest (`.okf-manifest.json`) into the
-bundle dir; the ingest watcher reads that manifest and skips every file as a
-self-echo — so ingesting `toDir` in place yields ZERO ops. (2) A materialized
-`_rev` is the base an ingest `SetBody` cites (§6); in a fresh vault that base
-does not exist, so the head is flagged `flag/conflict/<id>/-/<new>` and the
-concept materializes BODYLESS. compact therefore copies each concept note into
-a staging dir (default `<vaultDir>.compact-src`, a SIBLING of `vaultDir` —
-`new Corestore(vaultDir)` clears the vault dir on init, so a nested staging
-dir would be wiped before ingest reads it) with its `_rev` line stripped. Each
-head then re-roots at `base:null` — the only flag-free fresh start (§5) — so
-the body survives and `_rev` re-derives (§14: a former edit's revHash changes,
-the body text does not). Once a bundle has cycled once, every body is already
-`base:null`, so further cycles preserve even `_rev`.
+- The generation `log/` artifact, the `--force` conflicted-copy
+  enumeration and the staging copy. import refuses a face that holds a
+  conflicted copy: the operator resolves the collision in the face first.
+  No generation entry is written: the chain is `predecessorKey` in the
+  metadata.
+- The predecessor checkpoint (`viewHash`, `writerLengths`) and its
+  optional `signer` and `signature`. No live predecessor is read, so no
+  checkpoint of it exists. The metadata records `predecessorKey` alone
+  (`--predecessor`), and the generation id derives from it (the entry at
+  the top of this file).
+- The live-state check against the predecessor. It made a field value
+  that the face cannot hold (a scalar `null`, a second `type` value, a
+  reference or an object) fail loudly (D-029 F01). import cannot see such
+  a change, and SPEC §10 records it as a known limit.
 
-**okf §10 `compact` injects the `@auto-okf/store` `Bundle.init` rather than
-importing it.** Consistent with the rest of `@auto-okf/faces` ("the substrate
-is injected — nothing here imports the substrate"), `compact(vault, opts)`
-takes `opts.initBundle` (the store factory) instead of adding a hard
-`@auto-okf/store` dependency to the faces package. The CLI (`okf/cli`) wires
-the two together. The predecessor is never deleted by compact — its path is
-returned for the operator to archive/destroy out-of-band (§10 step 5).
+What stays, in another form:
 
-**okf §10 `--force` conflict-copy enumeration lists `from === to`.** Because
-`_id` and path both survive the cycle and the conflict suffix is
-`first-8-hex(SHA-256(_id))` (§7), a carried-across conflicted copy re-manifests
-at the SAME path in the new vault. The enumeration in `log/generation.json`
-therefore records `{ from, to }` with `from === to` (deterministic
-identity-preserving carry-across, §9 conflict-copy awareness); it is truthful
-(the `from` list is the actual on-disk conflict files of the materialized
-predecessor bundle).
+- Import-mode ingest (`IngestWatcher.importNote`) ignores the emission
+  manifest of the face and treats every `_rev` as absent. These are the two
+  facts that made the stage necessary: the manifest skips every note as a
+  self-echo, and a `_rev` cites a base that the fresh vault does not hold,
+  so the head would flag `flag/conflict` and materialize bodyless.
+- `importFace(initBundle, faceDir, dir, opts)` takes the `@auto-okf/store`
+  `Bundle.init` injected, as `compact` did: `@auto-okf/faces` imports no
+  substrate. The CLI wires the two together.
+- The fidelity check compares the in-memory materialize plan of the new
+  vault with the notes of the face, without `_rev` lines. It also leaves
+  out `index.md`, which SPEC §14 does not name: import never reads
+  `index.md` (a regenerated face, §9), and a collision resolved in the face
+  leaves the face's `index.md` stale. The I11 round-trip test still
+  compares a materialize of the new vault with the face, `index.md`
+  included (`okf/test/i11-roundtrip.test.js`).
 
 ---
 

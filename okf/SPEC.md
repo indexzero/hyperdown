@@ -1,8 +1,14 @@
 # auto-okf: Implementation Specification
 
-**Status:** Normative build instruction, v1.9 (2026-10-27). RFC 2119
+**Status:** Normative build instruction, v1.10 (2026-10-28). RFC 2119
 keywords (MUST, SHOULD, MAY) apply.
-**Changelog:** v1.9 states the transport contract for autobee@2.12.1
+**Changelog:** v1.10 makes a generation two commands: `materialize`, then
+`auto-okf import` of the face into a new directory (§10). The staging
+step, the verification copy, the live-state check against a predecessor,
+`--force`, the generation `log/` entry and the predecessor checkpoint are
+gone. The metadata records `predecessorKey` alone, and the generation id
+derives from it (§9, §10, §11, §13).
+v1.9 states the transport contract for autobee@2.12.1
 only (§1): the constructor options that the store passes, the apply, host
 and instance surfaces that okf uses, and the corestore floor 7.12.6 under
 the pin `^7.16.1`. Every statement about autobee cites the installed
@@ -46,7 +52,7 @@ settled (§3; v1.7 replaces it); `flag/copydetect`
 corrected to an ingest watcher event, not a view row (no core op writes it —
 §4, §9); conflicted-copy face deletion skip and deferred `_id` write-back
 documented (§9); the generation `log/` entry clarified as a filesystem artifact
-and the compaction `_rev`-stripped staging step documented (§10); a "Known
+and the `_rev`-stripped staging step of the generation cycle documented (§10); a "Known
 limitations (v1)" note added (C1 soak scale limit, P7 double-conflict-suffix
 ingest, P4 empty-`type` ingest, plus the live-watcher directory-move
 data-preservation gap, issue #30); node:test mandate confirmed. A
@@ -485,7 +491,7 @@ saga is the cautionary tale). The rules are frozen:
 
 - **Append-only is a vault-metadata constant**, written at `init`, loaded at
   open, identical on every peer, and **not representable as an op**. There
-  is no prune op, no compaction op, no byte-destroying operation in the
+  is no prune op, no byte-reclaiming op, no byte-destroying operation in the
   wire contract at all. `DeleteConcept` writes a tombstone: the concept
   disappears from materialize/`index.md`/`path/`, its bytes and `_id`
   remain. `UndeleteConcept` restores and writes `flag/undelete/<id>/<tag>`
@@ -709,16 +715,16 @@ saga is the cautionary tale). The rules are frozen:
   `_id`. `_id` present but
   unknown to this vault → **adopt** it (`CreateConcept` with the supplied
   id, subject to the §6 seen-id and mint-collision rules) — the
-  generation-cycle contract (§10).
+  generation contract (§10: import adopts every `_id` of the face).
 - Conflict-copy awareness: a file whose terminal component matches
   `\.conflict-[0-9a-f]{8,}$` ingests at the **suffix-stripped path**.
   Known `_id` whose view path equals the stripped path → no `SetPath`
   (the file is the loser's materialized face; body/frontmatter diffs
-  ingest normally). Unknown `_id` (generation cycle) → `CreateConcept` at the
-  stripped path; the collision re-manifests in the new vault under §7's
-  ordinary rules, the loser re-flags and re-materializes at a conflict
-  path — state, identity, and collision status all carry across. §10's
-  `--force` enumeration lists old conflict path → new conflict path.
+  ingest normally). Unknown `_id` → `CreateConcept` at the stripped path;
+  the collision re-manifests under §7's ordinary rules, and the loser
+  re-flags and re-materializes at a conflict path. The import of a face
+  (§10) takes no conflicted copy: it refuses a face that holds one, so a
+  collision is resolved in the face before a generation.
 - File deleted on disk → `DeleteConcept`, behind a confirmation guard
   (default on). **Exception (delivered):** a deleted file whose terminal
   component matches `\.conflict-[0-9a-f]{8,}$` is **not** a
@@ -805,63 +811,87 @@ materialize would restore), `foreign` (not in the log, not
 manifest-tracked, not establishable by ingest — e.g. another writer's
 mid-write WIP).
 
-## 10. Compaction: generation cycling (the CouchDB homage, part two)
+## 10. Generations: materialize, then import (the CouchDB homage, part two)
 
-Byte reclamation is an **operator act via the hydrated face**, never an op:
+Byte reclamation is an **operator act via the face**, never an op. A
+generation is two commands:
 
-1. `materialize` the bundle (live heads + `_id`/`_rev`; tombstoned concepts
-   suppressed; open conflicts as conflicted copies).
-2. The operator optionally deletes files on disk.
-3. `init` a fresh vault; ingest the directory with **`_id` adoption** (§9).
-   The fresh vault MUST use freshly generated writer keypairs: a writer
-   keypair MUST NOT recur across generations (corestore-derived keys MUST be
-   namespaced by generation). Otherwise adoption of the predecessor's
-   mint-shaped ids is rejected `mint-collision-risk` and I11 is
-   unachievable. `init` MUST enforce this by deriving writer cores under
-   a per-generation namespace recorded in vault metadata.
-   **Delivered — staging step:** a materialized bundle cannot be ingested
-   in place. Its emission manifest makes the ingest watcher skip every
-   file as a self-echo (zero ops), and a materialized `_rev` cites a base
-   absent from the fresh vault (the head flags `flag/conflict` and
-   materializes bodyless). compact therefore copies each concept note into
-   a **sibling** staging dir (a nested dir would be cleared by
-   `new Corestore(vaultDir)` on init) with its `_rev` line **stripped**, so
-   each head re-roots at `base: null` — the only flag-free fresh start
-   (§5) — the body survives, and `_rev` re-derives (§14). Once a bundle has
-   cycled once, every body is already `base: null`, so further cycles
-   preserve `_rev` too.
-4. New vault metadata records `{ predecessorKey, predecessorCheckpoint }` —
-   the generation chain. `predecessorCheckpoint = { viewHash: <the I2 full-range
-   hash>, writerLengths: [[key, len], ...] }`. The checkpoint is unsigned
-   by default. Signing is optional: compact adds a hex `signer` and
-   `signature` only when its caller passes a `sign` hook
-   (`okf/faces/lib/compact.js:358-362`), and `auto-okf compact` passes no
-   hook (`okf/cli/lib/run.js:712-719`). okf never verifies a signature.
-   The store checks only that each of the two fields, when present, is a
-   hex string (`okf/store/lib/metadata.js:177-181`). A consumer that needs
-   a signature verifies it outside okf. The chain is provenance metadata,
-   not proof. Consumers MUST treat cross-generation identity as
-   trusted-operator scope.
-5. The old vault is archived or destroyed out-of-band.
+1. `auto-okf materialize <dir> <face-dir>` writes the face of the live
+   vault (live heads + `_id`/`_rev`; tombstoned concepts suppressed; a
+   path-collision loser as a conflicted copy, §7). For an encrypted vault
+   the face is the plaintext export, and materialize says so (decision 8).
+2. The operator resolves in the face what must not cross. Each conflicted
+   copy gets a path of its own, or is merged and removed. A note can be
+   removed. The face shows only the head body of each concept, so an open
+   body conflict is resolved in the vault before step 1 (`auto-okf flags
+   <dir> conflict`, then `auto-okf resolve`).
+3. `auto-okf import <face-dir> <new-dir> [--encryption-key <hex64>]
+   [--metadata <okf-vault.json>] [--predecessor <vault-key>]` creates a
+   fresh vault in `<new-dir>` with the rules of `init`, and fills it from
+   the notes of the face with **`_id` adoption** (§6, §9). The face is
+   inert source: import reads it once, writes nothing to it and opens no
+   predecessor vault. So no stage, no verification copy and no live
+   predecessor exist.
+4. The old vault is archived or destroyed out-of-band.
 
-Effect = CouchDB compaction: live state and identity survive; history (old
-revisions, per-op attribution, clocks) is shed by design. The compact
-command MUST refuse (without `--force`) while `flag/conflict` **or
-`flag/pathcollision`** is non-empty; with `--force`, it MUST enumerate in
-the new vault's generation `log/` entry every conflicted copy carried across,
-old conflict path → new conflict path (carry-across works because ingest
-strips the conflict suffix and lets the collision re-manifest — §9
-conflict-copy awareness; because `_id` and path both survive, a carried
-copy re-manifests at the **same** path, so these enumerations legitimately
-record `from === to`). It MUST record a generation entry in the new vault's
-`log/`. **Delivered:** the wire contract has no generation op, so this entry
-cannot be a view `log/<ordinal>` record — it is written as a filesystem
-artifact `<vaultDir>/log/generation.json`
-(`{ kind:'generation', generation, predecessorKey, predecessorCheckpoint,
-conflictCopies, at, note }`); it satisfies "an entry in the new vault's
-`log/`" literally and does not appear in the regenerated `log.md` (§14
-excludes `log.md` from I11 fidelity). State- and identity-fidelity across
-a cycle is an acceptance criterion (§14).
+Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
+`okf/faces/lib/ingest.js`):
+
+- **Refusals, before any write, each by name.** A `<new-dir>` that is
+  pinned, not empty, or not a directory (a store there would take the
+  import or the key). A face that holds a `.conflict-<hex>` note (a
+  collision is still open), a note at a reserved `.okf-` name, or an entry
+  that is not a regular file or a directory, such as a symlink. With
+  `--metadata` of an encrypted predecessor, a missing `--encryption-key`:
+  a generation of an encrypted vault is never unencrypted (decision 8).
+- **Import-mode ingest.** import reads every regular `.md` file of the
+  face at any depth, dot segments included, except the regenerated faces
+  `index.md` and `log.md`. It ignores the emission manifest of the face:
+  the manifest is materialize's peer-local echo suppression, and a check
+  against it would skip every note as a self-echo. It treats every `_rev`
+  as absent: in the fresh vault no base exists, so each head is the
+  concept's first revision (`base: null`), the only flag-free fresh start
+  (§5), and `_rev` re-derives (§14). After one generation every head is
+  `base: null` already, so a later generation keeps `_rev` too. Each op
+  is checked against `maxOpBytes` as encoded, before it is appended, and
+  an op that core rejects fails the import by name.
+- **Fresh writer keypairs.** A writer keypair MUST NOT recur across
+  generations. Otherwise adoption of the predecessor's mint-shaped ids is
+  rejected `mint-collision-risk` (§6) and I11 is unachievable. The store
+  derives writer cores under a per-generation corestore namespace recorded
+  in vault metadata (`generation`), and import needs a new or empty
+  directory.
+- **Metadata.** `--metadata` carries `limits`, `rate` and `schemaVersion`
+  from the predecessor's `okf-vault.json`, so a note that fitted the
+  predecessor's limits fits the new vault's. `--predecessor` records
+  `predecessorKey`, the generation chain. The generation id is `'root'`
+  without a predecessor, else `sha256(predecessorKey bytes)`. A joiner
+  needs the new `okf-vault.json` as its invite metadata to derive the same
+  namespace. The chain is the operator's claim: it is unsigned, okf never
+  verifies it, and it is provenance metadata, not proof. Consumers MUST
+  treat cross-generation identity as trusted-operator scope. No generation
+  entry is written to the new vault: the chain is `predecessorKey`, and
+  the new `log.md` narrates creations only.
+- **The fidelity check.** After the import, the notes that a materialize
+  of the new vault would write (its byte plan, in memory) must equal the
+  notes read from the face, byte for byte, without each `_rev` frontmatter
+  line. `index.md` and `log.md` are regenerated faces that import never
+  reads, so the check leaves them out. A difference fails the import by
+  name (`IMPORT_FIDELITY`, each difference listed), and import removes the
+  new directory. No verification copy is written to disk.
+- **Encryption.** `--encryption-key` encrypts the new vault. import reads
+  plaintext and writes none, so it prints no plaintext warning.
+
+Effect: live state and identity survive; history (old revisions, per-op
+attribution, clocks) is shed by design. State- and identity-fidelity
+across a generation is an acceptance criterion (§14).
+
+**Known limit: the face is a lossy projection (§9).** A field value that
+the face cannot hold comes back as the face holds it: a scalar `null` is
+omitted, only the first `type` value is written, and a reference or an
+object is written as a string. import cannot see such a change, because
+it has no live predecessor to compare with. So I11 holds for each value
+that the face can hold.
 
 ## 11. Invariants (the test suite maps to these)
 
@@ -889,9 +919,10 @@ a cycle is an acceptance criterion (§14).
   revoked-writer ops after the causal revocation point, unauthorized
   governance ops, and policy-violating ops never mutate `c/`; the
   applied/rejected partition is replay-stable.
-- **I11 Roundtrip:** materialize → ingest into a fresh vault (generation cycle)
-  preserves every live concept's `_id`, `type`, fields, tags, path, and
-  head body byte-for-byte.
+- **I11 Roundtrip:** materialize, then import into a fresh vault (a
+  generation, §10), preserves every live concept's `_id`, `type`, fields,
+  tags, path, and head body byte-for-byte, for each value that the face
+  can hold (§10).
 
 ## 12. Non-goals (v1)
 
@@ -931,10 +962,10 @@ okf/store      vault lifecycle on autobee, metadata pinning (incl. the
                append-only constant + generation chain), governance plumbing,
                swarm replication, backpressure option
 okf/faces      materialize (bundle + index.md + log.md), ingest watcher,
-               wanted index, generation-cycle compact command
+               wanted index, the import of a face into a new vault (§10)
 okf/cli        init, join, add-writer, remove-writer, materialize, ingest
                (optionally path-scoped, ADR-001), watch, status (ADR-002),
-               wanted, flags, resolve, undelete, compact
+               wanted, flags, resolve, undelete, import
 okf/root       the `auto-okf` root placeholder package (published as
                auto-okf@0.0.1 alongside the scope — intent D7)
 okf/test       unit + invariant suite (I1..I11 each ≥ 1 test)
@@ -955,7 +986,7 @@ usage-first READMEs per package plus example READMEs. Package names
 
 Complete when: I1..I11 each pass; the multi-process harness matrix (fault
 proxy, partitions, permutation replay — retargeted from `/harness`) is green
-at clean/lossy/partitioned; a generation cycle round-trips a non-trivial bundle
+at clean/lossy/partitioned; a generation (materialize, then import) round-trips a non-trivial bundle
 with identity-fidelity and byte-fidelity **modulo the `_rev` frontmatter
 lines and the regenerated `log.md`** (both necessarily re-derive in the
 new generation; I11's property list is the normative fidelity set) including a
