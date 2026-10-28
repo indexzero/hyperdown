@@ -1047,7 +1047,8 @@ export class Bundle extends EventEmitter {
    * index.js:49, :204-205, :309-322). The allowlist (_refreshAllowlist):
    * - the keys of metadata.swarm.allow (pinned in the invite), and
    * - the swarm key of each gov/writer record with no gov/removed record,
-   * minus the swarm key of each removed writer, and minus each key that
+   * minus the swarm key of each removed writer (also when a live record or
+   * metadata.swarm.allow carries the same key), and minus each key that
    * revokePeer() cut. It is read again after every fold (the update
    * handler), so an admission opens the firewall, and a folded RemoveWriter
    * cuts the writer as revokePeer() does.
@@ -1173,8 +1174,14 @@ export class Bundle extends EventEmitter {
     }
     // No await from here on, so a revokePeer() that ran during the reads
     // above is in _revokedPeers now.
+    // G3-P9 F01: core lets two gov/writer records carry one swarm key
+    // (core lib/apply.js opAddWriter). The swarm key of a removed writer is
+    // subtracted from the whole union, so a second, live record with the
+    // same key cannot keep the removed writer connected. The rule reads
+    // gov/ alone, so a reopen computes the same set.
     const next = new Set(live)
-    for (const hex of this.metadata.swarm.allow) if (!removed.has(hex)) next.add(hex)
+    for (const hex of this.metadata.swarm.allow) next.add(hex)
+    for (const hex of removed) next.delete(hex)
     for (const hex of this._revokedPeers) next.delete(hex)
     const prev = this._allowed
     this._allowed = next

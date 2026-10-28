@@ -295,6 +295,60 @@ test("a removed writer's connection is destroyed when the removal folds, though 
   assert.equal(leaked, false, 'b gets no new connection and no new op')
 })
 
+test("a removed writer's swarm key leaves the allowlist though a live record carries the same key, also after a reopen (G3-P9 F01)", { timeout: TEST_TIMEOUT }, async (t) => {
+  const tn = await testnet()
+  const dirA = await tmpDir('shared-a')
+  let a = await Bundle.init(dirA)
+  const b = await Bundle.join(await tmpDir('shared-b'), a.key, { metadata: a.metadata })
+  t.after(async () => {
+    await a.close()
+    await b.close()
+    await tn.destroy()
+  })
+  // Core lets two gov/writer records carry one swarm key. The second
+  // record names b's swarm key under a writer key that nobody holds.
+  const alias = Buffer.alloc(32, 77)
+  await a.addWriter(b.localKey, { swarmKey: b.swarmKey })
+  await a.addWriter(alias, { swarmKey: b.swarmKey })
+  await a.update()
+  assert.equal((await a.val(K.govWriter(hex(alias)))).swarmKey, hex(b.swarmKey), 'the alias record carries the same key')
+
+  await withDeadline(a.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'a.swarm()')
+  await withDeadline(b.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'b.swarm()')
+  const { tag: id } = await a.createConcept('shared/before', 'note')
+  await a.setField(id, 'title', ['before the removal'])
+  assert.ok(await folds(b, id), 'b folds while it is a member')
+  assert.ok(connected(a, b), 'a holds a connection to b')
+
+  // The removal of b takes its swarm key out, though the alias record is
+  // live and carries the same key.
+  await a.removeWriter(b.localKey)
+  await a.update()
+  assert.equal(await a.val(K.govRemoved(hex(alias))), undefined, 'the alias record stays live')
+  assert.ok(await until(() => !connected(a, b) && !connected(b, a), DEADLINE), "the fold destroys b's connection")
+  const { tag: after } = await a.createConcept('shared/after', 'note')
+  await a.setField(after, 'title', ['after the removal'])
+  const leaked = await until(async () => connected(a, b) || (await folds(b, after, 50)), QUIET)
+  assert.equal(leaked, false, 'b gets no new connection and no new op')
+
+  // A reopen reads the allowlist from gov/ again, and the key stays out.
+  await a.close()
+  a = await Bundle.open(dirA)
+  const swarmA = await withDeadline(a.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'reopened a.swarm()')
+  const bHex = hex(b.swarmKey)
+  // b reaches the reopened a: a's lookup of the topic finds b, and a's
+  // firewall rejects b, or the two connect.
+  assert.ok(
+    await until(() => connected(a, b) || swarmA.peers.get(bHex)?.banned === true, DEADLINE),
+    'b reached the reopened a'
+  )
+  const { tag: reopened } = await a.createConcept('shared/reopened', 'note')
+  await a.setField(reopened, 'title', ['after the reopen'])
+  const leakedAfterReopen = await until(async () => connected(a, b) || (await folds(b, reopened, 50)), QUIET)
+  assert.equal(leakedAfterReopen, false, 'after the reopen, b gets no connection and no new op')
+  assert.equal(swarmA.peers.get(bHex)?.banned, true, "the reopened a's firewall rejected b")
+})
+
 test('revokePeer cuts a live connection, leaves the peer, and keeps the key out across later folds (T25)', { timeout: TEST_TIMEOUT }, async (t) => {
   const tn = await testnet()
   const a = await Bundle.init(await tmpDir('rv-a'))

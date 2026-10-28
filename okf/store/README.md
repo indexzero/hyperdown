@@ -245,7 +245,8 @@ The vault key is not a capability to connect:
   (hyperswarm `firewall`). The allowlist is the keys of
   `metadata.swarm.allow`, and the `swarmKey` of each `gov/writer` record
   that has no `gov/removed` record. The swarm key of a removed writer is
-  not in it, also when `metadata.swarm.allow` lists the key. The store
+  not in it, also when `metadata.swarm.allow` lists the key, and also when
+  another, live `gov/writer` record carries the same key. The store
   reads the allowlist again after every fold. A peer that holds the vault
   key and the invite, but no admitted swarm key, gets no connection, so it
   reaches neither the replication nor autobee's wakeup protocol (G44 in
@@ -298,8 +299,10 @@ encryptionKey open/read and encryption at rest, vault-metadata determinism
 rebuild equality, hyperswarm replication on the `auto-okf/2` topic over a
 local testnet, the private swarm (the swarm key, the firewall against a
 peer with the vault key and no admitted swarm key, the cut of a removed
-writer and of `revokePeer`, a pre-provisioned pair over `joinPeer`, a
-joiner admitted after a ban), and the dependency resolution of the store.
+writer and of `revokePeer`, the cut of a removed writer whose swarm key a
+live record also carries, across a reopen, a pre-provisioned pair over
+`joinPeer`, a joiner admitted after a ban), and the dependency resolution
+of the store.
 
 ## License
 
