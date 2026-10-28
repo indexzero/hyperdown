@@ -742,7 +742,16 @@ export class IngestWatcher extends EventEmitter {
       return []
     }
     const op = { type: 'delete-concept', payload: { id } }
-    await this._apply(op)
+    const appended = []
+    await this._apply(op, appended)
+    // G3-P8 F02: core's verdict comes before the record, as for an edit
+    // (ingestFile). A delete that core rejected keeps the manifest entry
+    // and the pending record of the path, so a later scan retries it.
+    const rejected = await this._rejections(appended)
+    if (rejected.length > 0) {
+      for (const r of rejected) this.emit('rejected', { path: rel, op: r.op.type, reason: r.reason })
+      return [op]
+    }
     await this._setPending(rel, null)
     this._ingested.delete(rel)
     await this._touchManifest(rel, null)

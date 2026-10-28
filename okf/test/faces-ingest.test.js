@@ -3,7 +3,7 @@
 // rename+concurrent-edit merge across a roundtrip, and the guarded delete.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { encodeOp } from '../core/index.js'
 import {
@@ -304,6 +304,62 @@ test('a body that core rejects on an established concept is not recorded as inge
   assert.equal(await readFile(f, 'utf8'), edited, 'materialize keeps the human edit')
 })
 
+test('a confirmed delete that core rejects emits rejected, keeps the manifest entry and the pending record, and a later scan retries it (G3-P8 F02)', async (t) => {
+  // The writer may write under team/ only, so core rejects its
+  // delete-concept of each concept under other/ policy-namespace. Before
+  // the fix, ingest emitted 'ops' for the delete, dropped the manifest
+  // entry and the pending record without core's verdict, and no later scan
+  // retried the delete.
+  const v = await Bundle.init(await tmpDir('vault'))
+  const dir = await tmpDir('bundle')
+  const w = await createIngestWatcher(v, dir, { watch: false, confirmDelete: async () => true })
+  t.after(async () => {
+    await w.close()
+    await v.close()
+  })
+  const { tag: id } = await v.createConcept('other/x', 'note')
+  await v.setBody(id, null, 'keep')
+  await materialize(v, dir)
+  // other/new.md is a new file whose ingest threw after its create, so the
+  // pending record holds its concept (D-055 Q2).
+  await writeFile(join(dir, 'other/new.md'), '---\ntype: note\ncount:\n  value: abc\n  datatype: http://www.w3.org/2001/XMLSchema#integer\n---\nbody\n')
+  await assert.rejects(w.ingestFile('other/new.md'))
+  await v.update()
+  const newId = await v.val(K.path('other/new'))
+  assert.deepEqual(await pendingOf(dir), { files: { 'other/new.md': newId } })
+  await v.writers.setPolicy(v.localKey, { namespacePrefixes: ['team'] })
+  await v.update()
+  await rm(join(dir, 'other/x.md'))
+  await rm(join(dir, 'other/new.md'))
+  const rejected = []
+  const ingested = []
+  w.on('rejected', (e) => rejected.push(e))
+  w.on('ops', (e) => ingested.push(e.path))
+
+  // The scan deletes each path that the manifest lists. The live watcher
+  // deletes a vanished path through _maybeDelete.
+  const deletes = async () => [...(await w.scan()), ...(await w._maybeDelete('other/new.md'))].map((o) => o.type)
+  assert.deepEqual(await deletes(), ['delete-concept', 'delete-concept'])
+  assert.deepEqual(rejected, [
+    { path: 'other/x.md', op: 'delete-concept', reason: 'policy-namespace' },
+    { path: 'other/new.md', op: 'delete-concept', reason: 'policy-namespace' }
+  ])
+  assert.deepEqual(ingested, [], "no 'ops' event for a rejected delete")
+  assert.equal((await v.val(K.cMeta(id))).deleted ?? null, null, 'other/x stays live')
+  assert.ok(Object.hasOwn((await manifestOf(dir)).files, 'other/x.md'), 'the manifest keeps other/x.md')
+  assert.deepEqual(await pendingOf(dir), { files: { 'other/new.md': newId } }, 'the pending record stays')
+
+  // The writer may write anywhere again: the next scan retries the delete.
+  await v.writers.setPolicy(v.localKey, { namespacePrefixes: [] })
+  await v.update()
+  assert.deepEqual(await deletes(), ['delete-concept', 'delete-concept'])
+  assert.equal(rejected.length, 2, 'core takes the retries')
+  assert.deepEqual(ingested, ['other/x.md', 'other/new.md'])
+  assert.notEqual((await v.val(K.cMeta(id))).deleted ?? null, null, 'the retry deletes other/x')
+  assert.ok(!Object.hasOwn((await manifestOf(dir)).files, 'other/x.md'), 'the manifest drops other/x.md')
+  await assert.rejects(readFile(join(dir, '.okf-pending.json')), { code: 'ENOENT' }, 'no pending record is left')
+})
+
 test('a later ingest of a pending new file reuses the concept that its first ingest created, also in a new watcher: core rejected a later op (D-055 Q2)', async (t) => {
   // A new file has no _id until materialize stamps it (DEVIATIONS: the
   // deferred write-back). Core accepts its create-concept here and rejects
@@ -397,6 +453,16 @@ async function seedIds(v) {
   const ids = []
   for (let i = 0; i < 16; i++) ids.push(await v.val(K.path(`seed/${i}`)))
   return ids
+}
+
+/** The emission manifest of a bundle directory. */
+async function manifestOf(dir) {
+  return JSON.parse(await readFile(join(dir, '.okf-manifest.json'), 'utf8'))
+}
+
+/** The pending record of a bundle directory (D-055 Q2). */
+async function pendingOf(dir) {
+  return JSON.parse(await readFile(join(dir, '.okf-pending.json'), 'utf8'))
 }
 
 /** Every flag/rejected record in a vault's view, as { key: reason }. */

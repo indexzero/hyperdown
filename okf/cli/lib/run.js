@@ -465,10 +465,13 @@ function oversizeLine({ path, bytes, limit }) {
  * `error: notes/x.md: core rejected its set-body op (policy-namespace), and
  * the file stays pending` (D-048 F02, D-055 Q1): one line per op of a file
  * that core rejected. Ingest does not record such a file, so it stays
- * pending, and materialize keeps it.
+ * pending, and materialize keeps it. A delete-concept that core rejected
+ * ends `and the delete stays pending` (G3-P8 F02): ingest keeps the
+ * manifest entry of the deleted file, so the next ingest retries it.
  */
 function rejectedLine({ path, op, reason }) {
-  return `error: ${path}: core rejected its ${op} op (${reason}), and the file stays pending\n`
+  const pending = op === 'delete-concept' ? 'the delete' : 'the file'
+  return `error: ${path}: core rejected its ${op} op (${reason}), and ${pending} stays pending\n`
 }
 
 function printIdentity(vault) {

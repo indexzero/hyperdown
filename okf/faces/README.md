@@ -129,7 +129,10 @@ against the head revision:
 - a known `_id` at a new path → `SetPath`; a missing `_id` → mint; an
   **unknown** `_id` → **adopt** it (the generation contract, SPEC §10);
 - a file deleted on disk → `DeleteConcept`, behind a confirmation guard that
-  is **on by default** (no confirmer ⇒ nothing is deleted);
+  is **on by default** (no confirmer ⇒ nothing is deleted). Core's verdict
+  comes first: a `DeleteConcept` that core rejects emits `rejected`, and
+  ingest keeps the manifest entry and the pending record of the file. So a
+  later scan tries the delete of a file that the manifest lists again;
 - links go to apply's normative extractor; unresolved targets feed
   `wanted/`, never a flag (SPEC §9, I4); `index.md`/`log.md` edits are
   ignored (regenerated faces).

@@ -1182,6 +1182,41 @@ test('watch prints each op that core rejects, by name, and keeps running (D-055 
   assert.equal(await exited, 0, `clean shutdown, log:\n${log}`)
 })
 
+test('ingest --confirm-deletes names a delete that core rejects and exits 1; the next ingest retries the delete (G3-P8 F02)', async () => {
+  // Before the fix, ingest printed the rejected delete as ingested, exited
+  // 0 and dropped the manifest entry, so no later ingest retried it.
+  const { storage, bundle } = await rejectingFace(await tmpDir('ingest-delete-rejected'))
+  await rm(join(bundle, 'other', 'x.md'))
+  const ing = await cli(['ingest', storage, bundle, '--confirm-deletes'])
+  assert.equal(ing.code, 1, `a rejected delete is an error exit\n${ing.stdout}${ing.stderr}`)
+  assert.match(ing.stderr, /^error: other\/x\.md: core rejected its delete-concept op \(policy-namespace\), and the delete stays pending$/m)
+  assert.doesNotMatch(ing.stdout, /ingested other\/x\.md/)
+  assert.match(ing.stdout, /ingested team\/y\.md: create-concept/, 'the sibling still ingested')
+
+  // The writer may write anywhere again: the next ingest retries the delete.
+  const v = await Bundle.open(storage)
+  let id
+  try {
+    await v.update()
+    id = await v.val(K.path('other/x'))
+    assert.equal((await v.val(K.cMeta(id))).deleted ?? null, null, 'other/x stays live')
+    await v.writers.setPolicy(v.localKey, { namespacePrefixes: [] })
+    await v.update()
+  } finally {
+    await v.close()
+  }
+  const retry = await cli(['ingest', storage, bundle, '--confirm-deletes'])
+  assert.equal(retry.code, 0, `${retry.stdout}${retry.stderr}`)
+  assert.match(retry.stdout, /^ingested other\/x\.md: delete-concept$/m)
+  const after = await Bundle.open(storage)
+  try {
+    await after.update()
+    assert.notEqual((await after.val(K.cMeta(id))).deleted ?? null, null, 'the retry deletes other/x')
+  } finally {
+    await after.close()
+  }
+})
+
 // ---------- T24: auto-okf import <face-dir> <dir> ----------
 
 /** Every file under `dir` whose bytes hold `plain`, as relative paths: what an encrypted vault must never hold. */
