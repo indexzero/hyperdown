@@ -581,22 +581,6 @@ export class Bundle extends EventEmitter {
     return this.snapshotHash()
   }
 
-  /**
-   * §10 checkpoint material for the NEXT generation's metadata:
-   * `{ viewHash, writerLengths }` — writerLengths from the view's seen/
-   * family (each writer's last folded position plus one, §3), sorted by
-   * writer key.
-   */
-  async checkpoint() {
-    const vh = await this.snapshotHash()
-    const writerLengths = []
-    for await (const { key, value } of this.scan(K.seenPrefix())) {
-      writerLengths.push([K.parseKey(key)[1], value])
-    }
-    writerLengths.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-    return { viewHash: vh, writerLengths }
-  }
-
   // ---------- §3/§8 op emission ----------
 
   /**

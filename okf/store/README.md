@@ -157,7 +157,6 @@ a reopen needs no key), `keyPair`, `backpressure`.
 | `view`, `get(key)`, `val(key)`, `scan(prefix)` | reads over the hyperbee2 view snapshot |
 | `update()`, `updated()`, `flush()` | autobee lifecycle passthrough |
 | `snapshotHash()`, `hash()` | I2/I3 full-range view hash, byte-compatible with core `MemView.hash()` (`hash()` is an alias) |
-| `checkpoint()` | `{ viewHash, writerLengths }`: the I2 full-range view hash, and the last folded position plus one of each writer (`seen/`) |
 | `replicate(isInitiator \| stream)` | direct replication stream |
 | `swarm({ bootstrap, publicDht })`, `leaveSwarm()` | replication over a private hyperswarm that the Bundle owns, behind a firewall on members' swarm keys (see [Replication](#replication)) |
 | `revokePeer(swarmKey)` | take a swarm key out of this peer's allowlist, destroy its open connections, and `leavePeer` it, for the life of the Bundle |
