@@ -1,8 +1,10 @@
 // The governance helpers of the Bundle (okf SPEC §8, §13), on real autobee
-// and corestore instances: the key check before an append (D-047 F18).
+// and corestore instances: the key check before an append (D-047 F18), the
+// wait for open (D-047 N13), and the weight of the substrate grant (D-047
+// F08).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Bundle, K, tmpDir } from './store-helpers.js'
+import { Bundle, K, tmpDir, pair, until } from './store-helpers.js'
 
 const hex = (k) => k.toString('hex')
 
@@ -60,4 +62,55 @@ test('writers.setPolicy before open waits for open, and takes the default ceilin
   assert.equal(res.seq, 0, 'the policy op is the first op of the vault')
   await a.update()
   assert.deepEqual(await a.val(K.govWriter(self)), { indexer: true, namespacePrefixes: ['team'], rateCeiling: 8 })
+})
+
+test('an AddWriter grant leaves no pending promotion on any peer: HostAdapter grants at weight 0, not at autobee\'s default (D-047 F08)', async (t) => {
+  // autobee's host.addWriter defaults to isIndexer true and weight 2
+  // (lib/apply-calls.js:33). The carrier of the grant stands at weight 0,
+  // so autobee caps the effective weight and the ceiling at 0 at any asked
+  // weight (lib/system.js:75), and every weight still reads 0. A grant at
+  // the default weight still records a pending promotion to weight 2
+  // (lib/system.js:78). With M2 (bootstrapWeight back at its default), that
+  // brings back the G1 livelock (D-047 F08).
+  //
+  // No documented surface shows the promotion. autobee's README documents
+  // the instance API key, discoveryKey, id, local, view, bee, writable,
+  // isIndexer, append, update, updated, flush, replicate, wakeup, setLocal,
+  // setAcking and views, and the host API addWriter with isIndexer only. It
+  // documents no read of a weight, a ceiling or a pending promotion.
+  // db.isIndexer reads a ceiling of 2 or more, and the cap keeps the
+  // ceiling at 0. So the test reads autobee's system, and only reads it, as
+  // the attack tests do (attack-helpers.js sys()).
+  const a = await Bundle.init(await tmpDir('grant-a'))
+  const b = await Bundle.join(await tmpDir('grant-b'), a.key)
+  const c = await Bundle.join(await tmpDir('grant-c'), a.key)
+  const unpairs = [pair(a, b), pair(a, c)]
+  t.after(async () => {
+    for (const un of unpairs) un()
+    for (const v of [a, b, c]) await v.close()
+  })
+  await a.writers.add(b.localKey, { indexer: false })
+  await a.writers.add(c.localKey, { indexer: true })
+  assert.ok(await until(async () => (await b.update(), await c.update(), b.writable && c.writable)), 'b and c are granted')
+  await b.createConcept('b/x', 'note')
+  await c.createConcept('c/x', 'note')
+  assert.ok(
+    await until(async () => {
+      for (const v of [a, b, c]) {
+        await v.update()
+        for (const w of [b, c]) if ((await v.val(K.seen(hex(w.localKey)))) !== 1) return false
+      }
+      return true
+    }),
+    'every peer folds the ops of b and c'
+  )
+  const grants = {}
+  for (const [name, v] of [['a', a], ['b', b], ['c', c]]) {
+    for (const [wname, w] of [['b', b], ['c', c]]) {
+      const r = await v.db.system.get(w.localKey)
+      grants[`${name}:${wname}`] = { weight: r.weight, maxWeight: r.maxWeight, pending: await v.db.system.pendingPromotion(w.localKey) }
+    }
+  }
+  const zero = { weight: 0, maxWeight: 0, pending: 0 }
+  assert.deepEqual(grants, { 'a:b': zero, 'a:c': zero, 'b:b': zero, 'b:c': zero, 'c:b': zero, 'c:c': zero })
 })
