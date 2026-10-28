@@ -46,9 +46,11 @@ await a.close()
 await b.close()
 ```
 
-Or over the DHT instead of a pipe: `await a.swarm()` / `await b.swarm()`
-(hyperswarm on the vault's `auto-okf/2` topic, see
-[Replication](#replication)).
+Or over a private hyperswarm instead of a pipe. `b` joins with the invite
+(`{ metadata: a.metadata }`), which lists `a`'s swarm key, and `a` admits
+`b`'s swarm key with `writers.add(b.localKey, { swarmKey: b.swarmKey })`.
+Then `await a.swarm({ bootstrap })` / `await b.swarm({ bootstrap })`, with
+the nodes of a private DHT (see [Replication](#replication)).
 
 ## Install
 
@@ -76,7 +78,8 @@ and `okf/test/store-deps.test.js` checks it.
   migration.
 - `swarm()` announces the vault on the `auto-okf/2` topic,
   `sha256('auto-okf/2' ‖ discoveryKey)`, never on the bare discovery key.
-  A peer that announces on another topic never finds the vault.
+  A peer that announces on another topic never finds the vault. The
+  firewall admits only members' swarm keys (see [Replication](#replication)).
 - A directory with no `okf-vault.json` is new storage. The store runs no
   check on what the directory already holds.
 
@@ -112,6 +115,11 @@ byte-identical on every peer — `metadataHash` is the cross-peer pin):
   (`defaultCeiling`) — closed groups: `validateMetadata` refuses a key that
   metadata version 2 does not define. With `genesisKey` they are the
   `createApply` config slice (`applyConfig`), identical on every peer (I2).
+- **`swarm`** (`allow`) — a closed group. `allow` is the static allowlist
+  of the swarm firewall: swarm keys, 64 lowercase hex each, sorted, each
+  key once (`createMetadata` sorts and dedupes it). The creator of a vault
+  always adds its own swarm key. See [Replication](#replication). Apply
+  does not read it, so `applyConfig` leaves it out.
 - `schemaVersion`, `encrypted` — pinned with the rest. `encrypted` is
   `true` for a vault made with an `encryptionKey`.
 
@@ -132,7 +140,7 @@ differs from the pinned document fails `VAULT_METADATA_MISMATCH`.
 `opts`: `metadata` (invite overrides incl. generation-chain fields),
 `encryptionKey` (32 bytes, end to end — writer cores, system and view
 encrypted at rest; autobee keeps the key in the local core's user data, so
-a reopen needs no key), `keyPair`, `swarm`, `backpressure`.
+a reopen needs no key), `keyPair`, `backpressure`.
 
 ### Bundle
 
@@ -140,12 +148,13 @@ a reopen needs no key), `keyPair`, `swarm`, `backpressure`.
 | --- | --- |
 | `id`, `key`, `keyHex`, `discoveryKey` | vault identity (autobee bootstrap core) |
 | `localKey` | this peer's writer key (what an indexer passes to `writers.add`) |
+| `swarmKey` | this peer's swarm key, the hyperswarm public key that `swarm()` listens and dials with: `createKeyPair('auto-okf/swarm')` of the peer's own corestore, the same across restarts |
 | `writable` | autobee's `db.writable`: `true` once autobee has added this writer and not removed it |
 | `isIndexer` | okf authority from `gov/`: a `gov/writer/<self>` record with `indexer: true` and no `gov/removed/<self>`, refreshed after every view update and at open. Never autobee's `isIndexer`, which is always false, because every writer stands at weight 0 |
 | `metadata`, `generation` | the pinned document and the §10 namespace id |
 | `append(type, payload, { backpressure })` | encode + append one §3 op; fills `clock` (see `clock()`) and `at`; resolves `{ seq, tag }` once the local core holds the op's node — `seq` is the node's position in the local core (§3). Errors: see [Appends and close](#appends-and-close) |
 | `createConcept / setField / addTag / remTag / setBody / setPath / deleteConcept / undeleteConcept / resolveConflict` | content-op helpers (thin over `append`); `remTag` computes the §5 citation set from the view |
-| `writers.add(key, { indexer })` | §8 governance op (apply enforces the indexer-issuer rule) |
+| `writers.add(key, { indexer, swarmKey })` | §8 governance op (apply enforces the indexer-issuer rule). `swarmKey` (32 bytes or 64 hex, optional) goes on `gov/writer/<key>`, and the swarm firewall of every peer then admits it. A bad key fails `VAULT_BAD_SWARM_KEY` before the append; core rejects a wire key that is not 32 bytes `bad-swarm-key` |
 | `writers.remove(key)` | causal revocation — in-band, never positional; the emitted clock cites the target's last folded position (`seqAtRemoval`) |
 | `writers.setPolicy(key, { namespacePrefixes, rateCeiling })` | per-writer namespace + token-bucket policy |
 | `clock([seq])` | the §3/§8 clock of an op, `[[writerKeyHex, position], ...]` sorted by key: the last folded position of self and of each writer with a `gov/writer` record, and no other key; with `seq`, the self entry is `seq` |
@@ -154,7 +163,8 @@ a reopen needs no key), `keyPair`, `swarm`, `backpressure`.
 | `snapshotHash()`, `hash()` | I2/I3 full-range view hash, byte-compatible with core `MemView.hash()` (`hash()` is an alias) |
 | `checkpoint()` | §10 `{ viewHash, writerLengths }` for the next generation's metadata |
 | `replicate(isInitiator \| stream)` | direct replication stream |
-| `swarm([hyperswarm])`, `leaveSwarm()` | DHT replication on the vault's `auto-okf/2` topic |
+| `swarm({ bootstrap, publicDht })`, `leaveSwarm()` | replication over a private hyperswarm that the Bundle owns, behind a firewall on members' swarm keys (see [Replication](#replication)) |
+| `revokePeer(swarmKey)` | take a swarm key out of this peer's allowlist, destroy its open connections, and `leavePeer` it, for the life of the Bundle |
 | `close()` | closes autobee, settles every append that started before it, then closes the owned corestore |
 
 ### Substrate admission comes before the first write
@@ -227,13 +237,50 @@ core's §8 clock rule — the applied/rejected partition is replay-stable
 ### Replication
 
 `replicate(isInitiator | stream)` returns a direct replication stream.
-`swarm([hyperswarm])` joins the vault's `auto-okf/2` topic on the public
-hyperswarm DHT and replicates over each connection. So any peer that
-learns the vault key can connect, and an outsider with the key can still
-make members open writer cores through autobee's wakeup protocol (G44 in
-[SECURITY_MODEL.md](../SECURITY_MODEL.md)). An operator that never joins
-the swarm, and that replicates only over streams it opens itself, limits
-that to the peers it connects to.
+
+`swarm({ bootstrap, publicDht })` replicates over a private hyperswarm.
+The vault key is not a capability to connect:
+
+- **A swarm key per peer.** The swarm listens and dials with `swarmKey`,
+  which the store derives from the peer's own corestore, so it stays the
+  same across restarts.
+- **A firewall on members' swarm keys.** The swarm rejects every remote
+  key outside the allowlist, on an incoming handshake and before a dial
+  (hyperswarm `firewall`). The allowlist is the keys of
+  `metadata.swarm.allow`, and the `swarmKey` of each `gov/writer` record
+  that has no `gov/removed` record. The swarm key of a removed writer is
+  not in it, also when `metadata.swarm.allow` lists the key. The store
+  reads the allowlist again after every fold. A peer that holds the vault
+  key and the invite, but no admitted swarm key, gets no connection, so it
+  reaches neither the replication nor autobee's wakeup protocol (G44 in
+  [SECURITY_MODEL.md](../SECURITY_MODEL.md)).
+- **Revocation.** `revokePeer(swarmKey)` takes a key out of this peer's
+  allowlist, destroys its open connections, and stops the direct dials to
+  it (`leavePeer`), until this Bundle closes. A folded `remove-writer` has
+  the same effect, on every peer that folds it, for the swarm key on the
+  removed writer's record. Each peer cuts only its own connections.
+- **A DHT by choice.** `bootstrap` is the list of the bootstrap nodes of a
+  private DHT (`'host:port'` or `{ host, port }`), for example the node
+  that `auto-okf bootstrap` runs. `publicDht: true` uses hyperdht's
+  default bootstrap nodes, the public DHT that hyperdht describes as
+  "publicly served on behalf of the commons". It is explicit opt-in: a
+  call without exactly one of the two fails `VAULT_SWARM_DHT`.
+- **The Bundle owns the swarm.** `leaveSwarm()` and `close()` leave the
+  topic and the listed peers and destroy it.
+
+Two shapes of membership use the same swarm:
+
+1. **A pre-provisioned fleet.** The creator lists the swarm key of each
+   peer in `metadata.swarm.allow`, and every peer joins with that invite.
+   `swarm()` calls `joinPeer` for each listed key, so a pre-provisioned
+   fleet needs no topic: its peers dial each other by key. A peer can read
+   its swarm key before it holds a vault (`auto-okf keys <dir>`).
+2. **A late joiner.** An indexer admits it with
+   `writers.add(writerKey, { swarmKey })`. Each peer admits the swarm key
+   when it folds the `add-writer`, and finds the joiner on the
+   `auto-okf/2` topic, which `swarm()` still joins. A joiner folds no
+   `gov/writer` record before it connects, so it first reaches the keys
+   of the invite. That is why the creator always lists its own swarm key.
 
 ## Tests
 
@@ -250,10 +297,13 @@ across empty blocks and restarts, the bounded clock, backpressure, writer
 add/remove round trip with causal revocation, weight 0 for every writer,
 the governance race (G9b), the substrate attack suite and its residuals,
 encryptionKey open/read and encryption at rest, vault-metadata determinism
-(version 2, appendOnly, closed `limits` and `rate`, generation chain),
-generation-namespace freshness, restart-from-disk rebuild equality,
-hyperswarm replication on the `auto-okf/2` topic over a local testnet, and
-the dependency resolution of the store.
+(version 2, appendOnly, closed `limits`, `rate` and `swarm`, generation
+chain), generation-namespace freshness, restart-from-disk rebuild equality,
+hyperswarm replication on the `auto-okf/2` topic over a local testnet, the
+private swarm (the swarm key, the firewall against a peer with the vault
+key and no admitted swarm key, the cut of a removed writer and of
+`revokePeer`, a pre-provisioned pair over `joinPeer`, a joiner admitted
+after a ban), and the dependency resolution of the store.
 
 ## License
 

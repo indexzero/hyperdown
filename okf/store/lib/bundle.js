@@ -140,7 +140,6 @@ export class Bundle extends EventEmitter {
    *                  persists the key in the local core's userData —
    *                  lib/boot.js — so a reopen needs no key)
    *   keyPair        custom signing key pair for the local writer
-   *   swarm          a shared Hyperswarm instance for swarm()
    *   backpressure   opt-in append admission control: `true` or
    *                  `{ maxInflight, ackTimeout }` — every append() then
    *                  self-throttles to this writer's own fold AND its
@@ -154,11 +153,14 @@ export class Bundle extends EventEmitter {
     this.db = null
     this.metadata = null
     this.generation = null
-    this.swarmInstance = opts.swarm || null
+    this.swarmInstance = null // the Hyperswarm that swarm() makes and owns
     this._swarmKeyPair = null // T25: see swarmKey
     this._swarmTopic = null
-    this._ownSwarm = false
+    this._discovery = null // the topic session of swarm()
     this._onConnection = null
+    this._allowed = new Set() // T25: the swarm keys the firewall admits (hex)
+    this._revokedPeers = new Set() // T25: revokePeer() keys, out for the life of the Bundle
+    this._allowChain = Promise.resolve() // serializes _refreshAllowlist()
     this._opts = opts
     this._coreApply = null
     this._applyBarrier = new Promise((resolve) => {
@@ -205,6 +207,23 @@ export class Bundle extends EventEmitter {
     const vault = new Bundle(storage, { ...opts, key })
     await vault.ready()
     return vault
+  }
+
+  /**
+   * The swarm key (T25) of a storage directory, also before it holds a
+   * vault: a pre-provisioned fleet collects each peer's key before the
+   * creator writes the invite. It opens the directory's corestore (and
+   * creates it, with its primary key, when it is new), derives the key as
+   * an open Bundle does, and closes the store. Do not call it on a
+   * directory that an open Bundle holds.
+   */
+  static async readSwarmKey(dir) {
+    const store = new Corestore(dir)
+    try {
+      return (await store.createKeyPair(SWARM_KEY_NAME)).publicKey
+    } finally {
+      await store.close()
+    }
   }
 
   ready() {
@@ -268,8 +287,9 @@ export class Bundle extends EventEmitter {
       open: (bee) => new ViewAdapter(bee),
       // Called after apply once db.view holds the new state (README
       // `update (view, changes)`; index.js:1051-1058), so isIndexer
-      // follows gov/ as closely as db.writable follows autobee.
-      update: () => this._refreshIndexer(),
+      // follows gov/ as closely as db.writable follows autobee, and the
+      // swarm firewall follows gov/writer (T25, see swarm()).
+      update: () => this._onViewUpdate(),
       encryptionKey: this._opts.encryptionKey || null,
       encrypted,
       keyPair: this._opts.keyPair,
@@ -362,6 +382,11 @@ export class Bundle extends EventEmitter {
    * this writer pass the revocation and issuer checks of core apply
    * (core/lib/apply.js:370-383).
    */
+  async _onViewUpdate() {
+    await this._refreshIndexer()
+    if (this.swarmInstance) await this._refreshAllowlist()
+  }
+
   async _refreshIndexer() {
     if (this._closing || !this.db || !this.db.local) return
     const self = b4a.toString(this.db.local.key, 'hex')
@@ -508,15 +533,7 @@ export class Bundle extends EventEmitter {
   async close() {
     this._closing = true
     this._wakeAckWaiters() // release any append blocked in the ack gate
-    if (this.swarmInstance && this._onConnection) {
-      this.swarmInstance.off('connection', this._onConnection)
-      this._onConnection = null
-    }
-    if (this._ownSwarm) {
-      await this.swarmInstance.destroy()
-      this.swarmInstance = null
-      this._ownSwarm = false
-    }
+    await this._destroySwarm()
     // db.close() closes the generation SESSION (autobee _close); the root
     // corestore — which the Bundle owns either way — closes after it.
     if (this.db) await this.db.close() // step 1
@@ -1039,37 +1056,180 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * Join the vault's auto-okf/2 topic on hyperswarm,
-   * sha256('auto-okf/2' ‖ db.discoveryKey); every connection is fed to
-   * db.replicate. Pass a shared swarm here or in the constructor,
-   * otherwise the vault creates (and owns) one. Returns the swarm.
+   * Replicate over a private hyperswarm (T25). The vault key is no
+   * capability to connect: the swarm listens and dials with this peer's
+   * swarm key (swarmKey), and its firewall rejects every remote key outside
+   * the allowlist, on both sides of a connection (hyperswarm README.md:52,
+   * index.js:49, :204-205, :309-322). The allowlist (_refreshAllowlist):
+   * - the keys of metadata.swarm.allow (pinned in the invite), and
+   * - the swarm key of each gov/writer record with no gov/removed record,
+   * minus the swarm key of each removed writer, and minus each key that
+   * revokePeer() cut. It is read again after every fold (the update
+   * handler), so an admission opens the firewall, and a folded RemoveWriter
+   * cuts the writer as revokePeer() does.
+   *
+   * `opts`: exactly one DHT choice, or the call fails VAULT_SWARM_DHT.
+   *   bootstrap  ['host:port' | { host, port }, ...]: the bootstrap nodes of
+   *              a private DHT, such as `auto-okf bootstrap` runs
+   *   publicDht  true: hyperdht's default bootstrap nodes, the public DHT
+   *              that is "publicly served on behalf of the commons"
+   *              (hyperdht README.md:84). Explicit opt-in.
+   *
+   * The swarm listens (listen()) and joinPeers each listed key, so a
+   * pre-provisioned fleet connects with no topic announcement. It also
+   * joins the auto-okf/2 topic, sha256('auto-okf/2' ‖ db.discoveryKey), for
+   * the writers that gov/writer admits later. Every admitted connection is
+   * fed to db.replicate. The Bundle owns the swarm: leaveSwarm() and close()
+   * destroy it. Returns the swarm.
    */
-  async swarm(swarm = null) {
+  async swarm({ bootstrap, publicDht = false } = {}) {
     await this.ready()
-    if (swarm) this.swarmInstance = swarm
+    if (this._closing) throw closedError()
+    const dht = swarmDhtOptions(bootstrap, publicDht)
     if (!this.swarmInstance) {
-      this.swarmInstance = new Hyperswarm()
-      this._ownSwarm = true
+      // Until the first _refreshAllowlist() below, the allowlist is empty,
+      // and the firewall rejects every key.
+      this.swarmInstance = new Hyperswarm({
+        ...dht,
+        keyPair: this._swarmKeyPair,
+        firewall: (remotePublicKey) => !this._allows(remotePublicKey)
+      })
     }
+    const swarm = this.swarmInstance
     if (!this._onConnection) {
       this._onConnection = (conn) => {
         conn.on('error', () => {})
+        // The firewall ran before the handshake. A key can leave the
+        // allowlist before 'connection' fires, so check it again here.
+        if (!this._allows(conn.remotePublicKey)) return conn.destroy()
         this.db.replicate(conn)
       }
-      this.swarmInstance.on('connection', this._onConnection)
+      swarm.on('connection', this._onConnection)
     }
-    const discovery = this.swarmInstance.join(this._swarmTopic, { server: true, client: true })
-    await discovery.flushed()
-    return this.swarmInstance
+    await this._refreshAllowlist()
+    await swarm.listen()
+    for (const key of this._listedPeers()) swarm.joinPeer(key)
+    this._discovery = swarm.join(this._swarmTopic, { server: true, client: true })
+    await this._discovery.flushed()
+    return swarm
   }
 
-  /** Leave the topic that swarm() joined. */
+  /** Leave the topic and the listed peers that swarm() joined, and destroy the swarm. */
   async leaveSwarm() {
-    if (!this.swarmInstance) return
-    await this.swarmInstance.leave(this._swarmTopic)
+    await this._destroySwarm()
+  }
+
+  async _destroySwarm() {
+    const swarm = this.swarmInstance
+    if (!swarm) return
+    this.swarmInstance = null
+    this._discovery = null
     if (this._onConnection) {
-      this.swarmInstance.off('connection', this._onConnection)
+      swarm.off('connection', this._onConnection)
       this._onConnection = null
+    }
+    if (!swarm.destroyed) {
+      await swarm.leave(this._swarmTopic)
+      for (const key of this._listedPeers()) swarm.leavePeer(key)
+    }
+    await swarm.destroy()
+  }
+
+  /**
+   * Cut a peer (T25): take its swarm key out of the live allowlist, destroy
+   * its open connections, and leavePeer it. The key stays out for the life
+   * of this Bundle, also when gov/writer or metadata.swarm.allow still name
+   * it. A folded RemoveWriter has the same effect for the swarm key of the
+   * removed writer, through the update handler. This stops the peer's
+   * replication with this peer only. The other peers cut it when they fold
+   * the RemoveWriter, or when each of them calls revokePeer().
+   */
+  revokePeer(swarmKey) {
+    const key = swarmKeyBuffer(swarmKey)
+    if (!key) throw vaultError('VAULT_BAD_SWARM_KEY', 'swarmKey must be 32 bytes or 64 hex characters')
+    const hex = b4a.toString(key, 'hex')
+    this._revokedPeers.add(hex)
+    this._evictPeer(hex)
+  }
+
+  /** The firewall test: true when the allowlist holds the remote key. */
+  _allows(remotePublicKey) {
+    return this._allowed.has(b4a.toString(remotePublicKey, 'hex'))
+  }
+
+  /** The keys of metadata.swarm.allow that the allowlist holds, without self. */
+  _listedPeers() {
+    const self = b4a.toString(this._swarmKeyPair.publicKey, 'hex')
+    const out = []
+    for (const hex of this.metadata.swarm.allow) {
+      if (hex !== self && this._allowed.has(hex)) out.push(b4a.from(hex, 'hex'))
+    }
+    return out
+  }
+
+  /**
+   * Read the allowlist again from metadata and gov/ (see swarm()), and
+   * apply the difference to the swarm: a key that left is evicted, and a
+   * key that came in is admitted. The runs are serialized, so a slow run
+   * never puts back a list that a later fold changed.
+   */
+  _refreshAllowlist() {
+    const run = this._allowChain.then(() => this._refreshAllowlistOnce())
+    this._allowChain = run.catch(() => {})
+    return run
+  }
+
+  async _refreshAllowlistOnce() {
+    if (this._closing || !this.db || !this.metadata) return
+    const live = new Set()
+    const removed = new Set()
+    for await (const { key, value } of this.scan(K.govWriterPrefix())) {
+      if (typeof value.swarmKey !== 'string') continue
+      const writer = K.parseKey(key)[2]
+      if ((await this.val(K.govRemoved(writer))) === undefined) live.add(value.swarmKey)
+      else removed.add(value.swarmKey)
+    }
+    // No await from here on, so a revokePeer() that ran during the reads
+    // above is in _revokedPeers now.
+    const next = new Set(live)
+    for (const hex of this.metadata.swarm.allow) if (!removed.has(hex)) next.add(hex)
+    for (const hex of this._revokedPeers) next.delete(hex)
+    const prev = this._allowed
+    this._allowed = next
+    for (const hex of prev) if (!next.has(hex)) this._evictPeer(hex)
+    for (const hex of next) if (!prev.has(hex)) this._allowPeer(hex)
+  }
+
+  /** Out of the allowlist: destroy the open connections and leavePeer. */
+  _evictPeer(hex) {
+    this._allowed.delete(hex)
+    const swarm = this.swarmInstance
+    if (!swarm) return
+    const key = b4a.from(hex, 'hex')
+    for (const conn of swarm.connections) {
+      if (b4a.equals(conn.remotePublicKey, key)) conn.destroy()
+    }
+    swarm.leavePeer(key)
+  }
+
+  /**
+   * Into the allowlist. hyperswarm bans a key that the firewall rejected,
+   * and rejects a banned key before the firewall runs (index.js:312-319),
+   * so a peer that dialed before its admission folded is unbanned
+   * (PeerInfo.ban(false), README.md:202-204), and the topic is looked up
+   * again (discovery.refresh(), README.md:174), so the two dial at once
+   * and not at the next refresh, which can be 10 minutes away.
+   */
+  _allowPeer(hex) {
+    const swarm = this.swarmInstance
+    if (!swarm) return
+    const info = swarm.peers.get(hex)
+    if (info && info.banned) {
+      info.ban(false)
+      if (this._discovery) this._discovery.refresh().catch(() => {})
+    }
+    if (this.metadata.swarm.allow.includes(hex) && hex !== b4a.toString(this.swarmKey, 'hex')) {
+      swarm.joinPeer(b4a.from(hex, 'hex'))
     }
   }
 }
@@ -1143,6 +1303,29 @@ function swarmTopic(discoveryKey) {
 
 function toKeyBuffer(key) {
   return b4a.from(keyHex(key), 'hex')
+}
+
+/**
+ * The Hyperswarm options of one DHT choice (see Bundle.swarm()): the
+ * bootstrap nodes of a private DHT, or the public DHT by explicit opt-in.
+ */
+function swarmDhtOptions(bootstrap, publicDht) {
+  const nodes = Array.isArray(bootstrap) ? bootstrap : null
+  const valid =
+    nodes !== null &&
+    nodes.length > 0 &&
+    nodes.every(
+      (n) =>
+        (typeof n === 'string' && n.length > 0) ||
+        (n !== null && typeof n === 'object' && typeof n.host === 'string' && Number.isInteger(n.port))
+    )
+  if (publicDht === true && bootstrap === undefined) return {}
+  if (publicDht !== true && valid) return { bootstrap: nodes }
+  throw vaultError(
+    'VAULT_SWARM_DHT',
+    'swarm() needs exactly one DHT: bootstrap, a non-empty list of the nodes of a private DHT ' +
+      "('host:port' or { host, port }), or publicDht: true, the public DHT of the commons"
+  )
 }
 
 /** A 32-byte swarm key from 32 bytes or 64 hex characters, else null. */
