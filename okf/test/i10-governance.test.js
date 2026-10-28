@@ -246,6 +246,30 @@ test('I10: a RemoveWriter that would leave zero indexers is rejected', async () 
   assert.notEqual((await view2.get('gov/removed/' + env.hex('A'))), null)
 })
 
+test('I10: an AddWriter that would demote the last live indexer is rejected policy-governance (D-047 F19)', async () => {
+  // Bundle.addWriter defaults to indexer: false, so writers.add(ownKey)
+  // from the only indexer demoted it. Before the fix, only RemoveWriter
+  // kept one live indexer, and the vault could become ungovernable.
+  const env = new Env({ genesis: 'A' })
+  const [A, B] = [env.hex('A'), env.hex('B')]
+  env.op('A', 'add-writer', { key: writerKey('A'), indexer: false }) // A/0: the only indexer demotes itself
+  env.op('A', 'add-writer', { key: writerKey('B'), indexer: true }) // A/1: A is still an indexer
+  env.op('A', 'add-writer', { key: writerKey('A'), indexer: false }) // A/2: B stays, so A may step down
+  env.op('B', 'add-writer', { key: writerKey('C'), indexer: true }) // B/0
+  env.op('B', 'remove-writer', { key: writerKey('C') }) // B/1: C is revoked, so it is no live indexer
+  env.op('B', 'add-writer', { key: writerKey('B'), indexer: false }) // B/2: B is the last live indexer
+  const view = await env.run()
+
+  assert.deepEqual(rejectedReasons(view), {
+    [`${A}/000000000000`]: 'policy-governance',
+    [`${B}/000000000002`]: 'policy-governance'
+  })
+  const rec = async (w) => JSON.parse((await view.get('gov/writer/' + env.hex(w))).value)
+  assert.equal((await rec('A')).indexer, false, 'A stepped down once B was an indexer')
+  assert.equal((await rec('B')).indexer, true, 'B, the last live indexer, is still one')
+  assert.notEqual(await view.get('gov/removed/' + env.hex('C')), null)
+})
+
 test('I10: namespace policy rejects out-of-prefix writes against the CURRENT path', async () => {
   const env = new Env({ genesis: 'A' })
   env.op('A', 'add-writer', { key: writerKey('B'), indexer: false })

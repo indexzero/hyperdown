@@ -524,6 +524,24 @@ class Applier {
   }
 
   /**
+   * §8: true when `target`, whose gov/writer record is `rec`, is the last
+   * live indexer: its record says indexer, it has no gov/removed record,
+   * and no other writer is a live indexer. A governance op that would take
+   * its indexer role away is rejected, so a vault can never become
+   * permanently ungovernable.
+   */
+  async isLastLiveIndexer(target, rec) {
+    if (!rec || rec.indexer !== true) return false
+    if ((await this.val(K.govRemoved(target))) !== undefined) return false
+    for (const { key, value } of await this.scanAll(K.govWriterPrefix())) {
+      const k = K.parseKey(key)[2]
+      if (k === target || value.indexer !== true) continue
+      if ((await this.val(K.govRemoved(k))) === undefined) return false
+    }
+    return true
+  }
+
+  /**
    * §8 admission. A writer key that is not 32 bytes rejects the op
    * 'bad-writer-key' before it writes a gov/ key (D-047 F18): grant() does
    * not grant such a key, and its record would count as an indexer that no
@@ -542,6 +560,11 @@ class Applier {
       return { rejected: true, reason: 'bad-swarm-key' }
     }
     const existing = await this.val(K.govWriter(target))
+    if (op.indexer !== true && (await this.isLastLiveIndexer(target, existing))) {
+      // §8 (D-047 F19): an AddWriter that would demote the last live
+      // indexer is rejected, as a RemoveWriter that would remove it is.
+      return { rejected: true, reason: 'policy-governance' }
+    }
     const rec = {
       indexer: op.indexer === true,
       namespacePrefixes: existing ? existing.namespacePrefixes : [],
@@ -566,18 +589,10 @@ class Applier {
 
   async opRemoveWriter(op) {
     const target = keyHex(op.key)
-    const targetRec = await this.val(K.govWriter(target))
-    const alreadyRemoved = (await this.val(K.govRemoved(target))) !== undefined
-    if (targetRec && targetRec.indexer === true && !alreadyRemoved) {
+    if (await this.isLastLiveIndexer(target, await this.val(K.govWriter(target)))) {
       // §8: a RemoveWriter that would leave zero indexers is rejected — a
       // vault can never become permanently ungovernable.
-      let others = 0
-      for (const { key, value } of await this.scanAll(K.govWriterPrefix())) {
-        const k = K.parseKey(key)[2]
-        if (k === target || value.indexer !== true) continue
-        if ((await this.val(K.govRemoved(k))) === undefined) others++
-      }
-      if (others === 0) return { rejected: true, reason: 'policy-governance' }
+      return { rejected: true, reason: 'policy-governance' }
     }
     const clock = normalizeClock(op.clock) ?? {}
     // §8: seqAtRemoval = the revocation clock's entry for the removed
