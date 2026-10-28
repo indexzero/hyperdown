@@ -1,8 +1,9 @@
 // auto-okf CLI (okf SPEC §13): a thin veneer over @auto-okf/store (vault
 // lifecycle + §8 governance ops) and @auto-okf/faces (materialize, ingest
-// watcher, per-file status, wanted index, generation-cycle compact). The
-// CLI never writes the view or the face itself — every effect flows through
-// the packages, so everything it does is exactly what a library caller does.
+// watcher, per-file status, wanted index, and the import of a face into a
+// new vault, §10). The CLI never writes the view or the face itself — every
+// effect flows through the packages, so everything it does is exactly what
+// a library caller does.
 //
 // The command surface is declared once as a paparam command tree (paparam is
 // Holepunch's own parser — pear's CLI runs on it): a root command composing
@@ -23,8 +24,7 @@ import b4a from 'b4a'
 import { command, flag, arg, rest, summary, header, footer, bail, validate } from 'paparam'
 import { keyspace as K } from '@auto-okf/core'
 import { Bundle, METADATA_FILE, loadMetadata, startBootstrapNode } from '@auto-okf/store'
-import { materialize, createIngestWatcher, wanted, compact, importFace, status } from '@auto-okf/faces'
-import { guardCompactPaths } from '@auto-okf/faces/compact'
+import { materialize, createIngestWatcher, wanted, importFace, status } from '@auto-okf/faces'
 
 const TITLE = 'auto-okf — multi-writer OKF bundles on autobee (okf SPEC §13)'
 const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage, 3 pending-ingest only (materialize)'
@@ -231,16 +231,6 @@ function buildCli() {
       requiredArgs('<dir>')
     ),
     sub(
-      'compact',
-      'generation-cycle compaction into a fresh vault',
-      arg('<dir>', 'vault storage directory'),
-      arg('<out-dir>', 'directory for the fresh generation vault'),
-      flag('--force', 'compact despite open conflict/pathcollision flags'),
-      flag('--face <dir>', 'hydrated face directory (default: <out-dir>.face)'),
-      flag('--encryption-key <hex64>', 'encrypt the fresh vault with this key (64 hex chars; required for an encrypted vault)'),
-      requiredArgs('<dir>', '<out-dir>')
-    ),
-    sub(
       'import',
       'create a new vault in <dir> from the notes of a face (a generation: materialize, then import)',
       arg('<face-dir>', 'face directory to read, such as one that materialize wrote'),
@@ -354,7 +344,6 @@ const HANDLERS = {
   status: cmdStatus,
   wanted: cmdWanted,
   flags: cmdFlags,
-  compact: cmdCompact,
   import: cmdImport,
   resolve: cmdResolve,
   undelete: cmdUndelete,
@@ -838,101 +827,6 @@ async function cmdFlags({ args, flags }) {
   })
 }
 
-async function cmdCompact({ args, flags }) {
-  // Each path argument names the same directory with or without a trailing
-  // slash (G19). resolve() drops the slash, so the default face
-  // `<out-dir>.face` is a sibling of the out-dir, never in it.
-  const dir = resolve(args.dir)
-  const outDir = resolve(args.outDir)
-  const faceDir = resolve(flags.face || `${outDir}.face`)
-  // compact runs the path guard before it writes anything. The CLI runs it
-  // first, before it opens the predecessor: an open and a close of a vault
-  // rewrite files in its storage, so a refusal here leaves the predecessor's
-  // bytes as they were.
-  await guardCompactPaths({ predecessorDir: dir, toDir: faceDir, vaultDir: outDir })
-  return withVault(dir, {}, async (vault) => {
-    let res
-    try {
-      // For an encrypted predecessor, compact names the face before its
-      // first write to it (announcePlaintext).
-      res = await compact(vault, {
-        initBundle: Bundle.init,
-        toDir: faceDir,
-        vaultDir: outDir,
-        force: flags.force === true,
-        onPlaintext: announcePlaintext,
-        ...encryptionOpt(flags)
-      })
-    } catch (err) {
-      // run() prints the message and exits 1. Every failure after the face
-      // step carries the warnings, so print them first: why a note did not
-      // survive. The plaintext warning of the face is out already.
-      // COMPACT_FIDELITY names every difference in its message, and the
-      // counts follow the warnings.
-      for (const w of laterWarnings(err.warnings)) process.stderr.write(compactWarningLine(w))
-      if (err.code === 'COMPACT_FIDELITY') {
-        process.stderr.write(`notes:            ${compactCountsLine(err.counts)}\n`)
-      }
-      throw err
-    }
-    try {
-      for (const w of laterWarnings(res.warnings)) process.stderr.write(compactWarningLine(w))
-      console.log(`compacted ${dir} -> ${outDir} (generation ${res.generation})`)
-      console.log(`hydrated face:    ${faceDir}`)
-      console.log(`predecessor:      ${res.predecessorPath} (NOT deleted — archive out-of-band)`)
-      console.log(`new vault key:    ${res.vault.keyHex}`)
-      console.log(`notes:            ${compactCountsLine(res.counts)}`)
-      console.log(`fidelity:         the new vault matches the face (_rev lines and log.md excluded) and the live state of the predecessor`)
-      if (res.conflictCopies && res.conflictCopies.length) {
-        console.log(`conflicted copies carried across (--force): ${res.conflictCopies.length}`)
-        for (const c of res.conflictCopies) console.log(`  ${c.from} -> ${c.to}`)
-      }
-      return 0
-    } finally {
-      // compact returns the fresh vault OPEN; the caller owns closing it.
-      await res.vault.close()
-    }
-  })
-}
-
-/** `3 walked, 3 staged, 3 ingested`: the concept notes compact counted. */
-function compactCountsLine({ walked, staged, ingested }) {
-  return `${walked} walked, ${staged} staged, ${ingested} ingested`
-}
-
-/** `warning: notes/a.md: no parseable frontmatter; not staged` */
-function compactWarningLine({ path, message }) {
-  return `warning: ${path}: ${message}\n`
-}
-
-/**
- * Print a plaintext warning on stderr (decision 8), and resolve when the
- * line is written: `warning: <dir>: now holds the contents of an encrypted
- * vault as plaintext`. materialize and compact await it before their first
- * plaintext write, so a failure or a crash after that write finds the
- * warning already printed.
- */
-function announcePlaintext(warning) {
-  return new Promise((resolve, reject) => {
-    process.stderr.write(compactWarningLine(warning), (err) => (err ? reject(err) : resolve()))
-  })
-}
-
-/** The compact warnings that announcePlaintext did not print already. */
-function laterWarnings(warnings) {
-  return (warnings || []).filter((w) => w.kind !== 'plaintext')
-}
-
-/**
- * compact's fresh vault is encrypted only when asked: a key is never
- * inherited. compact refuses an encrypted predecessor without a key
- * (COMPACT_ENCRYPTION_KEY_REQUIRED, exit 1), and no flag makes an unencrypted
- * copy. The refusal sits in compact itself, so a library caller gets it too.
- */
-function encryptionOpt(flags) {
-  return flags.encryptionKey ? { encryptionKey: hexKey(flags.encryptionKey, '--encryption-key') } : {}
-}
-
 /**
  * T24: `import <face-dir> <dir>` (SPEC §10). importFace refuses a pinned,
  * non-empty or non-directory <dir>, and a face that holds a conflicted copy,
@@ -996,9 +890,22 @@ function importCountsLine({ notes, imported }) {
   return `${notes} read, ${imported} imported`
 }
 
-/** `warning: notes/a.md: no parseable frontmatter`: one warning line on stderr. */
+/** `warning: notes/a.md: cannot create concept: ...`: one warning line on stderr. */
 function warningLine({ path, message }) {
   return `warning: ${path}: ${message}\n`
+}
+
+/**
+ * Print a plaintext warning on stderr (decision 8), and resolve when the
+ * line is written: `warning: <dir>: now holds the contents of an encrypted
+ * vault as plaintext`. materialize awaits it before its first plaintext
+ * write, so a failure or a crash after that write finds the warning already
+ * printed.
+ */
+function announcePlaintext(warning) {
+  return new Promise((resolve, reject) => {
+    process.stderr.write(warningLine(warning), (err) => (err ? reject(err) : resolve()))
+  })
 }
 
 async function cmdResolve({ args, flags }) {

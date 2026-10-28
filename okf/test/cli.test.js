@@ -10,12 +10,12 @@ import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { createSocket } from 'node:dgram'
 import { readFileSync } from 'node:fs'
-import { mkdir, readdir, readFile, rm, writeFile, access, symlink } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile, access } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bundle } from '../store/index.js'
 import { keyspace as K } from '../core/index.js'
-import { compact, importFace, materialize } from '../faces/index.js'
+import { importFace, materialize } from '../faces/index.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(ROOT, 'okf', 'cli', 'bin', 'auto-okf.js')
@@ -645,7 +645,7 @@ async function seedConflict(storage) {
   return { id, keep, supersede }
 }
 
-test('flags lists a seeded conflict; compact refuses until resolved; resolve clears it', async () => {
+test('flags lists a seeded conflict; resolve clears it', async () => {
   const base = await tmpDir('conflict')
   const storage = join(base, 'vault')
   const { id, keep, supersede } = await seedConflict(storage)
@@ -659,11 +659,6 @@ test('flags lists a seeded conflict; compact refuses until resolved; resolve cle
   const rows = JSON.parse(fj.stdout)
   assert.equal(rows.length, 1, 'exactly one open conflict')
 
-  // compact MUST refuse while a conflict is open (SPEC §10 guardrail)
-  const refused = await cli(['compact', storage, join(base, 'generation2')])
-  assert.equal(refused.code, 1, 'compact refuses on an open conflict')
-  assert.match(refused.stderr, /refusing to compact with open conflicts/)
-
   // resolve it
   const resolved = await cli(['resolve', storage, id, '--keep', keep, '--supersede', supersede])
   assert.equal(resolved.code, 0, resolved.stderr)
@@ -672,27 +667,25 @@ test('flags lists a seeded conflict; compact refuses until resolved; resolve cle
   const cleared = await cli(['flags', storage, 'conflict'])
   assert.match(cleared.stderr, /0 flag\(s\)/)
 
-  // now compact succeeds and produces a fresh generation vault
-  const compacted = await cli(['compact', storage, join(base, 'generation2')])
-  assert.equal(compacted.code, 0, compacted.stderr)
-  assert.match(compacted.stdout, /compacted .* -> .* \(generation [0-9a-f]{64}\)/)
-  await access(join(base, 'generation2', 'okf-vault.json')) // fresh vault is pinned
+  // with no conflict open, a generation is materialize, then import (§10)
+  const face = await cli(['materialize', storage, join(base, 'face')])
+  assert.equal(face.code, 0, face.stderr)
+  const key = KEY_LINE.exec((await cli(['join', storage])).stdout)[1]
+  const generation = await cli(['import', join(base, 'face'), join(base, 'generation2'), '--metadata', join(storage, 'okf-vault.json'), '--predecessor', key])
+  assert.equal(generation.code, 0, generation.stderr)
+  assert.match(generation.stdout, /^generation: {2}[0-9a-f]{64}$/m)
+  await access(join(base, 'generation2', 'okf-vault.json')) // the new vault is pinned
 })
 
-// ---------- T17: compaction never drops encryption (decision 8) ----------
+// ---------- T17: encryption and plaintext (decision 8) ----------
 
 const ENC_KEY = 'cd'.repeat(32) // the predecessor's key
-const NEW_KEY = 'ef'.repeat(32) // the fresh vault's key: compaction never carries a key over
+const NEW_KEY = 'ef'.repeat(32) // the new vault's key: a generation names its own key
 const SECRET = 'TOP-SECRET-PAYLOAD'
 
 /** The entries of a directory, sorted. */
 async function entries(dir) {
   return (await readdir(dir)).sort()
-}
-
-/** The plaintext copies that compaction left in `dir`: a stage (`*.compact-src`) or a verification directory (`*.verify-*`). */
-async function plaintextCopies(dir) {
-  return (await entries(dir)).filter((e) => e.endsWith('.compact-src') || e.includes('.verify-'))
 }
 
 /** The metadata that a vault directory pins. */
@@ -745,7 +738,7 @@ async function rawHits(v, plain) {
   return hits
 }
 
-/** The read-back of a compacted vault: is it encrypted, can it read SECRET, and which raw blocks hold SECRET. */
+/** The read-back of a vault: is it encrypted, can it read SECRET, and which raw blocks hold SECRET. */
 async function inspectSecret(v, id) {
   return { encrypted: v.metadata.encrypted, text: await headText(v, id), rawHits: (await rawHits(v, Buffer.from(SECRET))).length > 0 }
 }
@@ -755,107 +748,7 @@ function plaintextLine(dir) {
   return `warning: ${dir}: now holds the contents of an encrypted vault as plaintext\n`
 }
 
-test('T17: compact refuses an encrypted vault without --encryption-key by name, and creates nothing (s1.mjs A, G14)', async () => {
-  // scratch-D/s1.mjs scenario A: an encrypted vault compacted without a key
-  // gave an unencrypted vault and exit 0. No flag makes an unencrypted copy.
-  const base = await tmpDir('enc-refuse')
-  const storage = join(base, 'vault')
-  await initEncrypted(storage)
-  const before = await snapshotHash(storage)
-
-  const refused = await cli(['compact', storage, join(base, 'out')])
-  assert.equal(refused.code, 1, refused.stdout + refused.stderr)
-  assert.match(refused.stderr, /^auto-okf compact: COMPACT_ENCRYPTION_KEY_REQUIRED: .*--encryption-key/m)
-  assert.doesNotMatch(refused.stderr, /plaintext\n/, 'no face was written, so no plaintext warning')
-  // An empty key is no key.
-  const empty = await cli(['compact', storage, join(base, 'out'), '--encryption-key', ''])
-  assert.notEqual(empty.code, 0, empty.stdout + empty.stderr)
-  assert.deepEqual(await entries(base), ['vault'], 'the refusal created no out-dir, face or stage')
-  assert.equal(await snapshotHash(storage), before, 'the refusal changed the predecessor')
-
-  // The in-process compact refuses by the same name, before it creates or writes anything.
-  const v = await Bundle.open(storage)
-  try {
-    for (const encryptionKey of [undefined, null]) {
-      await assert.rejects(
-        () => compact(v, { initBundle: Bundle.init, toDir: join(base, 'face'), vaultDir: join(base, 'out'), encryptionKey }),
-        (err) => err.code === 'COMPACT_ENCRYPTION_KEY_REQUIRED'
-      )
-    }
-  } finally {
-    await v.close()
-  }
-  assert.deepEqual(await entries(base), ['vault'], 'the in-process refusal created something')
-  assert.equal(await snapshotHash(storage), before)
-})
-
-test('T17: auto-okf compact --encryption-key makes an encrypted vault whose raw blocks lack the plaintext; an unencrypted control holds it', async () => {
-  const base = await tmpDir('enc-cli')
-  const storage = join(base, 'vault')
-  const id = await initEncrypted(storage)
-  const out = join(base, 'out')
-  const r = await cli(['compact', storage, out, '--encryption-key', NEW_KEY])
-  assert.equal(r.code, 0, r.stderr)
-  assert.equal((await pinned(out)).encrypted, true)
-  const nu = await Bundle.open(out)
-  try {
-    assert.deepEqual(await inspectSecret(nu, id), { encrypted: true, text: SECRET, rawHits: false })
-  } finally {
-    await nu.close()
-  }
-  assert.deepEqual(await plaintextCopies(base), [], 'compaction left a stage or a verification directory')
-
-  // The control: the same content in an unencrypted vault. Its compacted
-  // vault holds SECRET in its raw blocks, so the check above can see it.
-  const ctlStorage = join(base, 'control')
-  const ctl = await Bundle.init(ctlStorage)
-  const ctlId = await seedSecret(ctl)
-  await ctl.close()
-  const ctlOut = join(base, 'control-out')
-  const c = await cli(['compact', ctlStorage, ctlOut])
-  assert.equal(c.code, 0, c.stderr)
-  assert.equal((await pinned(ctlOut)).encrypted, false)
-  const cv = await Bundle.open(ctlOut)
-  try {
-    assert.deepEqual(await inspectSecret(cv, ctlId), { encrypted: false, text: SECRET, rawHits: true })
-  } finally {
-    await cv.close()
-  }
-  assert.deepEqual(await plaintextCopies(base), [], 'compaction left a stage or a verification directory')
-})
-
-test('T17: the in-process compact with a key makes an encrypted vault whose raw blocks lack the plaintext; an unencrypted control holds it', async () => {
-  const base = await tmpDir('enc-lib')
-  const old = await Bundle.init(join(base, 'vault'), { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
-  const id = await seedSecret(old)
-  const res = await compact(old, {
-    initBundle: Bundle.init,
-    toDir: join(base, 'face'),
-    vaultDir: join(base, 'out'),
-    encryptionKey: Buffer.from(NEW_KEY, 'hex')
-  })
-  try {
-    assert.equal(res.ok, true)
-    assert.deepEqual(await inspectSecret(res.vault, id), { encrypted: true, text: SECRET, rawHits: false })
-    assert.deepEqual(await plaintextCopies(base), [], 'compaction left a stage or a verification directory')
-  } finally {
-    await res.vault.close()
-    await old.close()
-  }
-
-  const ctl = await Bundle.init(join(base, 'control'))
-  const ctlId = await seedSecret(ctl)
-  const ctlRes = await compact(ctl, { initBundle: Bundle.init, toDir: join(base, 'control-face'), vaultDir: join(base, 'control-out') })
-  try {
-    assert.deepEqual(await inspectSecret(ctlRes.vault, ctlId), { encrypted: false, text: SECRET, rawHits: true })
-  } finally {
-    await ctlRes.vault.close()
-    await ctl.close()
-  }
-  assert.deepEqual(await plaintextCopies(base), [], 'compaction left a stage or a verification directory')
-})
-
-test('T17: materialize and compact warn when they write an encrypted vault as plaintext, and keep their exit codes; an unencrypted vault gets no warning', async () => {
+test('T17: materialize warns when it writes an encrypted vault as plaintext, and keeps its exit code; import of that face warns about nothing; an unencrypted vault gets no warning', async () => {
   const base = await tmpDir('enc-warn')
   const storage = join(base, 'vault')
   await initEncrypted(storage)
@@ -867,28 +760,12 @@ test('T17: materialize and compact warn when they write an encrypted vault as pl
   assert.equal(mat.stderr, plaintextLine(bundle))
   assert.match(await readFile(join(bundle, 'secret', 'plan.md'), 'utf8'), new RegExp(SECRET))
 
-  // compact, success: exit 0, the warning names the face.
-  const face = join(base, 'face')
-  const ok = await cli(['compact', storage, join(base, 'out'), '--face', face, '--encryption-key', NEW_KEY])
-  assert.equal(ok.code, 0, ok.stderr)
-  assert.equal(ok.stderr, plaintextLine(face))
-  assert.deepEqual(await plaintextCopies(base), [], 'a successful compaction left a stage or a verification directory')
+  // import reads that plaintext face and writes no plaintext: no warning.
+  const imp = await cli(['import', bundle, join(base, 'out'), '--metadata', join(storage, 'okf-vault.json'), '--encryption-key', NEW_KEY])
+  assert.equal(imp.code, 0, imp.stdout + imp.stderr)
+  assert.equal(imp.stderr, '')
 
-  // compact, failure after the face step: exit 1 (COMPACT_FIDELITY, a
-  // reserved .okf- name is not staged), and the warning still names the face.
-  const failStorage = join(base, 'vault-fail')
-  await initEncrypted(failStorage)
-  const fv = await Bundle.open(failStorage)
-  await fv.createConcept('notes/.okf-state', 'note')
-  await fv.close()
-  const failFace = join(base, 'face-fail')
-  const failed = await cli(['compact', failStorage, join(base, 'out-fail'), '--face', failFace, '--encryption-key', NEW_KEY])
-  assert.equal(failed.code, 1, failed.stdout + failed.stderr)
-  assert.match(failed.stderr, /COMPACT_FIDELITY/)
-  assert.ok(failed.stderr.startsWith(plaintextLine(failFace)), failed.stderr)
-  assert.deepEqual(await plaintextCopies(base), [], 'a failed compaction left a stage or a verification directory')
-
-  // An unencrypted vault: no warning from either command.
+  // An unencrypted vault: no warning.
   const plain = join(base, 'plain')
   const pv = await Bundle.init(plain)
   await seedSecret(pv)
@@ -896,119 +773,6 @@ test('T17: materialize and compact warn when they write an encrypted vault as pl
   const pmat = await cli(['materialize', plain, join(base, 'plain-bundle')])
   assert.equal(pmat.code, 0, pmat.stderr)
   assert.equal(pmat.stderr, '')
-  const pcom = await cli(['compact', plain, join(base, 'plain-out')])
-  assert.equal(pcom.code, 0, pcom.stderr)
-  assert.equal(pcom.stderr, '')
-})
-
-test('T17: the in-process compact reports the plaintext face as a warning, on success and on a failure after the face step', async () => {
-  const base = await tmpDir('enc-lib-warn')
-  const old = await Bundle.init(join(base, 'vault'), { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
-  await seedSecret(old)
-  const key = Buffer.from(NEW_KEY, 'hex')
-  const warning = (dir) => ({ kind: 'plaintext', path: dir, message: 'now holds the contents of an encrypted vault as plaintext' })
-
-  const res = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'face'), vaultDir: join(base, 'out'), encryptionKey: key })
-  assert.deepEqual(res.warnings, [warning(join(base, 'face'))])
-  await res.vault.close()
-  assert.deepEqual(await plaintextCopies(base), [], 'a successful compaction left a stage or a verification directory')
-
-  // A hand-authored note makes the face dirty. compact refuses it with
-  // COMPACT_DIRTY_TARGET after the face step, and the error carries the warning.
-  const dirty = join(base, 'face-dirty')
-  await mkdir(dirty, { recursive: true })
-  await writeFile(join(dirty, 'hand.md'), '---\ntype: note\n---\n\nby hand\n')
-  await assert.rejects(
-    () => compact(old, { initBundle: Bundle.init, toDir: dirty, vaultDir: join(base, 'out-dirty'), encryptionKey: key }),
-    (err) => {
-      assert.equal(err.code, 'COMPACT_DIRTY_TARGET', err.stack)
-      assert.deepEqual(err.warnings, [warning(dirty)])
-      return true
-    }
-  )
-  assert.deepEqual(await plaintextCopies(base), [], 'a failed compaction left a stage or a verification directory')
-  await old.close()
-
-  // An unencrypted vault: no plaintext warning.
-  const ctl = await Bundle.init(join(base, 'control'))
-  await seedSecret(ctl)
-  const ctlRes = await compact(ctl, { initBundle: Bundle.init, toDir: join(base, 'control-face'), vaultDir: join(base, 'control-out') })
-  assert.deepEqual(ctlRes.warnings, [])
-  await ctlRes.vault.close()
-  await ctl.close()
-})
-
-// ---------- G3-P5 F02: only a valid key, and an encrypted new vault ----------
-
-test('F02: the in-process compact refuses a key that is not 32 bytes by name, false, empty and zero included, before it writes anything', async () => {
-  // D-029 F02: the guard refused only undefined and null. false, '' and 0
-  // passed it, the store took each one as no key, and the new vault of an
-  // encrypted vault was unencrypted, with the plaintext in its raw blocks.
-  const base = await tmpDir('enc-badkey')
-  const old = await Bundle.init(join(base, 'vault'), { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
-  await seedSecret(old)
-  const plain = await Bundle.init(join(base, 'plain'))
-  await seedSecret(plain)
-  const before = { old: await old.snapshotHash(), plain: await plain.snapshotHash() }
-  const bad = [false, '', 0, NEW_KEY, Buffer.alloc(16, 1), Buffer.alloc(33, 1), [...Buffer.from(NEW_KEY, 'hex')]]
-  for (const [i, encryptionKey] of bad.entries()) {
-    // An encrypted predecessor, and an unencrypted one: a value that is not
-    // a key is never read as no key.
-    for (const [name, v] of [['old', old], ['plain', plain]]) {
-      await assert.rejects(
-        () => compact(v, { initBundle: Bundle.init, toDir: join(base, `face-${name}-${i}`), vaultDir: join(base, `out-${name}-${i}`), encryptionKey }),
-        (err) => {
-          assert.equal(err.code, 'COMPACT_ENCRYPTION_KEY_INVALID', `${name} ${JSON.stringify(encryptionKey)}: ${err.stack}`)
-          assert.ok(!err.message.includes(NEW_KEY), 'the message holds the key')
-          return true
-        }
-      )
-    }
-  }
-  assert.deepEqual(await entries(base), ['plain', 'vault'], 'a refusal created a face, a stage or an out-dir')
-  assert.deepEqual({ old: await old.snapshotHash(), plain: await plain.snapshotHash() }, before)
-  await old.close()
-  await plain.close()
-})
-
-test('F02: compact checks that the new vault is encrypted before the import and before it returns, and refuses a factory that drops the key', async () => {
-  // initBundle is injected. A factory that does not pass the key on gives
-  // an unencrypted new vault. compact reads the metadata of the new vault
-  // before the import writes any content to it, and again before success.
-  const base = await tmpDir('enc-meta')
-  const old = await Bundle.init(join(base, 'vault'), { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
-  await seedSecret(old)
-  const key = Buffer.from(NEW_KEY, 'hex')
-  /**
-   * A factory that drops the key. Its vault counts the concepts that the
-   * import creates. With `claim`, its metadata says encrypted until the
-   * import starts, so only the check before success can see the truth.
-   */
-  const dropKey = (seen, claim) => async (dir, { encryptionKey, ...opts }) => {
-    const v = await Bundle.init(dir, opts)
-    return new Proxy(v, {
-      get(target, prop, receiver) {
-        if (prop === 'createConcept') seen.created++
-        if (prop === 'metadata' && claim && seen.created === 0) return { ...target.metadata, encrypted: true }
-        return Reflect.get(target, prop, receiver)
-      }
-    })
-  }
-  for (const [name, claim, created] of [['before-import', false, 0], ['before-success', true, 1]]) {
-    const seen = { created: 0 }
-    await assert.rejects(
-      () => compact(old, { initBundle: dropKey(seen, claim), toDir: join(base, `face-${name}`), vaultDir: join(base, `out-${name}`), encryptionKey: key }),
-      (err) => {
-        assert.equal(err.code, 'COMPACT_SUCCESSOR_NOT_ENCRYPTED', `${name}: ${err.stack}`)
-        return true
-      }
-    )
-    assert.equal(seen.created, created, `${name}: the import created ${seen.created} concept(s)`)
-  }
-  // Each failure removed the new vault, its stage and its verification
-  // directory. The faces stay: they are the announced plaintext artifacts.
-  assert.deepEqual(await entries(base), ['face-before-import', 'face-before-success', 'vault'])
-  await old.close()
 })
 
 // ---------- G3-P5 F03: the plaintext warning comes before the plaintext write ----------
@@ -1042,11 +806,10 @@ async function secretIn(face) {
   return (await readFile(join(face, 'a.md'), 'utf8').catch(() => '')).includes(SECRET)
 }
 
-test('F03: the in-process materialize and compact announce the plaintext directory before the first write, and a failure partway carries the warning', async () => {
-  // D-029 F03: compact made its warning after materialize returned, so a
-  // materialize that wrote a.md and then failed threw no warning. materialize
-  // itself made none. Both now call onPlaintext, and await it, before the
-  // first write, and put the warning in the report and in a later error.
+test('F03: the in-process materialize announces the plaintext directory before the first write, and a failure partway carries the warning', async () => {
+  // D-029 F03: a materialize that wrote a.md and then failed threw no
+  // warning. materialize now calls onPlaintext, and awaits it, before the
+  // first write, and puts the warning in the report and in a later error.
   const base = await tmpDir('enc-announce')
   const storage = join(base, 'vault')
   await initEncryptedAZ(storage)
@@ -1067,21 +830,19 @@ test('F03: the in-process materialize and compact announce the plaintext directo
     assert.deepEqual(okRec.calls, [{ w: warning(ok), secretWritten: false }])
     assert.equal(await secretIn(ok), true)
 
-    // materialize and compact, a failure after a.md: the error carries the warning.
-    for (const name of ['materialize', 'compact']) {
-      const face = await faceWithDirAtZ(join(base, `partial-${name}`))
-      const rec = recorder(face)
-      const run = name === 'materialize'
-        ? () => materialize(v, face, { onPlaintext: rec.onPlaintext })
-        : () => compact(v, { initBundle: Bundle.init, toDir: face, vaultDir: join(base, 'partial-out'), encryptionKey: Buffer.from(NEW_KEY, 'hex'), onPlaintext: rec.onPlaintext })
-      await assert.rejects(run, (err) => {
-        assert.equal(err.code, 'EISDIR', `${name}: ${err.stack}`)
-        assert.deepEqual(err.warnings, [warning(face)], name)
+    // materialize, a failure after a.md: the error carries the warning.
+    const face = await faceWithDirAtZ(join(base, 'partial-materialize'))
+    const rec = recorder(face)
+    await assert.rejects(
+      () => materialize(v, face, { onPlaintext: rec.onPlaintext }),
+      (err) => {
+        assert.equal(err.code, 'EISDIR', err.stack)
+        assert.deepEqual(err.warnings, [warning(face)])
         return true
-      })
-      assert.deepEqual(rec.calls, [{ w: warning(face), secretWritten: false }], name)
-      assert.equal(await secretIn(face), true, `${name}: setup: a.md must hold the plaintext`)
-    }
+      }
+    )
+    assert.deepEqual(rec.calls, [{ w: warning(face), secretWritten: false }])
+    assert.equal(await secretIn(face), true, 'setup: a.md must hold the plaintext')
   } finally {
     await v.close()
   }
@@ -1095,16 +856,13 @@ test('F03: the in-process materialize and compact announce the plaintext directo
   await plain.close()
 })
 
-test('F03: auto-okf materialize and compact print the plaintext warning before the first plaintext write, so a failure partway or a crash finds it printed', async () => {
+test('F03: auto-okf materialize prints the plaintext warning before the first plaintext write, so a failure partway or a crash finds it printed', async () => {
   const base = await tmpDir('enc-announce-cli')
   const storage = join(base, 'vault')
   await initEncryptedAZ(storage)
 
   // A failure after a.md: stderr starts with the warning, then the error.
-  for (const [name, args] of [
-    ['materialize', (face) => ['materialize', storage, face]],
-    ['compact', (face) => ['compact', storage, join(base, 'partial-out'), '--face', face, '--encryption-key', NEW_KEY]]
-  ]) {
+  for (const [name, args] of [['materialize', (face) => ['materialize', storage, face]]]) {
     const face = await faceWithDirAtZ(join(base, `partial-${name}`))
     const r = await cli(args(face))
     assert.equal(r.code, 1, r.stdout + r.stderr)
@@ -1117,10 +875,7 @@ test('F03: auto-okf materialize and compact print the plaintext warning before t
   // A crash after a.md. z.md is a named pipe, so the read of z.md blocks
   // after a.md holds the plaintext. SIGKILL then stops the process: no
   // handler runs. The warning must be on stderr already.
-  for (const [name, args] of [
-    ['materialize', (face) => ['materialize', storage, face]],
-    ['compact', (face) => ['compact', storage, join(base, 'crash-out'), '--face', face, '--encryption-key', NEW_KEY]]
-  ]) {
+  for (const [name, args] of [['materialize', (face) => ['materialize', storage, face]]]) {
     const face = join(base, `crash-${name}`)
     await mkdir(face, { recursive: true })
     await new Promise((resolve, reject) => execFile('mkfifo', [join(face, 'z.md')], (err) => (err ? reject(err) : resolve())))
@@ -1143,42 +898,7 @@ test('F03: auto-okf materialize and compact print the plaintext warning before t
   }
 })
 
-test('T17, T18: compact refuses a stage directory that it did not create, keeps its contents and writes nothing (G15)', async () => {
-  // compact removes only the stage that it created (the tests above). A
-  // stage directory that existed before is not compact's to remove. compact
-  // creates its stage for this run only (T18), so it refuses a stage that
-  // exists, before it writes anything.
-  const old = await Bundle.init(await tmpDir('stage-own-vault'))
-  await seedSecret(old)
-  /** Compact `old` into `<base>/out` with a stage directory that already holds keep.txt. */
-  const attempt = async (name) => {
-    const base = await tmpDir(name)
-    await mkdir(join(base, 'out.compact-src'), { recursive: true })
-    await writeFile(join(base, 'out.compact-src', 'keep.txt'), 'kept\n')
-    let code = 'ok'
-    try {
-      const res = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'face'), vaultDir: join(base, 'out') })
-      await res.vault.close()
-    } catch (err) {
-      code = err.code
-    }
-    return {
-      code,
-      kept: await readFile(join(base, 'out.compact-src', 'keep.txt'), 'utf8').catch((e) => e.code),
-      entries: await entries(base),
-      stage: await entries(join(base, 'out.compact-src'))
-    }
-  }
-  const refused = { code: 'COMPACT_STAGE_EXISTS', kept: 'kept\n', entries: ['out.compact-src'], stage: ['keep.txt'] }
-  assert.deepEqual(await attempt('stage-own-ok'), refused)
-  // A concept at a reserved .okf- name fails the T13 check (COMPACT_FIDELITY).
-  // The refusal comes first.
-  await old.createConcept('notes/.okf-state', 'note')
-  assert.deepEqual(await attempt('stage-own-fail'), refused)
-  await old.close()
-})
-
-// ---------- T18: guard every compaction path ----------
+// ---------- tree hashes ----------
 
 /** A sha256 over every file under `root`, dot-files included: each path and its bytes. */
 async function treeHash(root) {
@@ -1194,164 +914,6 @@ async function treeHash(root) {
   }
   return h.digest('hex')
 }
-
-/** treeHash of each directory in `dirs` ({ name: dir }), by name. */
-async function bytesOf(dirs) {
-  const out = {}
-  for (const [name, dir] of Object.entries(dirs)) out[name] = await treeHash(dir)
-  return out
-}
-
-test('T18: auto-okf compact refuses a re-run into an existing generation, so a later edit stays (s1.mjs H, G16)', async () => {
-  // scratch-D/s1.mjs scenario H, ported to the plain compact path: a second
-  // compact into the out-dir that holds the new generation ingested the
-  // predecessor's state again, and reverted an edit made in the new
-  // generation, with exit 0.
-  const base = await tmpDir('guard-rerun')
-  const storage = join(base, 'vault')
-  const v = await Bundle.init(storage)
-  const { tag } = await v.createConcept('doc/one', 'note')
-  await v.setBody(tag, null, 'original text')
-  await v.setField(tag, 'status', 'draft')
-  await v.close()
-  const out = join(base, 'out')
-  const first = await cli(['compact', storage, out])
-  assert.equal(first.code, 0, first.stderr)
-
-  // A peer works in the new generation.
-  const nv = await Bundle.open(out)
-  await nv.setBody(tag, await nv.val(K.cBody(tag)), 'edited in the new generation')
-  await nv.setField(tag, 'status', 'final')
-  await nv.update()
-  await nv.close()
-
-  const dirs = { vault: storage, out, face: `${out}.face` }
-  const before = await bytesOf(dirs)
-  const again = await cli(['compact', storage, out])
-  assert.equal(again.code, 1, again.stdout + again.stderr)
-  assert.match(again.stderr, /^auto-okf compact: COMPACT_OUT_DIR_NOT_EMPTY: /m)
-  assert.deepEqual(await bytesOf(dirs), before, 'the refused re-run changed the predecessor, the new generation or its face')
-  assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
-
-  const after = await Bundle.open(out)
-  try {
-    assert.equal(await headText(after, tag), 'edited in the new generation')
-    assert.deepEqual((await after.val(K.cField(tag, 'status'))).values, ['final'])
-    let conflicts = 0
-    for await (const _ of after.scan(K.flagPrefix('conflict'))) conflicts++
-    assert.equal(conflicts, 0)
-  } finally {
-    await after.close()
-  }
-})
-
-test('T18: auto-okf compact --encryption-key refuses an out-dir that holds an unencrypted generation, which stays readable (s1.mjs K, G16)', async () => {
-  // scratch-D/s1.mjs scenario K, ported to the plain compact path: the
-  // operator forgot the key, and ran compact again with --encryption-key
-  // into the same out-dir. The key went to the existing store, and the
-  // store became unreadable.
-  const base = await tmpDir('guard-rekey')
-  const storage = join(base, 'vault')
-  const v = await Bundle.init(storage)
-  const { tag } = await v.createConcept('k/l', 'note')
-  await v.setBody(tag, null, 'secret-ish')
-  await v.close()
-  const out = join(base, 'out')
-  const first = await cli(['compact', storage, out])
-  assert.equal(first.code, 0, first.stderr)
-  assert.equal((await pinned(out)).encrypted, false)
-
-  const dirs = { vault: storage, out, face: `${out}.face` }
-  const before = await bytesOf(dirs)
-  const again = await cli(['compact', storage, out, '--encryption-key', NEW_KEY])
-  assert.equal(again.code, 1, again.stdout + again.stderr)
-  assert.match(again.stderr, /^auto-okf compact: COMPACT_OUT_DIR_NOT_EMPTY: /m)
-  assert.deepEqual(await bytesOf(dirs), before, 'the refused re-run changed the predecessor, the new generation or its face')
-  assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
-
-  assert.equal((await pinned(out)).encrypted, false)
-  const after = await Bundle.open(out)
-  try {
-    assert.equal(await headText(after, tag), 'secret-ish')
-  } finally {
-    await after.close()
-  }
-})
-
-test('T18: auto-okf compact checks its paths before it opens the predecessor, so a refusal leaves the predecessor bytes unchanged (G49, G16)', async () => {
-  // An open and a close of a vault rewrite files in its storage. So the
-  // CLI runs the path guard of compaction before it opens the predecessor.
-  const base = await tmpDir('guard-cli')
-  const storage = join(base, 'vault')
-  const v = await Bundle.init(storage)
-  await seedSecret(v)
-  await v.close()
-  await symlink(storage, join(base, 'alias'))
-  await mkdir(join(base, 'used'))
-  await writeFile(join(base, 'used', 'keep.txt'), 'keep\n')
-  await mkdir(join(base, 'staged.compact-src'))
-  const before = await treeHash(storage)
-
-  const cases = [
-    ['out-dir a symlink alias of the predecessor', [join(base, 'alias')], 'COMPACT_PATH_OVERLAP'],
-    ['face equal to the predecessor', [join(base, 'out'), '--face', storage], 'COMPACT_PATH_OVERLAP'],
-    ['out-dir in the predecessor', [join(storage, 'next')], 'COMPACT_PATH_OVERLAP'],
-    ['a non-empty out-dir', [join(base, 'used')], 'COMPACT_OUT_DIR_NOT_EMPTY'],
-    ['a stage that exists', [join(base, 'staged')], 'COMPACT_STAGE_EXISTS']
-  ]
-  const got = {}
-  for (const [name, args] of cases) {
-    const r = await cli(['compact', storage, ...args])
-    const code = /^auto-okf compact: (COMPACT_[A-Z_]+): /m.exec(r.stderr)
-    got[name] = { exit: r.code, code: code && code[1], predecessorBytes: (await treeHash(storage)) === before }
-  }
-  assert.deepEqual(got, Object.fromEntries(cases.map(([name, , code]) => [name, { exit: 1, code, predecessorBytes: true }])))
-  assert.deepEqual(await entries(base), ['alias', 'staged.compact-src', 'used', 'vault'])
-})
-
-test('T18: auto-okf compact normalizes a trailing slash on each path argument, and refuses the nested layout that the slash made (s1.mjs I, G19)', async () => {
-  // scratch-D/s1.mjs scenario I, ported to the plain compact path: an
-  // out-dir given as `<out-dir>/` put the face at `<out-dir>/.face` and the
-  // stage at `<out-dir>/.compact-src`, in the new vault, whose Corestore
-  // clears its directory. The generation came out empty. A slash names the
-  // same directory, so the CLI normalizes it.
-  const base = await tmpDir('guard-slash')
-  const storage = join(base, 'vault')
-  const v = await Bundle.init(storage)
-  const id = await seedSecret(v)
-  await v.close()
-
-  // <dir>/ and <out-dir>/: the face is <out-dir>.face, beside the new vault.
-  const out = join(base, 'out')
-  const r = await cli(['compact', `${storage}/`, `${out}/`])
-  assert.equal(r.code, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, new RegExp(`^compacted ${storage} -> ${out} \\(generation `, 'm'))
-  assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
-  assert.ok(!(await entries(out)).some((e) => e === '.face' || e === '.compact-src'), 'the face or the stage is in the new vault')
-  // --face <dir>/ names the same face as --face <dir>.
-  const face = join(base, 'face')
-  const f = await cli(['compact', storage, join(base, 'out2'), '--face', `${face}/`])
-  assert.equal(f.code, 0, f.stdout + f.stderr)
-  assert.match(f.stdout, new RegExp(`^hydrated face: +${face}$`, 'm'))
-  assert.deepEqual(await entries(base), ['face', 'out', 'out.face', 'out2', 'vault'])
-  for (const dir of [out, join(base, 'out2')]) {
-    const nu = await Bundle.open(dir)
-    try {
-      assert.equal(await headText(nu, id), SECRET, `${dir} lost the concept`)
-    } finally {
-      await nu.close()
-    }
-  }
-
-  // The nested layout that the slash made, given by hand, is refused by
-  // name, and the storage does not change.
-  const before = await bytesOf({ vault: storage, out, face })
-  const nested = await cli(['compact', storage, join(base, 'out3'), '--face', join(base, 'out3', '.face')])
-  assert.equal(nested.code, 1, nested.stdout + nested.stderr)
-  assert.match(nested.stderr, /^auto-okf compact: COMPACT_PATH_OVERLAP: the out-dir \S+ contains the face /m)
-  assert.deepEqual(await bytesOf({ vault: storage, out, face }), before)
-  assert.deepEqual(await entries(base), ['face', 'out', 'out.face', 'out2', 'vault'])
-})
 
 test('undelete restores a tombstoned concept', async () => {
   const base = await tmpDir('undelete')
@@ -1560,6 +1122,8 @@ test('T24: auto-okf import refuses by name before it writes: a pinned or non-emp
   const copy = `shared/note.conflict-${createHash('sha256').update(y).digest('hex').slice(0, 8)}.md`
   const cases = [
     ['pinned', [face, join(base, 'pinned')], /^auto-okf import: IMPORT_DIR_NOT_EMPTY: \S+pinned is already a vault \(okf-vault\.json exists\)/m],
+    // s1.mjs K: a key never goes to an existing store (G16).
+    ['pinned, with a key', [face, join(base, 'pinned'), '--encryption-key', NEW_KEY], /^auto-okf import: IMPORT_DIR_NOT_EMPTY: \S+pinned is already a vault/m],
     ['used', [face, join(base, 'used')], /^auto-okf import: IMPORT_DIR_NOT_EMPTY: \S+used is not empty \(keep\.txt\)/m],
     ['vault-ld', [face, join(base, 'sibling')], /^error: \S+sibling is a vault-ld vault \(vault-ld\.json present\); use autovault-ld, not auto-okf$/m],
     ['collision', [face, join(base, 'out')], new RegExp(`^auto-okf import: IMPORT_CONFLICT_COPY: the face \\S+ holds a conflicted copy.*: ${copy.replace(/\./g, '\\.')}$`, 'm')],

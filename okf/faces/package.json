@@ -9,7 +9,6 @@
     ".": "./index.js",
     "./materialize": "./lib/materialize.js",
     "./ingest": "./lib/ingest.js",
-    "./compact": "./lib/compact.js",
     "./import": "./lib/import.js",
     "./wanted": "./lib/wanted.js",
     "./status": "./lib/status.js",

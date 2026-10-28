@@ -1,7 +1,7 @@
 {
   "name": "@auto-okf/cli",
   "version": "0.0.0",
-  "description": "auto-okf command line: init/join vaults, writer governance, materialize, ingest/watch human edits, wanted demand index, flag queue, conflict resolve/undelete, and epoch-cycle compaction — a thin veneer over @auto-okf/{core,store,faces}",
+  "description": "auto-okf command line: init/join vaults, writer governance, materialize, ingest/watch human edits, wanted demand index, flag queue, conflict resolve/undelete, and the import of a face into a new vault (a generation) — a thin veneer over @auto-okf/{core,store,faces}",
   "license": "Apache-2.0",
   "author": "Charlie Robbins <npm@charlie.dev>",
   "type": "module",

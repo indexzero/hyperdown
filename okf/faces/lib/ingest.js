@@ -6,7 +6,7 @@
 //
 // Identity is the concept's `_id` (§6), not the filename: a known `_id` at a
 // new path is a rename (SetPath); a missing `_id` mints; an unknown `_id` is
-// ADOPTED (the generation-cycle contract, §10). `_id`/`_rev` are stripped from
+// ADOPTED (the generation contract, §10: importNote below). `_id`/`_rev` are stripped from
 // the frontmatter diff (identity + derived output, never fields, §5).
 //
 // Link handling is APPLY's job: a SetBody triggers core's normative link
@@ -39,7 +39,6 @@ import {
   saveManifest,
   sha256,
   isIgnoredPath,
-  isReservedDotFile,
   isReservedFile,
   statOrNull,
   walkNotes,
@@ -226,18 +225,12 @@ export class IngestWatcher extends EventEmitter {
   /**
    * Ingest one concept file (bundle-relative path). Returns the op
    * descriptors emitted (possibly empty). Serialized against materialize by
-   * the per-path lock.
-   *
-   * `opts.compaction` is compaction's explicit import of its stage (§10).
-   * The stage holds only the notes that materialize emitted, so a dot
-   * segment there is part of a concept path (core accepts `.drafts/idea`).
-   * The import refuses only a reserved `.okf-*` name. Without the option,
-   * every dot path is ignored, as the watcher and scan() always do.
+   * the per-path lock. Every dot path is ignored, as the watcher and scan()
+   * always do. The import of a face (importNote) takes dot paths.
    */
-  async ingestFile(rel, { compaction = false } = {}) {
+  async ingestFile(rel) {
     rel = nfc(rel.split(sep).join('/'))
-    const ignored = compaction ? isReservedDotFile(rel) : isIgnoredPath(rel)
-    if (ignored || !rel.endsWith('.md')) return []
+    if (isIgnoredPath(rel) || !rel.endsWith('.md')) return []
     if (isReservedFile(rel)) {
       // §9: index.md/log.md are reserved regenerated faces — edits ignored.
       this.emit('skip', { path: rel, reason: 'reserved' })
@@ -266,8 +259,9 @@ export class IngestWatcher extends EventEmitter {
       // maxOpBytes limit is refused HERE, by name, before any op for this
       // file is appended — apply's oversize-op reject stays as defense in
       // depth. The file stays pending; sibling files are unaffected. The
-      // limit is the vault's pinned maxOpBytes, the one that apply checks,
-      // for the ordinary ingest and for the compaction import alike (G26).
+      // limit is the vault's pinned maxOpBytes, the one that apply checks
+      // (G26). The import of a face checks the encoded op instead
+      // (_preflightImport).
       const limit = this.vault.metadata.limits.maxOpBytes
       const bodyBytes = Buffer.byteLength(nfc(body), 'utf8')
       if (bodyBytes > limit) {

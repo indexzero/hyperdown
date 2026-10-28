@@ -1,7 +1,9 @@
-// I11 Roundtrip (okf SPEC §10 generation cycling, §11 I11, §14 acceptance):
-// materialize -> ingest into a FRESH vault (a generation cycle) preserves every
-// live concept's _id, type, fields, tags, path and head body byte-for-byte,
-// while HISTORY (old revisions, per-op attribution) is shed by design.
+// I11 Roundtrip (okf SPEC §10 generations, §11 I11, §14 acceptance):
+// materialize, then import the face into a FRESH vault (a generation),
+// preserves every live concept's _id, type, fields, tags, path and head body
+// byte-for-byte, while HISTORY (old revisions, per-op attribution) is shed
+// by design. T24 (decision 10) made a generation materialize, then import:
+// these tests port the fidelity criteria of T13 to T18 to importFace.
 //
 // These run on REAL @auto-okf/store vaults (autobee + corestore on disk, no
 // stubs). Scratch lives under sslop/033/tmp/, unique per run; handles are
@@ -9,47 +11,14 @@
 // (or /tmp) is removed by the test.
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
-import { execFile } from 'node:child_process'
 import assert from 'node:assert/strict'
 import { mkdir, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { isDeepStrictEqual } from 'node:util'
-import hypercoreCrypto from 'hypercore-crypto'
 import { Bundle } from '../store/index.js'
-import { materialize, compact, importFace, createIngestWatcher, readView, readLog, parseNote, renderNote } from '../faces/index.js'
-import { compareTrees, compareNotes } from '../faces/lib/verify.js'
+import { materialize, importFace, createIngestWatcher, readView, readLog, parseNote, renderNote } from '../faces/index.js'
+import { compareNotes } from '../faces/lib/verify.js'
 import { keyspace as K } from '../core/index.js'
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-/** Direct replication stream pair between two vaults; returns unpair(). */
-function pair(a, b) {
-  const s1 = a.replicate(true)
-  const s2 = b.replicate(false)
-  s1.on('error', () => {})
-  s2.on('error', () => {})
-  s1.pipe(s2).pipe(s1)
-  return () => {
-    s1.destroy()
-    s2.destroy()
-  }
-}
-
-/** Wait until every vault reports the same non-null view hash. */
-async function converged(vaults, ms = 30000) {
-  const t0 = Date.now()
-  for (;;) {
-    const hashes = []
-    for (const v of vaults) {
-      await v.update()
-      hashes.push(await v.snapshotHash())
-    }
-    if (hashes.every((h) => h != null && h === hashes[0])) return true
-    if (Date.now() - t0 >= ms) return false
-    await sleep(50)
-  }
-}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const RUN = `run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -191,392 +160,8 @@ async function buildNonTrivial(v) {
   return { a, b, c, d }
 }
 
-test('I11: a generation cycle round-trips a non-trivial bundle (state + identity fidelity)', async () => {
-  const old = await Bundle.init(await tmpDir('old-vault'))
-  const ids = await buildNonTrivial(old)
-  await old.update()
-
-  // Guardrail precondition: the resolved conflict drained flag/conflict, and
-  // there is no path collision — so compact runs WITHOUT force.
-  let openConflicts = 0
-  for await (const _ of old.scan(K.flagPrefix('conflict'))) openConflicts++
-  assert.equal(openConflicts, 0, 'setup left an open flag/conflict; conflict was not drained')
-
-  const oldDir = await tmpDir('old-bundle')
-  const rOld = await materialize(old, oldDir)
-  assert.equal(rOld.ok, true)
-  const oldBundle = await readBundle(oldDir)
-
-  // --- the generation cycle ---
-  const res = await compact(old, {
-    toDir: await tmpDir('compact-face'),
-    vaultDir: await tmpDir('new-vault'),
-    initBundle: Bundle.init
-  })
-  const nu = res.vault
-
-  // §10 generation chain metadata is recorded in the new vault.
-  assert.equal(res.predecessorKey, old.keyHex)
-  assert.equal(nu.metadata.predecessorKey, old.keyHex)
-  assert.equal(res.predecessorPath, old.dir, 'compact must return the predecessor path (never deletes it)')
-
-  // §10/N2 generation key-freshness: fresh generation namespace + fresh writer keypair,
-  // which is exactly why adoption of the predecessor's mint-shaped ids does
-  // not deadlock on mint-collision-risk.
-  assert.notEqual(nu.generation, 'root', 'new vault must have a fresh (non-root) generation namespace')
-  assert.notEqual(
-    Buffer.from(nu.localKey).toString('hex'),
-    Buffer.from(old.localKey).toString('hex'),
-    'new vault must use a fresh writer keypair (a keypair MUST NOT recur across generations)'
-  )
-
-  // §10 generation log entry recorded in the new vault's log/.
-  const logEntry = JSON.parse(await readFile(res.logPath, 'utf8'))
-  assert.equal(logEntry.kind, 'generation')
-  assert.equal(logEntry.predecessorKey, old.keyHex)
-  assert.equal(logEntry.generation, nu.generation)
-
-  // --- I11 byte fidelity: new bundle == old bundle (modulo _rev + log.md) ---
-  const newDir = await tmpDir('new-bundle')
-  const rNew = await materialize(nu, newDir)
-  assert.equal(rNew.ok, true)
-  const newBundle = await readBundle(newDir)
-  assert.equal(
-    bundleDiff(normalizeBundle(newBundle), normalizeBundle(oldBundle)),
-    null,
-    'new materialized bundle is not byte-identical to the old (modulo _rev + log.md)'
-  )
-
-  // --- explicit identity + state fidelity per live concept ---
-  const oldLive = await liveConcepts(old)
-  const newLive = await liveConcepts(nu)
-  assert.deepEqual([...newLive.keys()].sort(), [...oldLive.keys()].sort(), 'live _id set changed across the cycle')
-  assert.ok(!newLive.has(ids.d), 'tombstoned concept survived the cycle (should be suppressed)')
-  for (const [id, oc] of oldLive) {
-    const nc = newLive.get(id)
-    assert.equal(nc.type, oc.type, `type changed for ${id}`)
-    assert.equal(nc.path, oc.path, `path changed for ${id}`)
-    assert.equal(nc.headText, oc.headText, `head body changed for ${id}`)
-  }
-  // the renamed concept B lives at its NEW path, and only there.
-  assert.equal(newLive.get(ids.b).path, 'tables/orders-v2')
-
-  // --- history is SHED (assert positively) ---
-  // 1. Old revisions are gone: A had 2 revisions (an edit), C had 3 (two
-  //    siblings + r1); each survives as exactly ONE base:null revision.
-  assert.equal(await revCount(old, ids.a), 2, 'setup: A should have 2 revisions')
-  assert.equal(await revCount(old, ids.c), 3, 'setup: C should have 3 revisions')
-  assert.equal(await revCount(nu, ids.a), 1, 'A history not shed: new vault should hold one revision')
-  assert.equal(await revCount(nu, ids.c), 1, 'C history not shed: new vault should hold one revision')
-
-  // 2. Per-op attribution is gone: the old vault narrates renames + conflict
-  //    resolutions + deletions; the new vault narrates ONLY creations.
-  const oldKinds = await logKinds(old)
-  assert.ok(oldKinds.has('rename') && oldKinds.has('resolve') && oldKinds.has('delete'), 'setup: old log missing history events')
-  const newKinds = await logKinds(nu)
-  assert.deepEqual([...newKinds].sort(), ['create'], `new vault log should narrate only creations, saw: ${[...newKinds]}`)
-
-  await old.close()
-  await nu.close()
-})
-
-test('I11 guardrail: compact refuses an undrained conflict without force, proceeds with it', async () => {
-  const v = await Bundle.init(await tmpDir('conf-vault'))
-  const { tag: id } = await v.createConcept('c', 'Note')
-  await v.setBody(id, null, 'r1')
-  await v.update()
-  const r1 = await v.val(K.cBody(id))
-  await v.setBody(id, r1, 'r2a')
-  await v.update()
-  await v.setBody(id, r1, 'r2b') // sibling -> OPEN flag/conflict (not resolved)
-  await v.update()
-  let open = 0
-  for await (const _ of v.scan(K.flagPrefix('conflict'))) open++
-  assert.equal(open, 1, 'setup should leave one open conflict')
-
-  // Without force: REFUSE (SPEC §10 guardrail).
-  const rejFace = await tmpDir('rej-face')
-  const rejVault = await tmpDir('rej-vault')
-  await assert.rejects(
-    () => compact(v, { toDir: rejFace, vaultDir: join(rejVault, 'x'), initBundle: Bundle.init }),
-    (err) => err.code === 'COMPACT_REFUSED',
-    'compact must refuse an open conflict without force'
-  )
-
-  // With force: proceeds — the head wins, the losing sibling is shed, and the
-  // new vault carries no conflict.
-  const res = await compact(v, {
-    toDir: await tmpDir('force-face'),
-    vaultDir: await tmpDir('force-vault'),
-    initBundle: Bundle.init,
-    force: true
-  })
-  const nu = res.vault
-  await nu.update()
-  let newOpen = 0
-  for await (const _ of nu.scan(K.flagPrefix('conflict'))) newOpen++
-  assert.equal(newOpen, 0, 'forced compaction should carry no body conflict into the new vault')
-  assert.equal(await revCount(nu, id), 1, 'forced compaction should shed the losing sibling')
-
-  await v.close()
-  await nu.close()
-})
-
-test('I11: a second generation cycle (generation chain of length 2) still round-trips', async () => {
-  const gen = await Bundle.init(await tmpDir('gen-vault'))
-  await buildNonTrivial(gen)
-  await gen.update()
-
-  // cycle 1: root -> generation1
-  const dir1 = await tmpDir('e1-bundle')
-  const res1 = await compact(gen, { toDir: await tmpDir('e1-face'), vaultDir: await tmpDir('e1-vault'), initBundle: Bundle.init })
-  const e1 = res1.vault
-  const b1 = await readBundle((await materialize(e1, dir1), dir1))
-
-  // cycle 2: generation1 -> generation2
-  const dir2 = await tmpDir('e2-bundle')
-  const res2 = await compact(e1, { toDir: await tmpDir('e2-face'), vaultDir: await tmpDir('e2-vault'), initBundle: Bundle.init })
-  const e2 = res2.vault
-  const b2 = await readBundle((await materialize(e2, dir2), dir2))
-
-  // generation chain of length 2: root <- generation1 <- generation2.
-  assert.equal(e1.metadata.predecessorKey, gen.keyHex)
-  assert.equal(e2.metadata.predecessorKey, e1.keyHex)
-  assert.notEqual(e2.generation, e1.generation)
-  assert.notEqual(e2.generation, 'root')
-
-  // The second cycle round-trips: once history is shed every body is a
-  // base:null revision, so a further cycle preserves even _rev.
-  assert.equal(bundleDiff(normalizeBundle(b2), normalizeBundle(b1)), null, 'second generation cycle did not round-trip')
-
-  // Identity still preserved end-to-end (root live ids == generation2 live ids).
-  const genLive = await liveConcepts(gen)
-  const e2Live = await liveConcepts(e2)
-  assert.deepEqual([...e2Live.keys()].sort(), [...genLive.keys()].sort(), 'identity lost across two generation cycles')
-
-  await gen.close()
-  await e1.close()
-  await e2.close()
-})
-
 /** The §7 conflicted-copy file name of `id` at `shared/note`: the first 8 hex of SHA-256(_id). */
 const copyOf = (id) => `shared/note.conflict-${createHash('sha256').update(id).digest('hex').slice(0, 8)}.md`
-
-test('I11: --force carries a path-collision conflict copy across the generation, and each _id keeps its file (G28)', async () => {
-  const a = await Bundle.init(await tmpDir('cc-a'))
-  const b = await Bundle.join(await tmpDir('cc-b'), a.key)
-  let unpair = pair(a, b)
-  assert.ok(await converged([a, b]), 'initial converge failed')
-  await a.writers.add(b.localKey)
-  assert.ok(await converged([a, b]), 'writer-add converge failed')
-
-  // Partition, then both writers claim the SAME path -> a path collision.
-  unpair()
-  const { tag: idA } = await a.createConcept('shared/note', 'Note')
-  await a.setBody(idA, null, 'A body')
-  const { tag: idB } = await b.createConcept('shared/note', 'Note')
-  await b.setBody(idB, null, 'B body')
-  unpair = pair(a, b)
-  assert.ok(await converged([a, b]), 'post-partition converge failed')
-
-  // A live pathcollision exists, so compact MUST refuse without force...
-  const ccRejFace = await tmpDir('cc-rej-face')
-  const ccRejVault = await tmpDir('cc-rej-vault')
-  await assert.rejects(
-    () => compact(a, { toDir: ccRejFace, vaultDir: join(ccRejVault, 'x'), initBundle: Bundle.init }),
-    (err) => err.code === 'COMPACT_REFUSED'
-  )
-
-  // codex-D.out #8: the earliest claim holds a path (§7), and the name of
-  // the conflicted copy `shared/note.conflict-<h8>.md` sorts before
-  // `shared/note.md`. The predecessor's owner of `shared/note` must keep it
-  // in the new vault, and the other concept must keep its conflict path.
-  const owner = await a.val(K.path('shared/note'))
-  assert.ok(owner === idA || owner === idB, 'setup: one of the two concepts must hold shared/note')
-  const copy = owner === idA ? idB : idA
-  const copyRel = copyOf(copy)
-
-  // ...and with force enumerates the carried-across conflict copy old -> new.
-  const res = await compact(a, {
-    toDir: await tmpDir('cc-face'),
-    vaultDir: await tmpDir('cc-vault'),
-    initBundle: Bundle.init,
-    force: true
-  })
-  const nu = res.vault
-  // The T13 check passed: compact throws COMPACT_FIDELITY on a difference.
-  assert.equal(res.ok, true)
-  assert.deepEqual(res.counts, { walked: 2, staged: 2, ingested: 2 })
-  assert.deepEqual(res.warnings, [])
-  assert.equal(res.conflictCopies.length, 1, 'exactly one conflicted copy should be enumerated')
-  const cc = res.conflictCopies[0]
-  assert.match(cc.from, /^shared\/note\.conflict-[0-9a-f]{8,}\.md$/)
-  assert.equal(cc.to, cc.from, 'identity + path preserved => conflict copy re-manifests at the same path')
-
-  // The collision re-manifests in the new vault: one holder + one conflict copy.
-  const newDir = await tmpDir('cc-new-bundle')
-  await materialize(nu, newDir)
-  const bundle = await readBundle(newDir)
-  assert.ok(bundle.has('shared/note.md'), 'winner missing in new vault')
-  assert.ok(
-    [...bundle.keys()].some((k) => /shared\/note\.conflict-[0-9a-f]{8,}\.md$/.test(k)),
-    'conflict copy did not re-manifest in the new vault'
-  )
-
-  // Each _id keeps its file name: the same _id at each name in the face of
-  // the predecessor and in the new vault.
-  const face = await readBundle(res.bundleDir)
-  const idAt = (files, rel) => parseNote(files.get(rel)).fm._id
-  for (const files of [face, bundle]) {
-    assert.equal(idAt(files, 'shared/note.md'), owner, 'the owner of shared/note lost its file name')
-    assert.equal(idAt(files, copyRel), copy, 'the conflicted copy lost its file name')
-  }
-  assert.equal(await nu.val(K.path('shared/note')), owner, 'the owner of shared/note lost the path')
-
-  // The generation log's carry-across mapping matches the imported identities.
-  const logEntry = JSON.parse(await readFile(res.logPath, 'utf8'))
-  assert.deepEqual(logEntry.conflictCopies, [{ from: copyRel, to: copyRel, id: copy }])
-  assert.deepEqual(res.conflictCopies, logEntry.conflictCopies)
-  for (const { to, id } of logEntry.conflictCopies) assert.equal(idAt(bundle, to), id)
-
-  unpair()
-  await a.close()
-  await b.close()
-  await nu.close()
-})
-
-test("T16: two conflicted copies of one exact path keep the predecessor's holder of that path (G28)", async () => {
-  // X claims `A`, then Y and Z claim `a`. The casefold group winner is X
-  // (§7), so Y and Z both materialize as conflicted copies, and neither
-  // file is at `a.md`. Y claimed `a` before Z, so Y holds the exact path
-  // `a` (path/a), where links to `/a.md` resolve. The ids make the copy
-  // name of Z sort before the copy name of Y. So an import in byte order
-  // would give `a` to Z. The face cannot show that, so the T13 check
-  // passes either way.
-  const h8 = (id) => createHash('sha256').update(id).digest('hex').slice(0, 8)
-  const ids = Array.from({ length: 256 }, (_, i) => `ab${i.toString(16).padStart(2, '0')}`)
-  const y = ids.find((id) => ids.some((other) => h8(other) < h8(id)))
-  const z = ids.find((id) => h8(id) < h8(y))
-  const old = await Bundle.init(await tmpDir('cf-vault'))
-  const { tag: x } = await old.createConcept('A', 'Note')
-  await old.createConcept('a', 'Note', { id: y })
-  await old.createConcept('a', 'Note', { id: z })
-  await old.update()
-  assert.equal(await old.val(K.path('A')), x)
-  assert.equal(await old.val(K.path('a')), y, 'setup: Y must hold the exact path a')
-  const flagged = []
-  for await (const { key } of old.scan(K.flagPrefix('pathcollision'))) flagged.push(key)
-  assert.deepEqual(flagged, [K.flag('pathcollision', 'a', y), K.flag('pathcollision', 'a', z)].sort())
-
-  const base = await tmpDir('cf')
-  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init, force: true })
-  assert.equal(res.ok, true)
-  assert.deepEqual(res.counts, { walked: 3, staged: 3, ingested: 3 })
-  assert.equal(await res.vault.val(K.path('A')), x)
-  assert.equal(await res.vault.val(K.path('a')), y, 'the exact path a changed its holder')
-  await old.close()
-  await res.vault.close()
-})
-
-test('T16: the carry-across mapping names where the new vault holds each imported copy, also when the T13 check fails (G28)', async () => {
-  // The mapping comes from the import, not from the stage. A hand edit in
-  // the face takes the frontmatter out of the owner's note, so the stage
-  // drops that note (the edit makes the face dirty, so only --force reaches
-  // the stage). The copy then claims shared/note in the new vault, and the
-  // new vault holds it at shared/note.md, not at its conflict path. The T13
-  // check fails, and the error carries the mapping that the import made.
-  const old = await Bundle.init(await tmpDir('map-vault'))
-  const { tag: x } = await old.createConcept('shared/note', 'Note')
-  await old.setBody(x, null, 'X body')
-  const { tag: y } = await old.createConcept('shared/note', 'Note')
-  await old.setBody(y, null, 'Y body')
-  await old.update()
-  assert.equal(await old.val(K.path('shared/note')), x, 'setup: X must hold shared/note')
-  const base = await tmpDir('map')
-  assert.equal((await materialize(old, join(base, 'face'))).ok, true)
-  await writeFile(join(base, 'face', 'shared', 'note.md'), 'no frontmatter\n')
-
-  const err = await expectFidelityFailure(old, base, { force: true })
-  assert.ok(err.warnings.some((w) => w.kind === 'no-frontmatter' && w.path === 'shared/note.md'), JSON.stringify(err.warnings))
-  assert.deepEqual(err.conflictCopies, [{ from: copyOf(y), to: 'shared/note.md', id: y }])
-  await old.close()
-})
-
-test('T16: compact refuses every supplied keyPair by name, before it creates or writes anything (G52)', async () => {
-  // §10 step 3: the fresh vault takes the writer key pair that the store
-  // derives under the generation namespace. A supplied key pair bypasses
-  // that namespace (codex-D.out #10). With the predecessor's own pair, the
-  // new vault even gets the predecessor's vault key. So compact takes no
-  // keyPair: it refuses the predecessor's pair and a fresh random pair alike.
-  const kpOld = hypercoreCrypto.keyPair()
-  const old = await Bundle.init(await tmpDir('key-vault'), { keyPair: kpOld })
-  const { tag } = await old.createConcept('notes/a', 'Note')
-  await old.setBody(tag, null, 'A body')
-
-  /** Compact `old` with `keyPair` into a directory that already holds a face, a stage and an out-dir. */
-  const attempt = async (keyPair, name) => {
-    const base = await tmpDir(`key-${name}`)
-    const keep = new Map([['face/keep.txt', 'face\n'], ['out.compact-src/keep.txt', 'stage\n'], ['out/keep.txt', 'out\n']])
-    await writeTree(base, keep)
-    const files = await listFiles(base)
-    const before = await predecessorState(old)
-    let code = 'ok'
-    try {
-      const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init, keyPair })
-      await res.vault.close()
-    } catch (err) {
-      code = err.code
-    }
-    const bytes = await Promise.all([...keep].map(([rel]) => readFile(join(base, rel), 'utf8').catch(() => null)))
-    return {
-      code,
-      filesUnchanged: isDeepStrictEqual(await listFiles(base), files),
-      bytesUnchanged: isDeepStrictEqual(bytes, [...keep.values()]),
-      predecessorUnchanged: isDeepStrictEqual(await predecessorState(old), before)
-    }
-  }
-  const refused = { code: 'COMPACT_KEYPAIR_REFUSED', filesUnchanged: true, bytesUnchanged: true, predecessorUnchanged: true }
-  assert.deepEqual(
-    { predecessor: await attempt(kpOld, 'predecessor'), fresh: await attempt(hypercoreCrypto.keyPair(), 'fresh') },
-    { predecessor: refused, fresh: refused }
-  )
-
-  // Without keyPair, the store derives a writer key pair that is not the predecessor's.
-  const base = await tmpDir('key-none')
-  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
-  assert.equal(res.ok, true)
-  assert.notEqual(Buffer.from(res.vault.localKey).toString('hex'), Buffer.from(old.localKey).toString('hex'))
-  assert.notEqual(res.vault.keyHex, old.keyHex)
-  await res.vault.close()
-  await old.close()
-})
-
-test('I11: the face that compact writes holds only what materialize writes (§10)', async () => {
-  const old = await Bundle.init(await tmpDir('face-vault'))
-  await buildNonTrivial(old)
-  await old.update()
-
-  const plainDir = await tmpDir('face-plain')
-  assert.equal((await materialize(old, plainDir)).ok, true)
-
-  const faceDir = await tmpDir('face-compact')
-  const res = await compact(old, {
-    toDir: faceDir,
-    vaultDir: await tmpDir('face-new-vault'),
-    initBundle: Bundle.init
-  })
-
-  assert.deepEqual(
-    await listFiles(faceDir),
-    await listFiles(plainDir),
-    'compact left a file in the face that materialize does not write'
-  )
-
-  await old.close()
-  await res.vault.close()
-})
-
-// ---------- T13: compaction checks its own output ----------
 
 /** Write `files` (Map<rel, string>) under `root`, creating directories. */
 async function writeTree(root, files) {
@@ -586,248 +171,40 @@ async function writeTree(root, files) {
   }
 }
 
-test('T13: compareTrees reports every difference by path, without _rev lines and log.md (§14)', async () => {
-  const note = (rev, body) => `---\n_id: 0123abcd\n_rev: ${rev}\ntype: note\n---\n\n${body}\n`
-  const face = await tmpDir('cmp-face')
-  const nu = await tmpDir('cmp-new')
-  await writeTree(
-    face,
-    new Map([
-      ['a.md', note('1'.repeat(64), 'same body')], // equal modulo _rev
-      ['log.md', '# Update Log\n\nold history\n'], // excluded (§14)
-      ['.drafts/idea.md', note('2'.repeat(64), 'dot path')], // only in the face
-      ['index.md', '# Contents\n\n* [a](a.md)\n'], // differs
-      ['body.md', '---\ntype: note\n---\n\n_rev: one\n'], // a body line is never stripped
-      ['.okf-manifest.json', '{"files":{}}\n'] // not a bundle note
-    ])
-  )
-  await writeTree(
-    nu,
-    new Map([
-      ['a.md', note('3'.repeat(64), 'same body')],
-      ['log.md', '# Update Log\n'],
-      ['index.md', '# Contents\n'],
-      ['body.md', '---\ntype: note\n---\n\n_rev: two\n'],
-      ['extra.md', note('4'.repeat(64), 'only in the new tree')], // only in the new tree
-      ['.okf-manifest.json', '{"files":{"a.md":"x"}}\n']
-    ])
-  )
-  assert.deepEqual(await compareTrees(face, nu), [
-    { path: '.drafts/idea.md', kind: 'missing' },
-    { path: 'body.md', kind: 'differs' },
-    { path: 'extra.md', kind: 'extra' },
-    { path: 'index.md', kind: 'differs' }
-  ])
-  assert.deepEqual(await compareTrees(face, face), [], 'a tree must equal itself')
-})
-
-/** The entries of a directory, sorted: what a compaction leaves next to its out-dir. */
+/** The entries of a directory, sorted. */
 async function entries(dir) {
   return (await readdir(dir)).sort()
 }
 
-/** The predecessor's state: its full-view hash and its checkpoint. */
-async function predecessorState(v) {
+/** A vault's state: its full-view hash. */
+async function vaultState(v) {
   await v.update()
-  return { hash: await v.snapshotHash(), checkpoint: await v.checkpoint() }
+  return v.snapshotHash()
 }
 
-/**
- * Compact `old` into `<base>/out`, with the face at `<base>/face`, and expect
- * COMPACT_FIDELITY. Then check what the failure leaves: the entries of `base`
- * are `leaves` (so no verification directory and no new vault remain), and
- * the predecessor is unchanged. Returns the error.
- */
-async function expectFidelityFailure(old, base, { leaves = ['face'], ...opts } = {}) {
-  const before = await predecessorState(old)
-  let res = null
-  let caught = null
-  try {
-    res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init, ...opts })
-  } catch (err) {
-    caught = err
+/** A sha256 over every file under `root`, dot-files included: each path and its bytes. */
+async function treeHash(root) {
+  const h = createHash('sha256')
+  for (const rel of await listFiles(root)) {
+    h.update(`${rel}\0`)
+    h.update(await readFile(join(root, rel)))
+    h.update('\0')
   }
-  if (res) await res.vault.close()
-  assert.ok(caught, 'compact returned ok:true; it must fail with COMPACT_FIDELITY')
-  assert.equal(caught.code, 'COMPACT_FIDELITY', caught.stack)
-  assert.ok(caught.differences.length > 0, 'COMPACT_FIDELITY must carry its differences')
-  for (const d of caught.differences) assert.ok(caught.message.includes(d.path), `the message must name ${d.path}`)
-  assert.deepEqual(await entries(base), leaves, 'a failed compaction left a verification directory or a partial out-dir')
-  assert.deepEqual(await predecessorState(old), before, 'a failed compaction changed the predecessor')
-  return caught
+  return h.digest('hex')
 }
 
-test('T13: the clean buildNonTrivial fixture passes the fidelity check, and compact reports its counts', async () => {
-  const old = await Bundle.init(await tmpDir('fid-clean-vault'))
-  await buildNonTrivial(old)
-  const before = await predecessorState(old)
-  const base = await tmpDir('fid-clean')
-  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
-  assert.equal(res.ok, true)
-  // A, B and C are live. D is tombstoned, so the face does not hold it.
-  assert.deepEqual(res.counts, { walked: 3, staged: 3, ingested: 3 })
-  assert.deepEqual(res.warnings, [])
-  // No stage and no verification directory stay (T17).
-  assert.deepEqual(await entries(base), ['face', 'out'])
-  assert.deepEqual(await predecessorState(old), before, 'compaction changed the predecessor')
-  await old.close()
-  await res.vault.close()
-})
-
-test('T14: concepts at dot-segment paths survive compaction and pass the T13 check (G24)', async () => {
-  // scratch-D/s1.mjs scenario G. The stage walks the emission manifest of
-  // the face, not the directory, and the compaction import ingests each
-  // staged path. So the dot-path concepts reach the new vault.
-  const old = await Bundle.init(await tmpDir('fid-dot-vault'))
-  const r1 = await old.createConcept('.drafts/idea', 'note')
-  await old.createConcept('notes/.hidden', 'note')
-  await old.createConcept('notes/visible', 'note')
-  await old.setBody(r1.tag, null, 'dot dir body')
-  const before = await predecessorState(old)
-  const base = await tmpDir('fid-dot')
-  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
-  assert.equal(res.ok, true)
-  assert.deepEqual(res.counts, { walked: 3, staged: 3, ingested: 3 })
-  assert.deepEqual(res.warnings, [])
-  // The three live concepts stay three, each with its _id at its path.
-  const pathById = async (v) => new Map([...(await liveConcepts(v))].map(([id, c]) => [id, c.path]))
-  const oldPaths = await pathById(old)
-  assert.deepEqual([...oldPaths.values()].sort(), ['.drafts/idea', 'notes/.hidden', 'notes/visible'])
-  assert.deepEqual(await pathById(res.vault), oldPaths)
-  assert.equal((await liveConcepts(res.vault)).get(r1.tag).headText, 'dot dir body')
-  assert.deepEqual(await entries(base), ['face', 'out'])
-  assert.deepEqual(await predecessorState(old), before, 'compaction changed the predecessor')
-  await old.close()
-  await res.vault.close()
-})
-
-test('T14: the stage excludes a reserved .okf- name with a warning, and the T13 check fails on it', async () => {
-  // Core accepts the path notes/.okf-state, but the faces reserve the .okf-
-  // dot-file names for their own state. The stage walks the note, warns,
-  // and does not stage it. The face still holds it, so the check fails.
-  // The new vault does not hold the concept, so the live state compare
-  // (F01) names its _id too.
-  const old = await Bundle.init(await tmpDir('fid-okf-vault'))
-  const { tag } = await old.createConcept('notes/.okf-state', 'note')
-  await old.createConcept('notes/visible', 'note')
-  const err = await expectFidelityFailure(old, await tmpDir('fid-okf'))
-  assert.deepEqual(err.differences, [
-    { path: 'notes/.okf-state.md', kind: 'missing' },
-    { path: 'notes/index.md', kind: 'differs' },
-    { path: 'notes/.okf-state', kind: 'state', id: tag, key: '_id' }
-  ])
-  assert.deepEqual(err.counts, { walked: 2, staged: 1, ingested: 1 })
-  assert.deepEqual(err.warnings, [
-    { kind: 'reserved', path: 'notes/.okf-state.md', message: 'a reserved .okf- dot-file name; not staged' }
-  ])
-  await old.close()
-})
-
-test('T14: the compaction import ingests a dot-segment path, and the ordinary ingest still ignores it (G24)', async () => {
-  const files = new Map([
-    ['.drafts/idea.md', '---\ntype: note\n---\n\ndot dir body\n'],
-    ['notes/.hidden.md', '---\ntype: note\n---\n'],
-    ['notes/visible.md', '---\ntype: note\n---\n'],
-    ['notes/.okf-state.md', '---\ntype: note\n---\n'] // a reserved .okf- dot-file name
-  ])
-  const livePaths = async (v) => [...(await liveConcepts(v)).values()].map((c) => c.path).sort()
-
-  // The ordinary watcher: ingestFile and scan() ignore every dot path (§9).
-  const plainDir = await tmpDir('imp-plain')
-  await writeTree(plainDir, files)
-  const plain = await Bundle.init(await tmpDir('imp-plain-vault'))
-  const watcher = await createIngestWatcher(plain, plainDir, { watch: false })
-  assert.deepEqual(await watcher.ingestFile('.drafts/idea.md'), [])
-  assert.deepEqual(await watcher.ingestFile('notes/.hidden.md'), [])
-  await watcher.scan()
-  await watcher.close()
-  assert.deepEqual(await livePaths(plain), ['notes/visible'])
-
-  // The compaction import: a dot-segment path is a concept path. A reserved
-  // .okf- name stays out.
-  const stageDir = await tmpDir('imp-stage')
-  await writeTree(stageDir, files)
-  const nu = await Bundle.init(await tmpDir('imp-stage-vault'))
-  const imp = await createIngestWatcher(nu, stageDir, { watch: false })
-  for (const rel of files.keys()) await imp.ingestFile(rel, { compaction: true })
-  await imp.close()
-  assert.deepEqual(await livePaths(nu), ['.drafts/idea', 'notes/.hidden', 'notes/visible'])
-  const idea = [...(await liveConcepts(nu)).values()].find((c) => c.path === '.drafts/idea')
-  assert.equal(idea.headText, 'dot dir body')
-
-  await plain.close()
-  await nu.close()
-})
-
-test('T14: the stage refuses a manifest path that leads out of the face, and writes nothing outside the stage', async () => {
-  // The emission manifest is peer-local state in the face, so the stage
-  // checks each path that it lists: lexical containment, then the real path,
-  // so a symlink cannot lead out either. A walk of the directory never left it.
-  const old = await Bundle.init(await tmpDir('fid-esc-vault'))
-  await old.createConcept('notes/a', 'note')
-  const outside = '---\n_id: 0123abcd\n_rev: ' + '1'.repeat(64) + '\ntype: note\n---\n\noutside the face\n'
-  const manifest = (rel) => JSON.stringify({ files: { [rel]: '0'.repeat(64) } }) + '\n'
-
-  // A listed path with a '..' segment.
-  const up = await tmpDir('fid-esc-up')
-  await writeTree(up, new Map([['outside.md', outside], ['face/.okf-manifest.json', manifest('../outside.md')]]))
-  await assert.rejects(
-    () => compact(old, { toDir: join(up, 'face'), vaultDir: join(up, 'out'), initBundle: Bundle.init }),
-    (err) => err.code === 'UNSAFE_PATH'
-  )
-  assert.equal(await readFile(join(up, 'outside.md'), 'utf8'), outside, 'the stage wrote outside the stage')
-  assert.deepEqual(await entries(up), ['face', 'outside.md'])
-
-  // A listed path that is a symlink to a file outside the face. The link
-  // makes the face dirty, so only --force reaches the stage.
-  const link = await tmpDir('fid-esc-link')
-  await writeTree(link, new Map([['outside.md', outside], ['face/.okf-manifest.json', manifest('notes/a.md')]]))
-  await mkdir(join(link, 'face', 'notes'))
-  await symlink(join(link, 'outside.md'), join(link, 'face', 'notes', 'a.md'))
-  await assert.rejects(
-    () => compact(old, { toDir: join(link, 'face'), vaultDir: join(link, 'out'), initBundle: Bundle.init, force: true }),
-    (err) => err.code === 'UNSAFE_PATH'
-  )
-  assert.deepEqual(await entries(link), ['face', 'outside.md'])
-  await old.close()
-})
-
-test('T15: a 100 KB body under a pinned maxOpBytes of 400000 survives compaction, and the new limit matches (G26)', async () => {
-  // scratch-D/s7.mjs. The new vault pins the predecessor's limits, and the
-  // compaction import checks a body against the new vault's maxOpBytes, not
-  // DEFAULT_LIMITS. So the 100 KB body is not refused.
-  const old = await Bundle.init(await tmpDir('fid-big-vault'), { metadata: { limits: { maxOpBytes: 400000 } } })
-  const a = await old.createConcept('big/report', 'note')
-  await old.setBody(a.tag, null, 'x'.repeat(100000))
-  const b = await old.createConcept('small/note', 'note')
-  await old.setBody(b.tag, null, 'ok')
-  const before = await predecessorState(old)
-  const base = await tmpDir('fid-big')
-  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
-  assert.equal(res.ok, true)
-  assert.deepEqual(res.counts, { walked: 2, staged: 2, ingested: 2 })
-  assert.deepEqual(res.warnings, [])
-  assert.equal(res.vault.metadata.limits.maxOpBytes, 400000)
-  assert.deepEqual(res.vault.metadata.limits, old.metadata.limits)
-  const live = await liveConcepts(res.vault)
-  assert.equal(live.get(a.tag).headText, 'x'.repeat(100000))
-  assert.equal(live.get(b.tag).headText, 'ok')
-  assert.deepEqual(await predecessorState(old), before, 'compaction changed the predecessor')
-  await old.close()
-  await res.vault.close()
-})
-
-test("T15: the ingest preflight checks a body against the vault's own maxOpBytes, in the ordinary ingest and in the compaction import (G26)", async () => {
+test("T15: the ordinary ingest preflight checks a body against the vault's own maxOpBytes (G26)", async () => {
   // The preflight refuses a body before apply does (ADR-005), so it uses
-  // the limit that apply uses: the vault's pinned maxOpBytes.
-  const ingestOne = async (name, maxOpBytes, bodyBytes, compaction) => {
+  // the limit that apply uses: the vault's pinned maxOpBytes. (The import
+  // of a face checks the encoded op: the D-048 F02 tests below.)
+  const ingestOne = async (name, maxOpBytes, bodyBytes) => {
     const dir = await tmpDir(`pre-${name}`)
     await writeTree(dir, new Map([[`${name}.md`, `---\ntype: note\n---\n\n${'x'.repeat(bodyBytes)}\n`]]))
     const v = await Bundle.init(await tmpDir(`pre-${name}-vault`), { metadata: { limits: { maxOpBytes } } })
     const w = await createIngestWatcher(v, dir, { watch: false })
     const oversize = []
     w.on('oversize', (e) => oversize.push(e))
-    const ops = await w.ingestFile(`${name}.md`, { compaction })
+    const ops = await w.ingestFile(`${name}.md`)
     await w.close()
     await v.update()
     const id = await v.val(K.path(name))
@@ -836,43 +213,22 @@ test("T15: the ingest preflight checks a body against the vault's own maxOpBytes
     const body = headText === undefined ? 'none' : headText === 'x'.repeat(bodyBytes) ? 'whole' : 'changed'
     return { oversize, ops: ops.map((o) => o.type), body }
   }
-  for (const compaction of [false, true]) {
-    // A vault that pins 400000 takes a 100 KB body. DEFAULT_LIMITS (65536) refused it.
-    assert.deepEqual(await ingestOne(`wide-${compaction}`, 400000, 100000, compaction), {
-      oversize: [],
-      ops: ['create-concept', 'set-body'],
-      body: 'whole'
-    })
-    // A vault that pins 2000 refuses a 3000-byte body by name, with its own
-    // limit, and appends no op. DEFAULT_LIMITS let it through to apply.
-    assert.deepEqual(await ingestOne(`tight-${compaction}`, 2000, 3000, compaction), {
-      oversize: [{ path: `tight-${compaction}.md`, bytes: 3000, limit: 2000 }],
-      ops: [],
-      body: 'none'
-    })
-  }
+  // A vault that pins 400000 takes a 100 KB body. DEFAULT_LIMITS (65536) refused it.
+  assert.deepEqual(await ingestOne('wide', 400000, 100000), {
+    oversize: [],
+    ops: ['create-concept', 'set-body'],
+    body: 'whole'
+  })
+  // A vault that pins 2000 refuses a 3000-byte body by name, with its own
+  // limit, and appends no op. DEFAULT_LIMITS let it through to apply.
+  assert.deepEqual(await ingestOne('tight', 2000, 3000), {
+    oversize: [{ path: 'tight.md', bytes: 3000, limit: 2000 }],
+    ops: [],
+    body: 'none'
+  })
 })
 
-test('T15: a body of "text\\n\\n" round-trips byte for byte and passes the T13 check (G25)', async () => {
-  // codex-D.out #9. renderNote ends every body with one file newline, and
-  // parseNote removes exactly that one. So the face, the stage and the
-  // ingest all keep the two trailing newlines of the body.
-  const old = await Bundle.init(await tmpDir('fid-nl-vault'))
-  const { tag } = await old.createConcept('notes/blank', 'note')
-  await old.setBody(tag, null, 'text\n\n')
-  const base = await tmpDir('fid-nl')
-  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
-  assert.equal(res.ok, true)
-  assert.deepEqual(res.counts, { walked: 1, staged: 1, ingested: 1 })
-  assert.deepEqual(res.warnings, [])
-  assert.equal((await liveConcepts(res.vault)).get(tag).headText, 'text\n\n')
-  const face = await readFile(join(base, 'face', 'notes', 'blank.md'), 'utf8')
-  assert.ok(face.endsWith('\ntype: note\n---\n\ntext\n\n\n'), JSON.stringify(face))
-  await old.close()
-  await res.vault.close()
-})
-
-// ---------- T15: body bytes and limits survive compaction ----------
+// ---------- T15: body bytes survive ingest and materialize ----------
 
 test('T15: parseNote inverts renderNote for every body, trailing newlines included (G25)', () => {
   const pairs = [['type', 'note']]
@@ -938,135 +294,9 @@ test('T15: a hand-written body that ends in a newline keeps it through ingest an
   await v.close()
 })
 
-test("T15: the new vault takes the predecessor's pinned limits, so a path deeper than the default survives (G26)", async () => {
-  // The predecessor pins maxPathDepth 100, and holds a concept at depth 70.
-  // The default is 64. A new vault with the default limits rejects that
-  // path (depth-exceeded), so the concept is lost and the T13 check fails.
-  const limits = { maxOpBytes: 400000, maxPathBytes: 2048, maxPathDepth: 100 }
-  const old = await Bundle.init(await tmpDir('fid-lim-vault'), { metadata: { limits } })
-  assert.deepEqual(old.metadata.limits, limits)
-  const deep = Array.from({ length: 70 }, (_, i) => `d${i}`).join('/')
-  const { tag } = await old.createConcept(deep, 'note')
-  await old.createConcept('notes/a', 'note')
-  const before = await predecessorState(old)
-  const base = await tmpDir('fid-lim')
-  const res = await compact(old, { toDir: join(base, 'face'), vaultDir: join(base, 'out'), initBundle: Bundle.init })
-  assert.equal(res.ok, true)
-  assert.deepEqual(res.counts, { walked: 2, staged: 2, ingested: 2 })
-  assert.deepEqual(res.warnings, [])
-  assert.deepEqual(res.vault.metadata.limits, old.metadata.limits)
-  assert.equal((await liveConcepts(res.vault)).get(tag).path, deep)
-  assert.deepEqual(await predecessorState(old), before, 'compaction changed the predecessor')
-  await old.close()
-  await res.vault.close()
-})
-
-test('T13: a note with truncated frontmatter YAML fails compaction with COMPACT_FIDELITY, and the parse warning surfaces (G27)', async () => {
-  // compact materializes its own face, and materialize never writes a
-  // truncated note. So the fixture is a face directory that already holds
-  // the materialized bundle, with one note's frontmatter truncated (an
-  // unclosed flow list). The edit makes the target dirty, so compact
-  // refuses it with COMPACT_DIRTY_TARGET, and only --force reaches the
-  // stage. The stage parse then fails, and the stage drops the note.
-  const old = await Bundle.init(await tmpDir('fid-yaml-vault'))
-  const { tag } = await old.createConcept('notes/a', 'note')
-  await old.addTag(tag, 'one')
-  await old.addTag(tag, 'two')
-  await old.setBody(tag, null, 'body a')
-  await old.createConcept('notes/b', 'note')
-  await old.update()
-  const base = await tmpDir('fid-yaml')
-  const face = join(base, 'face')
-  assert.equal((await materialize(old, face)).ok, true)
-  const notePath = join(face, 'notes', 'a.md')
-  const text = await readFile(notePath, 'utf8')
-  assert.match(text, /^tags: \[one, two\]$/m)
-  await writeFile(notePath, text.replace('tags: [one, two]', 'tags: [one, two'))
-
-  await assert.rejects(
-    () => compact(old, { toDir: face, vaultDir: join(base, 'out'), initBundle: Bundle.init }),
-    (err) => err.code === 'COMPACT_DIRTY_TARGET'
-  )
-  const err = await expectFidelityFailure(old, base, { force: true })
-  assert.ok(err.differences.some((d) => d.kind === 'missing' && d.path === 'notes/a.md'), JSON.stringify(err.differences))
-  assert.deepEqual(err.counts, { walked: 2, staged: 1, ingested: 1 })
-  assert.ok(err.warnings.some((w) => w.kind === 'parse' && w.path === 'notes/a.md'), JSON.stringify(err.warnings))
-  assert.ok(err.warnings.some((w) => w.kind === 'no-frontmatter' && w.path === 'notes/a.md'), JSON.stringify(err.warnings))
-  await old.close()
-})
-
-test('T13: a failed compaction keeps an out-dir that it did not create, and removes what it wrote there', async () => {
-  // The face holds a note that materialize did not emit. The stage takes
-  // only what materialize emitted, so the check fails on that note. The
-  // note makes the face dirty, so only --force reaches the stage.
-  const old = await Bundle.init(await tmpDir('fid-own-vault'))
-  await old.createConcept('notes/a', 'note')
-  const base = await tmpDir('fid-own')
-  await mkdir(join(base, 'out'))
-  await writeTree(join(base, 'face'), new Map([['notes/hand.md', '---\ntype: note\n---\n\nby hand\n']]))
-  await expectFidelityFailure(old, base, { leaves: ['face', 'out'], force: true })
-  assert.deepEqual(await entries(join(base, 'out')), [], 'the failed compaction left its files in the out-dir')
-  await old.close()
-})
-
-// ---------- G3-P5 F01: compaction compares live state, not only face bytes ----------
-
-test('F01: a field value that the face cannot hold fails compaction with COMPACT_FIDELITY, which names the concept and the key', async () => {
-  // D-029 F01. Core accepts each of these values. The face drops a scalar
-  // null and every type value after the first, and writes a reference and
-  // an object as strings. The new vault then materializes the same bytes, so
-  // the byte compare passed, and compaction returned ok:true with the value
-  // lost or changed. compact also compares the live state of the
-  // predecessor and the new vault, so each value fails loudly instead.
-  const cases = [
-    ['nullable', null],
-    ['reference', { ref: 'target' }],
-    ['object', { hello: 'world' }],
-    ['type', ['note', 'other']]
-  ]
-  for (const [key, value] of cases) {
-    const old = await Bundle.init(await tmpDir(`fid-val-${key}-vault`))
-    const { tag } = await old.createConcept('notes/f', 'note')
-    await old.setField(tag, key, value)
-    await old.setBody(tag, null, 'body f')
-    await old.update()
-    const err = await expectFidelityFailure(old, await tmpDir(`fid-val-${key}`))
-    // The face bytes match. Only the live state differs, at the one key.
-    assert.deepEqual(err.differences, [{ path: 'notes/f', kind: 'state', id: tag, key: `f/${key}` }], key)
-    assert.ok(err.message.includes(`state notes/f (_id ${tag}): f/${key}`), err.message)
-    await old.close()
-  }
-})
-
-test('F01: --force no longer carries a hand edit of the face into the new vault: COMPACT_FIDELITY names the body and the tags', async () => {
-  // A hand edit of a note in an existing face makes the face dirty, and
-  // --force keeps the edit in the face. The stage then took the edit, and
-  // the new vault materialized the same bytes as the face, so the byte
-  // compare passed with the predecessor's body and tags changed. The live
-  // state compare names each changed key.
-  const old = await Bundle.init(await tmpDir('fid-edit-vault'))
-  const { tag } = await old.createConcept('notes/a', 'note')
-  await old.addTag(tag, 'one')
-  await old.setBody(tag, null, 'predecessor body')
-  await old.update()
-  const base = await tmpDir('fid-edit')
-  assert.equal((await materialize(old, join(base, 'face'))).ok, true)
-  const notePath = join(base, 'face', 'notes', 'a.md')
-  const text = await readFile(notePath, 'utf8')
-  assert.match(text, /^tags: \[one\]$/m)
-  await writeFile(notePath, text.replace('tags: [one]', 'tags: [one, two]').replace('predecessor body', 'hand edit'))
-
-  const err = await expectFidelityFailure(old, base, { force: true })
-  assert.deepEqual(err.differences, [
-    { path: 'notes/a', kind: 'state', id: tag, key: 'body' },
-    { path: 'notes/a', kind: 'state', id: tag, key: 'f/tags' }
-  ])
-  await old.close()
-})
-
 // ---------- G3-P5 F05: face reconciliation stays in the face ----------
 
-test('F05: a symlink in the face that leads out of it fails materialize and compact by name before any change, and the files outside stay', async () => {
+test('F05: a symlink in the face that leads out of it fails materialize by name before any change, and the files outside stay', async () => {
   // D-029 F05: the face's notes/ directory is a symlink to a directory
   // outside the face. The concept moved, so reconciliation removed its old
   // notes, and atomicUnlink checked only lexical containment. It deleted
@@ -1090,23 +320,20 @@ test('F05: a symlink in the face that leads out of it fails materialize and comp
     outsideBytes: await treeHash(outside),
     faceEntries: await entries(face),
     faceBytes: await treeHash(face),
-    predecessor: await predecessorState(old)
+    vault: await vaultState(old)
   })
   const before = await state()
   assert.deepEqual(before.outsideFiles, ['a.md', 'index.md'])
-  const runs = [
-    ['materialize', () => materialize(old, face)],
-    ['compact', () => compact(old, { initBundle: Bundle.init, toDir: face, vaultDir: join(base, 'out') })]
-  ]
-  for (const [name, run] of runs) {
-    await assert.rejects(run, (err) => {
-      assert.equal(err.code, 'UNSAFE_PATH', `${name}: ${err.stack}`)
-      assert.match(err.message, /'notes\/(a|index)\.md' resolves outside the bundle root/, name)
+  await assert.rejects(
+    () => materialize(old, face),
+    (err) => {
+      assert.equal(err.code, 'UNSAFE_PATH', err.stack)
+      assert.match(err.message, /'notes\/(a|index)\.md' resolves outside the bundle root/)
       return true
-    })
-    assert.deepEqual(await state(), before, `${name} changed the face, the files outside it or the predecessor`)
-  }
-  assert.deepEqual(await entries(base), ['face', 'outside', 'vault'], 'the refused compaction left an out-dir or a stage')
+    }
+  )
+  assert.deepEqual(await state(), before, 'materialize changed the face, the files outside it or the vault')
+  assert.deepEqual(await entries(base), ['face', 'outside', 'vault'])
   await old.close()
 
   // A write through a symlink: <face>/new leads to an empty directory
@@ -1121,212 +348,18 @@ test('F05: a symlink in the face that leads out of it fails materialize and comp
   await mkdir(elsewhere)
   await mkdir(face2)
   await symlink(elsewhere, join(face2, 'new'))
-  const runs2 = [
-    ['materialize', () => materialize(v, face2)],
-    ['compact', () => compact(v, { initBundle: Bundle.init, toDir: face2, vaultDir: join(base2, 'out') })]
-  ]
-  for (const [name, run] of runs2) {
-    await assert.rejects(run, (err) => {
-      assert.equal(err.code, 'UNSAFE_PATH', `${name}: ${err.stack}`)
-      assert.match(err.message, /'new\/(index|sub\/a|sub\/index)\.md' resolves outside the bundle root/, name)
-      return true
-    })
-    assert.deepEqual(await entries(elsewhere), [], `${name} created something outside the face`)
-    assert.deepEqual(await entries(face2), ['new'], `${name} wrote to the face`)
-  }
-  assert.deepEqual(await entries(base2), ['elsewhere', 'face', 'vault'])
-  await v.close()
-})
-
-const BIN = join(ROOT, 'okf', 'cli', 'bin', 'auto-okf.js')
-
-/** Run the auto-okf CLI; resolves { code, stdout, stderr }. */
-function cli(args) {
-  return new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd: ROOT, timeout: 90000 }, (err, stdout, stderr) => {
-      resolve({ code: err ? (err.code ?? 1) : 0, stdout, stderr })
-    })
-  })
-}
-
-test('T13: auto-okf compact reports the counts and the fidelity check on success', async () => {
-  const base = await tmpDir('fid-cli-ok')
-  const v = await Bundle.init(join(base, 'vault'))
-  const { tag } = await v.createConcept('notes/one', 'note')
-  await v.setBody(tag, null, 'one')
-  await v.createConcept('notes/two', 'note')
-  await v.update()
-  await v.close()
-
-  const r = await cli(['compact', join(base, 'vault'), join(base, 'out')])
-  assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, /^notes: +2 walked, 2 staged, 2 ingested$/m)
-  assert.match(r.stdout, /^fidelity: +the new vault matches the face/m)
-  assert.equal(r.stderr, '', 'a clean compaction prints no warning')
-  assert.deepEqual(await entries(base), ['out', 'out.face', 'vault'])
-})
-
-test('T13: auto-okf compact prints every difference and every warning, and exits 1 on COMPACT_FIDELITY', async () => {
-  // The fixture is a concept at a reserved .okf- name: the stage does not
-  // stage it, and warns. An oversize note was the fixture until T15. Now
-  // the new vault pins the predecessor's limits, so a note that the
-  // predecessor holds is never oversize in compaction.
-  const base = await tmpDir('fid-cli-fail')
-  const v = await Bundle.init(join(base, 'vault'))
-  await v.createConcept('notes/.okf-state', 'note')
-  await v.createConcept('.drafts/idea', 'note')
-  await v.createConcept('small/note', 'note')
-  await v.update()
-  await v.close()
-
-  // run.js maps an error that is not a usage error to exit 1.
-  const r = await cli(['compact', join(base, 'vault'), join(base, 'out')])
-  assert.equal(r.code, 1, r.stdout + r.stderr)
-  assert.match(r.stderr, /COMPACT_FIDELITY/)
-  for (const line of ['missing notes/.okf-state.md', 'missing notes/index.md', 'differs index.md']) {
-    assert.ok(r.stderr.includes(line), `stderr must name '${line}':\n${r.stderr}`)
-  }
-  // The dot-path concept is walked, staged and ingested, so no difference names it (T14).
-  assert.ok(!r.stderr.includes('.drafts'), r.stderr)
-  assert.match(r.stderr, /^warning: notes\/\.okf-state\.md: a reserved \.okf- dot-file name; not staged$/m)
-  assert.match(r.stderr, /^notes: +3 walked, 2 staged, 2 ingested$/m)
-  // No new vault, no stage and no verification directory remain. The face stays.
-  assert.deepEqual(await entries(base), ['out.face', 'vault'])
-})
-
-// ---------- T18: guard every compaction path ----------
-
-/** A sha256 over every file under `root`, dot-files included: each path and its bytes. */
-async function treeHash(root) {
-  const h = createHash('sha256')
-  for (const rel of await listFiles(root)) {
-    h.update(`${rel}\0`)
-    h.update(await readFile(join(root, rel)))
-    h.update('\0')
-  }
-  return h.digest('hex')
-}
-
-test('T18: compact refuses a stage that equals, contains or aliases the predecessor, or equals the face, and the predecessor and face bytes stay unchanged (G49)', async () => {
-  // codex-D.out #2 and D-002 F06: a stage that equals or contains the
-  // predecessor or the face was removed by rm(stageDir) before compaction
-  // read it. Without that rm (T17), the staged notes still land in such a
-  // stage. compact resolves its five areas before it writes anything (the
-  // predecessor, the out-dir, the face, the stage and the verification
-  // directory), with symlinks followed, and refuses two areas that are
-  // equal or nested.
-  const base = await tmpDir('guard-stage')
-  const old = await Bundle.init(join(base, 'vault'))
-  await buildNonTrivial(old)
-  const face = join(base, 'face')
-  assert.equal((await materialize(old, face)).ok, true)
-  await symlink(old.dir, join(base, 'alias'))
-  // A stage that is a symlink in the predecessor to a directory outside it:
-  // the stage itself is outside, but the verification directory, a sibling
-  // of the stage, is in the predecessor.
-  await mkdir(join(base, 'elsewhere'))
-  await symlink(join(base, 'elsewhere'), join(old.dir, 'stage-link'))
-  const state = async () => ({
-    predecessor: await predecessorState(old),
-    vaultBytes: await treeHash(old.dir),
-    faceBytes: await treeHash(face),
-    entries: await entries(base)
-  })
-  const before = await state()
-
-  const cases = [
-    ['stage equal to the predecessor', { stageDir: old.dir }, ['predecessor', 'stage']],
-    ['stage above the predecessor', { stageDir: base }, ['predecessor', 'stage']],
-    ['stage equal to the face', { stageDir: face }, ['face', 'stage']],
-    ['stage a symlink alias of the predecessor', { stageDir: join(base, 'alias') }, ['predecessor', 'stage']],
-    ['face a symlink alias of the predecessor', { toDir: join(base, 'alias') }, ['predecessor', 'face']],
-    ['out-dir a symlink alias of the predecessor', { vaultDir: join(base, 'alias') }, ['predecessor', 'out-dir']],
-    ['verification directory in the predecessor', { stageDir: join(old.dir, 'stage-link') }, ['predecessor', 'verification']]
-  ]
-  const got = {}
-  for (const [i, [name, paths]] of cases.entries()) {
-    try {
-      const res = await compact(old, { initBundle: Bundle.init, toDir: face, vaultDir: join(base, `out-${i}`), ...paths })
-      await res.vault.close()
-      got[name] = 'ok'
-    } catch (err) {
-      got[name] = { code: err.code, areas: err.areas }
-    }
-  }
-  assert.deepEqual(got, Object.fromEntries(cases.map(([name, , areas]) => [name, { code: 'COMPACT_PATH_OVERLAP', areas }])))
-  assert.deepEqual(await state(), before, 'a refused compaction changed the predecessor, the face or the directory')
-  await old.close()
-})
-
-test('T18: compact refuses a pinned or non-empty out-dir by name before it writes, and the predecessor and the out-dir stay unchanged (G16)', async () => {
-  // scratch-D/s1.mjs H and K: compaction into an out-dir that holds a store
-  // reverted the edits made there, or handed the store a new encryption key.
-  // The fresh vault goes only into a new or empty out-dir. A pinned out-dir
-  // holds its okf-vault.json, so it is not empty.
-  const base = await tmpDir('guard-out')
-  const old = await Bundle.init(join(base, 'vault'))
-  const { tag } = await old.createConcept('notes/a', 'note')
-  await old.setBody(tag, null, 'a')
-  const gen = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'gen-face'), vaultDir: join(base, 'gen') })
-  await gen.vault.close()
-  await writeTree(base, new Map([['stray/keep.txt', 'keep\n'], ['file', 'a file\n']]))
-  const state = async () => ({
-    predecessor: await predecessorState(old),
-    gen: await treeHash(join(base, 'gen')),
-    stray: await treeHash(join(base, 'stray')),
-    file: await readFile(join(base, 'file'), 'utf8'),
-    entries: await entries(base)
-  })
-  const before = await state()
-
-  const got = {}
-  for (const name of ['gen', 'stray', 'file']) {
-    try {
-      const res = await compact(old, { initBundle: Bundle.init, toDir: join(base, `${name}-face`), vaultDir: join(base, name) })
-      await res.vault.close()
-      got[name] = 'ok'
-    } catch (err) {
-      got[name] = err.code
-    }
-  }
-  const refused = 'COMPACT_OUT_DIR_NOT_EMPTY'
-  assert.deepEqual(got, { gen: refused, stray: refused, file: refused })
-  // No face, no stage and no verification directory: the refusal comes before the face step.
-  assert.deepEqual(await state(), before, 'a refused compaction changed the predecessor, an out-dir or the directory')
-  await old.close()
-})
-
-test('T18: compact normalizes a trailing slash on toDir, vaultDir and stageDir, and refuses a stage in the out-dir (s1.mjs I, G19)', async () => {
-  // scratch-D/s1.mjs scenario I: with vaultDir `<out>/`, the default stage
-  // `${vaultDir}.compact-src` was `<out>/.compact-src`, in the new vault.
-  const base = await tmpDir('guard-slash-lib')
-  const old = await Bundle.init(join(base, 'vault'))
-  await buildNonTrivial(old)
-  const out = join(base, 'out')
-  const res = await compact(old, { initBundle: Bundle.init, toDir: `${join(base, 'face')}/`, vaultDir: `${out}/` })
-  assert.equal(res.ok, true)
-  assert.equal(res.vaultDir, out)
-  assert.deepEqual(res.counts, { walked: 3, staged: 3, ingested: 3 })
-  await res.vault.close()
-  // A stageDir with a slash is the same stage, and compact removes it.
-  const res2 = await compact(old, { initBundle: Bundle.init, toDir: join(base, 'face2'), vaultDir: join(base, 'out2'), stageDir: `${join(base, 'stage')}/` })
-  assert.equal(res2.ok, true)
-  await res2.vault.close()
-  assert.deepEqual(await entries(base), ['face', 'face2', 'out', 'out2', 'vault'])
-  assert.ok(!(await entries(out)).includes('.compact-src'), 'the stage was in the new vault')
-
-  // The nested stage that the slash made, given by hand, is refused by name.
-  const before = { predecessor: await predecessorState(old), entries: await entries(base) }
   await assert.rejects(
-    () => compact(old, { initBundle: Bundle.init, toDir: join(base, 'face3'), vaultDir: join(base, 'out3'), stageDir: join(base, 'out3', '.compact-src') }),
+    () => materialize(v, face2),
     (err) => {
-      assert.equal(err.code, 'COMPACT_PATH_OVERLAP', err.stack)
-      assert.deepEqual(err.areas, ['out-dir', 'stage'])
+      assert.equal(err.code, 'UNSAFE_PATH', err.stack)
+      assert.match(err.message, /'new\/(index|sub\/a|sub\/index)\.md' resolves outside the bundle root/)
       return true
     }
   )
-  assert.deepEqual({ predecessor: await predecessorState(old), entries: await entries(base) }, before)
-  await old.close()
+  assert.deepEqual(await entries(elsewhere), [], 'materialize created something outside the face')
+  assert.deepEqual(await entries(face2), ['new'], 'materialize wrote to the face')
+  assert.deepEqual(await entries(base2), ['elsewhere', 'face', 'vault'])
+  await v.close()
 })
 
 // ---------- T24: materialize, then import (decision 10) ----------
