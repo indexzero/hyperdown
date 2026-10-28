@@ -10,13 +10,13 @@
 // the 15 subcommands from command()/flag()/arg(), with --help|-h and all help
 // text generated from the declarations.
 //
-// Exit codes: 0 success, 1 operational error, 2 usage error, 3 materialize
-// projected everything owned but left pending-ingest file(s) in place
-// (ADR-004). paparam's
-// parse() returns null on any parse failure; the wrapper maps that — unknown
-// flag/command, extra arguments, bad flag values, and (via per-command
-// validate()) missing required arguments — to 2, never letting paparam pick
-// the code. Unknown flags are rejected strictly, as before.
+// Exit codes: 0 success, 1 operational error (for materialize also a value
+// that the face cannot hold, §10), 2 usage error, 3 materialize projected
+// everything owned but left pending-ingest file(s) in place (ADR-004).
+// paparam's parse() returns null on any parse failure; the wrapper maps that
+// — unknown flag/command, extra arguments, bad flag values, and (via
+// per-command validate()) missing required arguments — to 2, never letting
+// paparam pick the code. Unknown flags are rejected strictly, as before.
 import { readFile, access, stat } from 'node:fs/promises'
 import { isIPv4 } from 'node:net'
 import { join, relative, resolve, sep } from 'node:path'
@@ -621,14 +621,38 @@ async function cmdMaterialize({ args, flags }) {
     for (const rel of report.stale || []) {
       process.stderr.write(`notice: stale (no longer produced, left in place): ${rel}\n`)
     }
+    // §10: a value that the face cannot hold. A generation (materialize,
+    // then import) would lose it, so the operator fixes it in the vault
+    // before the import. The values stay off stderr for an encrypted vault:
+    // stderr can reach a log.
+    const encrypted = vault.metadata.encrypted === true
+    for (const l of report.lossy) process.stderr.write(lossyLine(l, encrypted))
+    if (report.lossy.length > 0) {
+      process.stderr.write(
+        `error: ${report.lossy.length} value(s) that the face cannot hold; fix each one in the vault before import (SPEC §10)\n`
+      )
+    }
     // N3 exit taxonomy (ADR-004): an unsafe path means part of the owned
-    // projection was NOT written — a real failure (1). Pending-ingest files
-    // are a healthy multi-writer state: everything owned was projected and
-    // the foreign files were left in place (3). Otherwise clean (0); stale
-    // is a notice either way (left in place, per spec).
-    if ((report.unsafe || []).length > 0) return 1
+    // projection was NOT written — a real failure (1). So is a value that
+    // the face cannot hold (1, §10). Pending-ingest files are a healthy
+    // multi-writer state: everything owned was projected and the foreign
+    // files were left in place (3). Otherwise clean (0); stale is a notice
+    // either way (left in place, per spec).
+    if ((report.unsafe || []).length > 0 || report.lossy.length > 0) return 1
     return report.ok ? 0 : 3
   })
+}
+
+/**
+ * One `warning:` line for a value that the face cannot hold (§10):
+ * `warning: notes/a.md: the face cannot hold the value of 'reference'
+ * (_id <id>): the vault holds [...], the face holds [...]`. For an encrypted
+ * vault the line holds no value.
+ */
+function lossyLine({ id, path, key, before, after }, encrypted) {
+  const head = `warning: ${path}: the face cannot hold the value of '${key}' (_id ${id})`
+  if (encrypted) return `${head}; values not printed: the vault is encrypted\n`
+  return `${head}: the vault holds ${JSON.stringify(before)}, the face holds ${JSON.stringify(after)}\n`
 }
 
 /**

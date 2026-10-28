@@ -826,3 +826,55 @@ test('T24: compareNotes reports every difference by path, without _rev lines', (
   ])
   assert.deepEqual(compareNotes(face, face), [], 'a face must equal itself')
 })
+
+test('T24: materialize reports every value that the face cannot hold, by _id and key; fixed in the vault, the generation round-trips', async () => {
+  // The face is a lossy projection: a scalar null is omitted, only the
+  // first type value is written, and a reference or an object is written as
+  // a string. materialize parses each note back and reports each field
+  // value that differs from the view (report.lossy), so an operator fixes
+  // it before import. The probe values of D-050 (sslop/D-050/probes):
+  // four that the face cannot hold, and plain values that it can.
+  const old = await Bundle.init(await tmpDir('lossy-vault'))
+  const cases = [
+    ['nullable', null],
+    ['reference', { ref: 'target' }],
+    ['object', { hello: 'world' }],
+    ['type', ['note', 'other']],
+    ['plain', 'text'],
+    ['list', ['a', 'b']],
+    ['number', 42]
+  ]
+  const ids = {}
+  for (const [key, value] of cases) {
+    const { tag } = await old.createConcept(`notes/${key}`, 'note')
+    await old.setField(tag, key, value)
+    ids[key] = tag
+  }
+  await old.update()
+  const face = await tmpDir('lossy-face')
+  const report = await materialize(old, face)
+  assert.deepEqual(report.lossy, [
+    { id: ids.nullable, path: 'notes/nullable.md', key: 'nullable', before: [null], after: [] },
+    { id: ids.object, path: 'notes/object.md', key: 'object', before: [{ hello: 'world' }], after: ['{"hello":"world"}'] },
+    { id: ids.reference, path: 'notes/reference.md', key: 'reference', before: [{ ref: 'target' }], after: ['target'] },
+    { id: ids.type, path: 'notes/type.md', key: 'type', before: ['note', 'other'], after: ['note'] }
+  ])
+
+  // The operator fixes each value in the vault. The next materialize
+  // reports nothing, and the generation keeps every value.
+  await old.setField(ids.nullable, 'nullable', 'none')
+  await old.setField(ids.reference, 'reference', 'target')
+  await old.setField(ids.object, 'object', '{"hello":"world"}')
+  await old.setField(ids.type, 'type', 'note')
+  await old.update()
+  const base = await tmpDir('lossy-fixed')
+  assert.deepEqual((await materialize(old, join(base, 'face'))).lossy, [])
+  const res = await importFace(Bundle.init, join(base, 'face'), join(base, 'vault'), { metadata: old.metadata, predecessorKey: old.keyHex })
+  const before = await readView(old)
+  const after = await readView(res.vault)
+  for (const [key] of cases) {
+    assert.deepEqual(after.concepts.get(ids[key]).fields.get(key).values, before.concepts.get(ids[key]).fields.get(key).values, key)
+  }
+  await old.close()
+  await res.vault.close()
+})

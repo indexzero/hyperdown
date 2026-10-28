@@ -775,6 +775,39 @@ test('T17: materialize warns when it writes an encrypted vault as plaintext, and
   assert.equal(pmat.stderr, '')
 })
 
+test('T24: auto-okf materialize exits 1 and names each value that the face cannot hold; an encrypted vault prints no value', async () => {
+  const base = await tmpDir('mat-lossy')
+  const storage = join(base, 'vault')
+  const v = await Bundle.init(storage)
+  const { tag: ref } = await v.createConcept('notes/ref', 'note')
+  await v.setField(ref, 'reference', { ref: 'target' })
+  const { tag: ok } = await v.createConcept('notes/ok', 'note')
+  await v.setField(ok, 'title', 'Fine')
+  await v.update()
+  await v.close()
+  const r = await cli(['materialize', storage, join(base, 'face')])
+  assert.equal(r.code, 1, r.stdout + r.stderr)
+  assert.match(r.stderr, new RegExp(`^warning: notes/ref\\.md: the face cannot hold the value of 'reference' \\(_id ${ref}\\): the vault holds \\[\\{"ref":"target"\\}\\], the face holds \\["target"\\]$`, 'm'))
+  assert.match(r.stderr, /^error: 1 value\(s\) that the face cannot hold; fix each one in the vault before import \(SPEC §10\)$/m)
+  assert.ok(!r.stderr.includes('notes/ok'), r.stderr)
+  // The face is written all the same: it is the export.
+  assert.match(r.stdout, /^materialized /m)
+  await access(join(base, 'face', 'notes', 'ref.md'))
+
+  // An encrypted vault: the warning names the note, the key and the _id,
+  // and holds no value, because stderr can reach a log.
+  const enc = join(base, 'enc')
+  await initEncrypted(enc)
+  const ev = await Bundle.open(enc)
+  const { tag: secretRef } = await ev.createConcept('notes/secret-ref', 'note')
+  await ev.setField(secretRef, 'reference', { ref: SECRET })
+  await ev.close()
+  const e = await cli(['materialize', enc, join(base, 'enc-face')])
+  assert.equal(e.code, 1, e.stdout + e.stderr)
+  assert.match(e.stderr, new RegExp(`^warning: notes/secret-ref\\.md: the face cannot hold the value of 'reference' \\(_id ${secretRef}\\); values not printed: the vault is encrypted$`, 'm'))
+  assert.ok(!e.stderr.includes(SECRET), e.stderr)
+})
+
 // ---------- G3-P5 F03: the plaintext warning comes before the plaintext write ----------
 
 /**

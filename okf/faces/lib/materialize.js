@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto'
 import { dirname } from 'node:path'
 import { keyspace as K, canonical, dirOf } from '@auto-okf/core'
 import { readView, readLog, collisionKey } from './view.js'
-import { renderNote, emitFrontmatter } from './yaml.js'
+import { renderNote, emitFrontmatter, parseNote, yamlToValues } from './yaml.js'
 import {
   rootRegistry,
   withPathLock,
@@ -36,7 +36,7 @@ import {
   MANIFEST_FILE
 } from './fsatomic.js'
 
-const { sortValues, byteForm } = canonical
+const { sortValues, byteForm, canonicalArray, nfc } = canonical
 
 function byteCmp(a, b) {
   return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))
@@ -107,13 +107,48 @@ function conflictHash(id) {
 }
 
 /**
+ * §10: the field values of `concept` that its rendered note cannot hold.
+ * Parse the note back, read each field the way ingest reads it (yamlToValues,
+ * then the canonical array that apply stores), and compare it with the view.
+ * Returns [{ id, path, key, before, after }]: `before` the view's values,
+ * `after` the values that the note gives back ([] when the note omits the
+ * key), for each key that differs.
+ */
+function lossyFields(concept, rel, text) {
+  const { fm } = parseNote(text)
+  const parsed = new Map()
+  for (const [k, v] of Object.entries(fm || {})) {
+    const key = nfc(k)
+    if (key !== '_id' && key !== '_rev') parsed.set(key, v)
+  }
+  const out = []
+  for (const key of [...new Set([...concept.fields.keys(), ...parsed.keys()])].sort(byteCmp)) {
+    const rec = concept.fields.get(key)
+    const before = key === 'tags' ? orSetValues(rec) : rec && Array.isArray(rec.values) ? rec.values : []
+    let after = parsed.has(key) ? yamlToValues(parsed.get(key)).values : []
+    // ingest takes only string tags (§5: a tag value is a string)
+    if (key === 'tags') after = after.filter((v) => typeof v === 'string')
+    after = canonicalArray(after)
+    if (!sameValues(canonicalArray(before), after)) out.push({ id: concept.id, path: rel, key, before, after })
+  }
+  return out
+}
+
+function sameValues(a, b) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (byteForm(a[i]) !== byteForm(b[i])) return false
+  return true
+}
+
+/**
  * The full byte plan for a converged view (materialize steps 1–4: concept
  * files, per-directory index.md, root log.md) WITHOUT touching disk.
  * Returns Map<rel, Buffer>. Shared with status() (ADR-002) so the
  * porcelain's states are judged against the exact bytes materialize would
- * write.
+ * write. With `opts.lossy` (an array), it parses each rendered note back
+ * and pushes each field value that the note cannot hold (lossyFields).
  */
-export async function planBundle(vault) {
+export async function planBundle(vault, opts = {}) {
   if (typeof vault.update === 'function') await vault.update()
 
   const { concepts, collisions } = await readView(vault)
@@ -167,8 +202,11 @@ export async function planBundle(vault) {
   // ---- 2. planned bytes: concept files ----
   const planned = new Map() // rel -> Buffer
   for (const p of placed) {
-    planned.set(p.rel, Buffer.from(renderNote(frontmatterPairs(p.concept), p.concept.headText), 'utf8'))
+    const text = renderNote(frontmatterPairs(p.concept), p.concept.headText)
+    planned.set(p.rel, Buffer.from(text, 'utf8'))
+    if (Array.isArray(opts.lossy)) opts.lossy.push(...lossyFields(p.concept, p.rel, text))
   }
+  if (Array.isArray(opts.lossy)) opts.lossy.sort((a, b) => byteCmp(a.path, b.path) || byteCmp(a.key, b.key))
 
   // ---- 3. per-directory index.md (OKF §6) ----
   const dirs = new Set([''])
@@ -205,7 +243,15 @@ export async function planBundle(vault) {
  *
  * Returns a report:
  *   { root, ok, written, unchanged, pendingIngest, removed, stale, unsafe,
- *     warnings }
+ *     warnings, lossy }
+ *
+ * `lossy` is [{ id, path, key, before, after }]: each field value that its
+ * note cannot hold (§10). materialize parses each rendered note back and
+ * compares each field with the view: a scalar null that the note omits, a
+ * second `type` value, a reference or an object written as a string. A
+ * generation (materialize, then import) would lose such a value, so an
+ * operator fixes it in the vault before the import. `ok` does not read it:
+ * the caller decides (`auto-okf materialize` exits 1).
  *
  * `warnings` is [] for an unencrypted vault. For an encrypted vault it is
  * [{ kind: 'plaintext', path: root, message }]: the directory now holds the
@@ -222,7 +268,8 @@ export async function materialize(vault, dir, opts = {}) {
   const { realRoot, registry } = await rootRegistry(dir)
   const forceMirror = opts.forceMirror === true
 
-  const planned = await planBundle(vault)
+  const lossy = []
+  const planned = await planBundle(vault, { lossy })
 
   // ---- 5. reconcile to disk through the manifest (§9) ----
   const report = {
@@ -234,7 +281,8 @@ export async function materialize(vault, dir, opts = {}) {
     removed: [],
     stale: [],
     unsafe: [],
-    warnings: []
+    warnings: [],
+    lossy
   }
   const manifest = await withPathLock(registry, MANIFEST_FILE, () => loadManifest(realRoot))
   await refuseEscapes(realRoot, [...planned.keys(), ...Object.keys(manifest.files)])
