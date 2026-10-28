@@ -590,14 +590,35 @@ async function filesUnder(dir, rel = '') {
   return out
 }
 
+// The instance API of an Autobee that autobee's README documents
+// (README.md:90-183), and the ReadyResource and EventEmitter methods of
+// every Autobee.
+const AUTOBEE_DOCUMENTED = new Set([
+  'key', 'discoveryKey', 'id', 'local', 'view', 'bee', 'writable', 'isIndexer',
+  'append', 'update', 'updated', 'flush', 'replicate', 'wakeup', 'setLocal',
+  'setAcking', 'views', 'ready', 'close', 'on', 'once', 'off'
+])
+
+/** Each `db.<name>` in `line` whose name autobee's README does not document. */
+function undocumentedReads(line) {
+  return [...line.matchAll(/\bdb\.([A-Za-z_$][\w$]*)/g)].filter((m) => !AUTOBEE_DOCUMENTED.has(m[1])).map((m) => m[0])
+}
+
 test('the store, core, faces and cli read no undocumented autobee property (RAILS 22a)', async () => {
+  // D-047 N07: the check matched db.system, db.writers and db._ only, and
+  // the claim is wider. It now flags each db.<name> outside the documented
+  // API, such as db.encryptionKey and db.system.heads.
+  for (const line of ['void this.db.encryptionKey', 'const heads = this.db.system.heads', 'db.writers.active', 'db._wakeup']) {
+    assert.notDeepEqual(undocumentedReads(line), [], `the check flags: ${line}`)
+  }
+  assert.deepEqual(undocumentedReads('this.db.local.key, db.view, await this.db.wakeup({ key, length: 0 })'), [])
   const hits = []
   for (const pkg of ['store', 'core', 'faces', 'cli']) {
     const root = join(OKF, pkg)
     for (const rel of await filesUnder(root)) {
       const lines = (await readFile(join(root, rel), 'utf8')).split('\n')
       lines.forEach((line, i) => {
-        if (/db\.system|db\.writers|db\._/.test(line)) hits.push(`${pkg}/${rel}:${i + 1}: ${line.trim()}`)
+        if (undocumentedReads(line).length > 0) hits.push(`${pkg}/${rel}:${i + 1}: ${line.trim()}`)
       })
     }
   }
