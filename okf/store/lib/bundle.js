@@ -1083,7 +1083,8 @@ export class Bundle extends EventEmitter {
    * joins the auto-okf/2 topic, sha256('auto-okf/2' ‖ db.discoveryKey), for
    * the writers that gov/writer admits later. Every admitted connection is
    * fed to db.replicate. The Bundle owns the swarm: leaveSwarm() and close()
-   * destroy it. Returns the swarm.
+   * destroy it. A second call before leaveSwarm() joins again on the swarm,
+   * and the DHT, of the first call. Returns the swarm.
    */
   async swarm({ bootstrap, publicDht = false } = {}) {
     await this.ready()
@@ -1122,6 +1123,7 @@ export class Bundle extends EventEmitter {
     await this._destroySwarm()
   }
 
+  /** destroy() leaves every topic (clear()), and the listed peers go with the swarm. */
   async _destroySwarm() {
     const swarm = this.swarmInstance
     if (!swarm) return
@@ -1130,10 +1132,6 @@ export class Bundle extends EventEmitter {
     if (this._onConnection) {
       swarm.off('connection', this._onConnection)
       this._onConnection = null
-    }
-    if (!swarm.destroyed) {
-      await swarm.leave(this._swarmTopic)
-      for (const key of this._listedPeers()) swarm.leavePeer(key)
     }
     await swarm.destroy()
   }
