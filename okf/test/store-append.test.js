@@ -32,14 +32,24 @@ import { Bundle, K, tmpDir, sleep, pair, until } from './store-helpers.js'
 
 const hex = (k) => k.toString('hex')
 
-test('G11 (s9): a close during an append returns no tag for a node that is missing after a reopen, in 50 of 50 runs', { timeout: 300000 }, async () => {
+test('G11 (s9): a close during an append returns no tag for a node that is missing after a reopen, and an append that it rejects wrote nothing, in 50 of 50 runs', { timeout: 300000 }, async (t) => {
+  // D-047 F09: the error says "the op is not written", and a retry depends
+  // on it. So for each rejected append, the reopened local core holds x/0
+  // only. The D-047 mutation M14, which rejects every append that decides
+  // at the close, wrote 1 to 4 rejected nodes in 50 runs.
   const RUNS = 50
   const lost = []
+  const written = []
+  const open = new Set()
+  t.after(async () => {
+    for (const v of open) await v.close()
+  })
   let ok = 0
   let rejected = 0
   for (let i = 0; i < RUNS; i++) {
     const dir = await tmpDir('s9-close-race')
     const a = await Bundle.init(dir)
+    open.add(a)
     assert.ok(a.writable, 'the creator is admitted before it writes')
     const self = hex(a.localKey)
     await a.createConcept('x/0', 'note')
@@ -49,23 +59,26 @@ test('G11 (s9): a close during an append returns no tag for a node that is missi
     )
     await sleep(i % 10) // vary the race point
     await a.close()
+    open.delete(a)
     const res = await p
     const a2 = await Bundle.open(dir)
-    try {
-      if (res.e) {
-        rejected++
-        continue
-      }
-      const length = a2.db.local.length
-      const seen = await a2.val(K.seen(self))
+    open.add(a2)
+    const length = a2.db.local.length
+    const seen = await a2.val(K.seen(self))
+    if (res.e) {
+      rejected++
+      assert.equal(res.e.code, 'VAULT_CLOSED_BEFORE_DURABLE', `run ${i}: ${res.e.message}`)
+      if (length !== 1 || seen !== 1) written.push({ run: i, seq: res.e.seq, length, seen })
+    } else {
       const meta = await a2.val(K.cMeta(res.r.tag))
       if (length > res.r.seq && seen === res.r.seq + 1 && meta !== undefined) ok++
       else lost.push({ run: i, seq: res.r.seq, length, seen })
-    } finally {
-      await a2.close()
     }
+    await a2.close()
+    open.delete(a2)
   }
   assert.deepEqual(lost, [], `no tag for a node that is missing after the reopen (ok ${ok}, rejected ${rejected})`)
+  assert.deepEqual(written, [], `an append that the close rejected wrote nothing (ok ${ok}, rejected ${rejected})`)
 })
 
 test('close() resolves only after every in-flight append has settled: each append that returned is in the core after a reopen, and each queued append fails VAULT_CLOSED_BEFORE_DURABLE', { timeout: 60000 }, async (t) => {
