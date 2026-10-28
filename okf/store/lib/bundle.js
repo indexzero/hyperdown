@@ -61,8 +61,8 @@
 // its allowlist (T25), so an outsider with the vault key gets no
 // connection from it. A stream that a caller opens with replicate() passes
 // no such check: the caller chooses that peer.
-// So a joiner writes only after an indexer's AddWriter op has linearized
-// and core has granted its key (HostAdapter). Until then db.writable is
+// So a joiner writes only after autobee adds its key, from any member's
+// AddWriter op or approval (D-047 F14, see below). Until then db.writable is
 // false (index.js:196-198, lib/writers.js:208-216), and append() refuses
 // with VAULT_NOT_WRITABLE (see _assertWritable). A key that autobee has
 // added can still have no gov/writer record: core grants the key of every
@@ -318,8 +318,8 @@ export class Bundle extends EventEmitter {
       // false (read at index.js:95, where the default is true), autobee
       // drops such a node before _applyBatch (index.js:1357-1364), so an
       // outsider puts no op and no approval into apply (AD2). A writer
-      // writes only after an indexer's AddWriter has linearized and core
-      // granted it (HostAdapter). See the header.
+      // writes only after autobee has added it, such as when core grants
+      // the key of an AddWriter op (HostAdapter). See the header.
       optimistic: false,
       // Weight 0 for every writer: autobee adds genesis on its first node
       // at this weight (index.js:1411-1413), not at the default 2

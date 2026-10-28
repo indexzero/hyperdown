@@ -42,7 +42,7 @@ test('vault metadata is deterministic and identical across peers', async (t) => 
   assert.equal(a.metadata.appendOnly, true)
   assert.equal(b.metadata.appendOnly, true)
   // §10: the generation chain is predecessorKey alone (root vault: null).
-  // The metadata holds no checkpoint (T24).
+  // The metadata holds no record of the predecessor's state (T24).
   assert.equal(a.metadata.predecessorKey, null)
   assert.ok(!('predecessorCheckpoint' in a.metadata), 'the metadata holds no predecessorCheckpoint')
   assert.equal(a.metadata.generation, ROOT_GENERATION)
@@ -264,7 +264,7 @@ test('generation chain: predecessorKey alone pins a deterministic writer namespa
   const predecessorKey = 'd'.repeat(64)
 
   // the generation id is sha256 over the predecessor key bytes, and over
-  // nothing else (T24: the metadata holds no predecessor checkpoint)
+  // nothing else (T24: the metadata holds no record of the predecessor's state)
   const e1 = generationId(predecessorKey)
   assert.equal(e1, createHash('sha256').update(Buffer.from(predecessorKey, 'hex')).digest('hex'))
   assert.equal(generationId(Buffer.from(predecessorKey, 'hex')), e1, 'a key given as bytes derives the same id')

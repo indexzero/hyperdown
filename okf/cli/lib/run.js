@@ -113,8 +113,8 @@ export async function run(argv) {
  * The text for an operational error. The store refuses every append until
  * autobee has added this peer's key as a writer (VAULT_NOT_WRITABLE, §8).
  * That is substrate admission, not okf membership (store/lib/bundle.js
- * _assertWritable). So the error names the writer key and the step that
- * grants it: an indexer's add-writer.
+ * _assertWritable). So the error names the writer key and the honest step
+ * that grants it and admits it: an indexer's add-writer.
  */
 function errorText(err) {
   if (err && err.code === 'VAULT_NOT_WRITABLE') {
@@ -556,6 +556,11 @@ async function cmdAddWriter({ args, flags }) {
     const { seq } = await vault.addWriter(key, { indexer: flags.indexer === true, swarmKey })
     await vault.update()
     const rec = await vault.val(K.govWriter(b4a.toString(key, 'hex')))
+    // "Did not take effect" means okf membership: apply wrote no gov/writer
+    // record. The substrate grant still happened, because core grants the
+    // key of every AddWriter op that it folds (AD7, core/lib/apply.js:375).
+    // So the key is writable, and apply rejects each of its ops (D-047 F14,
+    // okf/cli/README.md, the add-writer row).
     if (!rec) {
       const reason = await rejectionFor(vault, seq)
       process.stderr.write(

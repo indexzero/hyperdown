@@ -51,8 +51,9 @@
 // Not here: the member arm of A6 (G43). The forged witness is inert in
 // every arm, because a claim needs an approver with standing at least the
 // claimed weight (lib/witness.js:38-50), and at weight 0 nobody qualifies
-// (genesis only up to bootstrapWeight, lib/witness.js:47). A2 and G50
-// already prove that no key a member names rises above 0.
+// (genesis only up to bootstrapWeight, lib/witness.js:47). A3 sends a
+// member's forged witness, and its claimant stays at 0 (D-047 F13). A2 and
+// G50 prove that no key a member names in an approval rises above 0.
 //
 // Also not here: the A9 missing-link variant of G44. autobee's own local
 // flush gate refuses to flush a node whose links are missing
@@ -909,7 +910,11 @@ test('A5b G2: a member approval at weight 1e9 kills the sender that folds it fir
 // nothing. The victim then folds the approval in _applyBatch
 // (index.js:1432-1441), system.flush walks one tier per unit of weight
 // (lib/system.js:424, lib/promotions.js:137, :144) and dies above V8's Set
-// limit. okf cannot filter any of it: no okf apply runs for that node.
+// limit. okf cannot filter any of it. okf's apply does run for that node,
+// whose block holds a create-concept value (attack-helpers.js
+// forgeRawNode), but _applyBatch calls system.flush after apply
+// (index.js:1447-1455, then :1462), and nothing that apply returns stops
+// the walk (D-047 F13).
 //
 // It runs in a child process. The reopen can die inside Bundle.open, where
 // the boot drain folds the stored block (index.js:620, then :818) before a
@@ -1070,6 +1075,12 @@ test('A7b G5: a member backdated node flips the winner on every peer (residual)'
 // or mostRecentTrusted hook every key is trusted (lib/trusted.js:30-32).
 // The announce runs before, and independently of, the optimistic filter, so
 // `optimistic: false` does not stop it.
+//
+// Since T25 the firewall of swarm() gives an outsider no connection, so G44
+// is closed for an outsider on swarm(). This test pairs the peers with a
+// direct stream (pair(), Bundle.replicate()), which passes no firewall. So
+// it measures what a flood costs from any connected peer, a member too
+// (SECURITY_MODEL.md, point (b)).
 // ---------------------------------------------------------------------------
 test('A8 G44: an outsider wakeup flood opens one writer core per announced key (residual)', { timeout: 4 * TIMEOUT }, async (t) => {
   const N = Number(process.env.OKF_FLOOD_N || 200)

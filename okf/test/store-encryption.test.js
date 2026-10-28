@@ -7,8 +7,8 @@
 // (index.js:213-221, lib/constants.js:3), and its view encryption refuses
 // a view core below version 3 (lib/encryption.js:83-86). corestore honours
 // that per-core manifestVersion from 7.12.6 on, so 7.12.6 is the floor
-// under the pin ^7.16.1 (okf/DEVIATIONS.md, "The pins, and the corestore
-// floor").
+// under the exact pin 7.16.1 (okf/DEVIATIONS.md, "The pins, and the
+// corestore floor").
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
