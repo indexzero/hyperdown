@@ -12,7 +12,7 @@
 // helpers differ.
 import net from 'node:net'
 import { Bundle } from '../../store/index.js'
-import { materialize, createIngestWatcher, wanted, compact } from '../../faces/index.js'
+import { materialize, createIngestWatcher, wanted, importFace } from '../../faces/index.js'
 
 let vault = null
 const links = new Map() // linkId -> { socket, stream }
@@ -191,31 +191,33 @@ const handlers = {
   },
 
   /**
-   * S9 generation cycle: materialize the live bundle, spin up a FRESH vault at
-   * `vaultDir`, ingest the bundle back with _id adoption, then adopt the new
-   * (open) vault as this writer's vault. Returns the new vault's key so a
-   * second peer can join it. Any live replication links must be torn down by
-   * the controller before this is called.
+   * S9 generation (SPEC §10): materialize the live bundle into `faceDir`,
+   * then import that face into a FRESH vault at `vaultDir` with _id
+   * adoption, carrying the metadata and recording this vault's key as
+   * predecessorKey. The new (open) vault becomes this writer's vault.
+   * Returns the new vault's key so a second peer can join it. Any live
+   * replication links must be torn down by the controller before this is
+   * called.
    */
-  async compact({ toDir, vaultDir, force = false }) {
+  async generation({ faceDir, vaultDir }) {
     for (const { socket, stream } of links.values()) {
       socket.destroy()
       stream.destroy()
     }
     links.clear()
-    const res = await compact(vault, { toDir, vaultDir, initBundle: Bundle.init, force })
+    await materialize(vault, faceDir)
+    const res = await importFace(Bundle.init, faceDir, vaultDir, { metadata: vault.metadata, predecessorKey: vault.keyHex })
     const old = vault
     attach(res.vault)
     await old.close()
-    // The new vault's generation chain: a fresh peer MUST join with these
-    // overrides so it derives the SAME §10 per-generation namespace (else its
-    // writer cores derive under 'root' and it cannot converge).
+    // A fresh peer MUST join with predecessorKey in its invite metadata, so
+    // it derives the SAME §10 per-generation namespace (else its writer
+    // cores derive under 'root' and it cannot converge).
     return {
       key: vault.keyHex,
       localKey: hex(vault.localKey),
       generation: res.generation,
-      predecessorKey: res.predecessorKey ?? null,
-      predecessorCheckpoint: sanitize(res.predecessorCheckpoint ?? null)
+      predecessorKey: vault.metadata.predecessorKey
     }
   },
 

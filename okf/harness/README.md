@@ -59,7 +59,7 @@ run also writes `harness.log` (fault schedule + convergence events).
 | S7 `s07-path-collision` | I8/I9     | two ids one path; conflict copy; byte-identical    |
 | S8 `s08-revocation`     | I10       | revocation race under partition — the vault-ld     |
 |                         |           | blocker; asserts convergence + replay-stability    |
-| S9 `s09-generation`          | I11       | generation cycle under concurrency; fresh peer converge |
+| S9 `s09-generation`          | I11       | a generation (materialize, then import) under concurrency; fresh peer converge |
 | S10 `s10-fuzz`          | I1/I2/I8  | seeded random schedules + independent coherence    |
 |                         |           | + shrink to a committed regression                 |
 
@@ -75,8 +75,8 @@ quality (the partition schedule is the scenario's, not the link's).
   `deleteConcept`/`resolveConflict`/`addWriter`/`removeWriter`), `append`/
   `appendRaw` (raw bytes for poison-op tests), `hash` (snapshot view hash),
   `dump`, `link`/`unlink` (pause/resume replication), `materialize`/`ingest`/
-  `wanted`/`compact` (faces + generation cycle). Crash = SIGKILL; restart =
-  respawn on the same dir.
+  `wanted`/`generation` (faces, and a generation: materialize, then
+  import). Crash = SIGKILL; restart = respawn on the same dir.
 - **`lib/hub.js`** — the fault proxy, forked from vault-ld. Every
   replication byte between two processes passes through a per-direction pipe
   supporting seeded latency, jitter, byte-stalls, kill-mid-frame, and hard

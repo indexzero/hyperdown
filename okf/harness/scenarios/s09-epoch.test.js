@@ -1,9 +1,10 @@
-// S9 — generation cycle under concurrency (I11 under the harness). Converge a
-// multi-writer bundle, run one generation cycle (materialize → fresh vault →
-// ingest with _id adoption), then have a fresh peer join the NEW vault and
-// converge. Assert the new peers converge to one identical view hash and that
-// every live concept's _id / type / path / tags / head-body TEXT survived the
-// cycle byte-for-byte (modulo _rev/log.md, which necessarily re-derive).
+// S9 — a generation under concurrency (I11 under the harness, SPEC §10).
+// Converge a multi-writer bundle, run one generation (materialize the face,
+// then import it into a fresh vault with _id adoption), then have a fresh
+// peer join the NEW vault and converge. Assert the new peers converge to one
+// identical view hash and that every live concept's _id / type / path / tags
+// / head-body TEXT survived the generation byte-for-byte (modulo _rev/log.md,
+// which necessarily re-derive).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
@@ -32,7 +33,7 @@ function liveState(dump) {
   return out
 }
 
-test('S9: generation cycle preserves _id/type/path/tags/head + new peers converge identically', async () => {
+test('S9: a generation (materialize, then import) preserves _id/type/path/tags/head + new peers converge identically', async () => {
   const { ctl, writers } = await setupVaultCluster('s09-generation', 2)
   const [w0, w1] = writers
   try {
@@ -49,28 +50,29 @@ test('S9: generation cycle preserves _id/type/path/tags/head + new peers converg
     const before = liveState(await w0.dump(''))
     assert.ok(before.size >= 2)
 
-    // one generation cycle on w0 (tears down its links first)
+    // one generation on w0 (tears down its links first)
     await ctl.disconnect(w0, w1)
     await w1.shutdown()
-    const gen = await w0.cmd('compact', {
-      toDir: join(ctl.baseDir, 'generation-face'),
+    const gen = await w0.cmd('generation', {
+      faceDir: join(ctl.baseDir, 'generation-face'),
       vaultDir: join(ctl.baseDir, 'generation-vault')
     })
+    assert.equal(gen.predecessorKey, w0.info.keyHex, 'the new vault records the predecessor key')
 
-    // identity + state fidelity across the cycle
+    // identity + state fidelity across the generation
     const after = liveState(await w0.dump(''))
     for (const [id, want] of before) {
       const got = after.get(id)
-      assert.ok(got, `concept ${id} survived the generation cycle (adopted _id)`)
+      assert.ok(got, `concept ${id} survived the generation (adopted _id)`)
       assert.equal(got.type, want.type, `${id}: type preserved`)
       assert.equal(got.path, want.path, `${id}: path preserved`)
       assert.equal(got.headText, want.headText, `${id}: head body text preserved`)
       assert.deepEqual(got.tags, want.tags, `${id}: tags preserved`)
     }
 
-    // a fresh peer joins the NEW vault (with the generation-chain overrides) and
-    // must converge to a byte-identical view
-    const meta = { predecessorKey: gen.predecessorKey, predecessorCheckpoint: gen.predecessorCheckpoint }
+    // a fresh peer joins the NEW vault (its invite carries predecessorKey, from
+    // which the §10 namespace derives) and must converge to a byte-identical view
+    const meta = { predecessorKey: gen.predecessorKey }
     const p = await ctl.spawn('e1')
     await p.join(gen.key, meta)
     // the fresh joiner must INITIATE the link (side 0): autobee backfills a
