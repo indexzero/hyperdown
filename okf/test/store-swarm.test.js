@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { Bundle, K, METADATA_FILE, loadMetadata, sleep, tmpDir, until } from './store-helpers.js'
+import { Bundle, K, METADATA_FILE, loadMetadata, pair, sleep, tmpDir, until } from './store-helpers.js'
 
 const storeRequire = createRequire(new URL('../store/index.js', import.meta.url))
 const Hyperswarm = storeRequire('hyperswarm')
@@ -493,6 +493,85 @@ test('a joiner that a firewall rejected before its admission connects once the a
     }, DEADLINE),
     'b connects and folds its admission'
   )
+})
+
+test('a late joiner whose creator is offline connects to the admitting indexer through a local allow, and becomes writable (G3-P9 F03)', { timeout: TEST_TIMEOUT }, async (t) => {
+  const tn = await testnet()
+  const origin = await Bundle.init(await tmpDir('offline-origin'))
+  const invite = origin.metadata // lists the creator's swarm key alone
+  const indexer = await Bundle.join(await tmpDir('offline-indexer'), origin.key, { metadata: invite })
+  const dirLate = await tmpDir('offline-late')
+  const late = await Bundle.join(dirLate, origin.key, { metadata: invite })
+  t.after(async () => {
+    await indexer.close()
+    await late.close()
+    await tn.destroy()
+  })
+  // The creator admits a second indexer over a direct stream, and then
+  // goes offline for good.
+  await origin.addWriter(indexer.localKey, { indexer: true, swarmKey: indexer.swarmKey })
+  const unpair = pair(origin, indexer)
+  assert.ok(
+    await until(async () => {
+      await indexer.update()
+      return indexer.isIndexer
+    }, DEADLINE),
+    'the second indexer folds its admission'
+  )
+  unpair()
+  await origin.close()
+
+  // The second indexer admits the late joiner, and the creator never
+  // comes back.
+  await indexer.addWriter(late.localKey, { swarmKey: late.swarmKey })
+  await indexer.update()
+  await withDeadline(indexer.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'indexer.swarm()')
+  const iHex = hex(indexer.swarmKey)
+
+  // Without a local allow, the joiner trusts the keys of the invite alone.
+  // It folds no gov/writer record before it connects, so its firewall
+  // rejects the indexer, and it never learns its admission.
+  const swarmL = await withDeadline(late.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'late.swarm()')
+  assert.ok(await until(() => swarmL.peers.get(iHex)?.banned === true, DEADLINE), "the joiner's firewall rejects the indexer")
+  assert.equal(late.writable, false, 'the joiner is not writable')
+
+  // The recovery: the indexer hands its swarm key to the joiner with the
+  // invite, and the joiner admits that key on this peer only.
+  await withDeadline(late.swarm({ bootstrap: tn.bootstrap, allow: [iHex] }), DEADLINE, 'late.swarm({ allow })')
+  assert.ok(
+    await until(async () => {
+      await late.update()
+      return late.writable
+    }, DEADLINE),
+    'the joiner connects to the indexer and folds its admission'
+  )
+  const { tag: id } = await late.createConcept('offline/late', 'note')
+  await late.setField(id, 'title', ['from the late joiner'])
+  assert.ok(await folds(indexer, id), "the indexer folds the joiner's op")
+
+  // The local allow is never written to the metadata.
+  assert.deepEqual(late.metadata, invite, 'the pinned metadata is the invite')
+  assert.deepEqual(await loadMetadata(join(dirLate, METADATA_FILE)), invite, 'okf-vault.json is the invite')
+  assert.equal(late.metadata.swarm.allow.includes(iHex), false)
+})
+
+test('swarm({ allow }) refuses a malformed local list by name, before it makes a swarm (G3-P9 F03)', { timeout: TEST_TIMEOUT }, async (t) => {
+  const a = await Bundle.init(await tmpDir('swarm-bad-allow'))
+  t.after(() => a.close())
+  const k1 = 'ab'.repeat(32)
+  for (const [allow, re] of [
+    ['not-an-array', /allow must be an array of swarm keys/],
+    [null, /allow must be an array of swarm keys/],
+    [[k1, 'xyz'], /allow\[1\] is not a swarm key/],
+    [[k1, Buffer.from(k1, 'hex')], new RegExp(`allow lists the swarm key ${k1} twice`)]
+  ]) {
+    await assert.rejects(
+      a.swarm({ bootstrap: ['127.0.0.1:1'], allow }),
+      (err) => err.code === 'VAULT_BAD_SWARM_ALLOW' && re.test(err.message),
+      `refused: ${JSON.stringify(allow)}`
+    )
+  }
+  assert.equal(a.swarmInstance, null, 'a refusal makes no swarm')
 })
 
 test('a vault derives its swarm key from its own store, so the key is stable across a reopen (T25)', { timeout: TEST_TIMEOUT }, async (t) => {

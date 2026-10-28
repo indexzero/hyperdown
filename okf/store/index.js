@@ -7,6 +7,7 @@
 // apply; this package supplies the transport it folds over.
 export { Bundle } from './lib/bundle.js'
 export { startBootstrapNode } from './lib/dht.js'
+export { LOCAL_ALLOW_FILE, saveLocalAllow, loadLocalAllow } from './lib/local-allow.js'
 export { ViewAdapter } from './lib/view.js'
 export { viewHash } from './lib/hash.js'
 export {

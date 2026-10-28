@@ -182,6 +182,7 @@ export class Bundle extends EventEmitter {
     this._onBan = null
     this._banned = new Set() // G3-P9 F02: banned keys (hex), oldest first, at most MAX_BANNED_PEERS
     this._allowed = new Set() // T25: the swarm keys the firewall admits (hex)
+    this._localAllow = new Set() // G3-P9 F03: swarm({ allow }), this peer only (hex)
     this._revokedPeers = new Set() // T25: revokePeer() keys, out for the life of the Bundle
     this._allowChain = Promise.resolve() // serializes _refreshAllowlist()
     this._opts = opts
@@ -1075,13 +1076,15 @@ export class Bundle extends EventEmitter {
    * swarm key (swarmKey), and its firewall rejects every remote key outside
    * the allowlist, on both sides of a connection (hyperswarm README.md:52,
    * index.js:49, :204-205, :309-322). The allowlist (_refreshAllowlist):
-   * - the keys of metadata.swarm.allow (pinned in the invite), and
+   * - the keys of metadata.swarm.allow (pinned in the invite),
    * - the swarm key of each gov/writer record with no gov/removed record,
-   * minus the swarm key of each removed writer (also when a live record or
-   * metadata.swarm.allow carries the same key), and minus each key that
-   * revokePeer() cut. It is read again after every fold (the update
-   * handler), so an admission opens the firewall, and a folded RemoveWriter
-   * cuts the writer as revokePeer() does.
+   *   and
+   * - the keys of `allow`, the local list of this peer (G3-P9 F03),
+   * minus the swarm key of each removed writer (also when a live record,
+   * metadata.swarm.allow or `allow` carries the same key), and minus each
+   * key that revokePeer() cut. It is read again after every fold (the
+   * update handler), so an admission opens the firewall, and a folded
+   * RemoveWriter cuts the writer as revokePeer() does.
    *
    * `opts`: exactly one DHT choice, or the call fails VAULT_SWARM_DHT.
    *   bootstrap  ['host:port' | { host, port }, ...]: the bootstrap nodes of
@@ -1089,19 +1092,31 @@ export class Bundle extends EventEmitter {
    *   publicDht  true: hyperdht's default bootstrap nodes, the public DHT
    *              that is "publicly served on behalf of the commons"
    *              (hyperdht README.md:84). Explicit opt-in.
+   *   allow      optional: swarm keys (32 bytes or 64 hex each) that this
+   *              peer admits and dials, and no other peer. They are never
+   *              written to the metadata. A late joiner folds no gov/writer
+   *              record before it connects, so it admits only the keys of
+   *              the invite. When no peer of the invite is online, the
+   *              indexer that admitted it hands it its swarm key with the
+   *              invite, and the joiner passes that key here. A value that
+   *              is not an array, a bad key or a key listed twice fails
+   *              VAULT_BAD_SWARM_ALLOW before anything else happens.
    *
-   * The swarm listens (listen()) and joinPeers each listed key, so a
-   * pre-provisioned fleet connects with no topic announcement. It also
-   * joins the auto-okf/2 topic, sha256('auto-okf/2' ‖ db.discoveryKey), for
-   * the writers that gov/writer admits later. Every admitted connection is
-   * fed to db.replicate. The Bundle owns the swarm: leaveSwarm() and close()
-   * destroy it. A second call before leaveSwarm() joins again on the swarm,
-   * and the DHT, of the first call. Returns the swarm.
+   * The swarm listens (listen()) and joinPeers each listed key, of the
+   * invite and of `allow`, so a pre-provisioned fleet connects with no
+   * topic announcement. It also joins the auto-okf/2 topic,
+   * sha256('auto-okf/2' ‖ db.discoveryKey), for the writers that gov/writer
+   * admits later. Every admitted connection is fed to db.replicate. The
+   * Bundle owns the swarm: leaveSwarm() and close() destroy it, and clear
+   * the local list. A second call before leaveSwarm() joins again on the
+   * swarm, and the DHT, of the first call, and adds the keys of its
+   * `allow` to the local list. Returns the swarm.
    */
-  async swarm({ bootstrap, publicDht = false } = {}) {
+  async swarm({ bootstrap, allow, publicDht = false } = {}) {
     await this.ready()
     if (this._closing) throw closedError()
     const dht = swarmDhtOptions(bootstrap, publicDht)
+    const local = allow === undefined ? [] : swarmKeyList(allow, 'allow')
     if (!this.swarmInstance) {
       // Until the first _refreshAllowlist() below, the allowlist is empty,
       // and the firewall rejects every key.
@@ -1126,6 +1141,7 @@ export class Bundle extends EventEmitter {
       this._onBan = (info) => this._recordBan(info)
       swarm.on('ban', this._onBan) // hyperswarm README.md:162-164
     }
+    for (const hex of local) this._localAllow.add(hex)
     await this._refreshAllowlist()
     await swarm.listen()
     for (const key of this._listedPeers()) swarm.joinPeer(key)
@@ -1154,6 +1170,7 @@ export class Bundle extends EventEmitter {
       this._onBan = null
     }
     this._banned.clear()
+    this._localAllow.clear()
     await swarm.destroy()
   }
 
@@ -1179,11 +1196,16 @@ export class Bundle extends EventEmitter {
     return this._allowed.has(b4a.toString(remotePublicKey, 'hex'))
   }
 
-  /** The keys of metadata.swarm.allow that the allowlist holds, without self. */
+  /** True when metadata.swarm.allow or the local list of swarm({ allow }) names the key. */
+  _listed(hex) {
+    return this.metadata.swarm.allow.includes(hex) || this._localAllow.has(hex)
+  }
+
+  /** The listed keys (see _listed()) that the allowlist holds, without self. */
   _listedPeers() {
     const self = b4a.toString(this._swarmKeyPair.publicKey, 'hex')
     const out = []
-    for (const hex of this.metadata.swarm.allow) {
+    for (const hex of new Set([...this.metadata.swarm.allow, ...this._localAllow])) {
       if (hex !== self && this._allowed.has(hex)) out.push(b4a.from(hex, 'hex'))
     }
     return out
@@ -1220,6 +1242,7 @@ export class Bundle extends EventEmitter {
     // gov/ alone, so a reopen computes the same set.
     const next = new Set(live)
     for (const hex of this.metadata.swarm.allow) next.add(hex)
+    for (const hex of this._localAllow) next.add(hex)
     for (const hex of removed) next.delete(hex)
     for (const hex of this._revokedPeers) next.delete(hex)
     const prev = this._allowed
@@ -1257,7 +1280,7 @@ export class Bundle extends EventEmitter {
       info.ban(false)
       if (this._discovery) this._discovery.refresh().catch(() => {})
     }
-    if (this.metadata.swarm.allow.includes(hex) && hex !== b4a.toString(this.swarmKey, 'hex')) {
+    if (this._listed(hex) && hex !== b4a.toString(this.swarmKey, 'hex')) {
       swarm.joinPeer(b4a.from(hex, 'hex'))
     }
   }

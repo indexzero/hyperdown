@@ -162,7 +162,7 @@ a reopen needs no key), `keyPair`, `backpressure`.
 | `update()`, `updated()`, `flush()` | autobee lifecycle passthrough |
 | `snapshotHash()`, `hash()` | I2/I3 full-range view hash, byte-compatible with core `MemView.hash()` (`hash()` is an alias) |
 | `replicate(isInitiator \| stream)` | direct replication stream |
-| `swarm({ bootstrap, publicDht })`, `leaveSwarm()` | replication over a private hyperswarm that the Bundle owns, behind a firewall on members' swarm keys (see [Replication](#replication)) |
+| `swarm({ bootstrap, allow, publicDht })`, `leaveSwarm()` | replication over a private hyperswarm that the Bundle owns, behind a firewall on members' swarm keys (see [Replication](#replication)). `allow` is a local list of swarm keys that this peer alone admits and dials |
 | `revokePeer(swarmKey)` | take a swarm key out of this peer's allowlist, destroy its open connections, and `leavePeer` it, for the life of the Bundle |
 | `close()` | closes autobee, settles every append that started before it, then closes the owned corestore |
 
@@ -238,8 +238,8 @@ core's §8 clock rule — the applied/rejected partition is replay-stable
 `replicate(isInitiator | stream)` returns a direct replication stream. It
 passes no firewall: the caller chooses the peer at the other end.
 
-`swarm({ bootstrap, publicDht })` replicates over a private hyperswarm.
-The vault key is not a capability to connect:
+`swarm({ bootstrap, allow, publicDht })` replicates over a private
+hyperswarm. The vault key is not a capability to connect:
 
 - **A swarm key per peer.** The swarm listens and dials with `swarmKey`,
   which the store derives from the peer's own corestore, so it stays the
@@ -247,10 +247,11 @@ The vault key is not a capability to connect:
 - **A firewall on members' swarm keys.** The swarm rejects every remote
   key outside the allowlist, on an incoming handshake and before a dial
   (hyperswarm `firewall`). The allowlist is the keys of
-  `metadata.swarm.allow`, and the `swarmKey` of each `gov/writer` record
-  that has no `gov/removed` record. The swarm key of a removed writer is
-  not in it, also when `metadata.swarm.allow` lists the key, and also when
-  another, live `gov/writer` record carries the same key. The store
+  `metadata.swarm.allow`, the `swarmKey` of each `gov/writer` record
+  that has no `gov/removed` record, and the keys of `allow`, this peer's
+  local list. The swarm key of a removed writer is not in it, also when
+  `metadata.swarm.allow` or `allow` lists the key, and also when another,
+  live `gov/writer` record carries the same key. The store
   reads the allowlist again after every fold. A peer that holds the vault
   key and the invite, but no admitted swarm key, gets no connection, so it
   reaches neither the replication nor autobee's wakeup protocol (G44 in
@@ -273,8 +274,15 @@ The vault key is not a capability to connect:
   default bootstrap nodes, the public DHT that hyperdht describes as
   "publicly served on behalf of the commons". It is explicit opt-in: a
   call without exactly one of the two fails `VAULT_SWARM_DHT`.
+- **A local list.** `allow` holds swarm keys, 32 bytes or 64 hex each,
+  that this peer admits and dials (`joinPeer`), and no other peer. They
+  are never written to the metadata, and no other peer reads them. A
+  value that is not an array, a bad key or a key listed twice fails
+  `VAULT_BAD_SWARM_ALLOW` before the swarm exists. A second `swarm()` call
+  adds its keys. `saveLocalAllow(dir, keys)` and `loadLocalAllow(dir)`
+  keep the list in `<dir>/okf-swarm-allow.json` (`LOCAL_ALLOW_FILE`).
 - **The Bundle owns the swarm.** `leaveSwarm()` and `close()` leave the
-  topic and the listed peers and destroy it.
+  topic and the listed peers, clear the local list, and destroy it.
 
 Two shapes of membership use the same swarm:
 
@@ -287,8 +295,13 @@ Two shapes of membership use the same swarm:
    `writers.add(writerKey, { swarmKey })`. Each peer admits the swarm key
    when it folds the `add-writer`, and finds the joiner on the
    `auto-okf/2` topic, which `swarm()` still joins. A joiner folds no
-   `gov/writer` record before it connects, so it first reaches the keys
-   of the invite. That is why the creator always lists its own swarm key.
+   `gov/writer` record before it connects, so its firewall admits only
+   the keys of the invite. That is why the creator always lists its own
+   swarm key. So a late joiner needs a peer of the invite online, such as
+   the creator, or it never learns its admission. When none is online,
+   the indexer that admitted the joiner hands it its swarm key with the
+   invite, and the joiner passes that key in `allow`. Never admit a key
+   that a discovery alone names.
 
 ## Tests
 
@@ -313,7 +326,9 @@ peer with the vault key and no admitted swarm key, the cut of a removed
 writer and of `revokePeer`, the cut of a removed writer whose swarm key a
 live record also carries, across a reopen, at most 64 ban records after a
 flood of fresh keys, a pre-provisioned pair over `joinPeer`, a joiner
-admitted after a ban), and the dependency resolution of the store.
+admitted after a ban, a late joiner whose creator is offline through
+`allow`, and the refusal of a malformed `allow`), and the dependency
+resolution of the store.
 
 ## License
 
