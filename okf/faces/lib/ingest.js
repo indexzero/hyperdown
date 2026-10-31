@@ -339,8 +339,8 @@ export class IngestWatcher extends EventEmitter {
    * - The clock is clock(0), whose self entry is the smallest position.
    * So the preflight never refuses an op that core takes. An op within a
    * few bytes of the limit can pass it, and core then rejects that op.
-   * A file whose body equals its concept's head emits no set-body, so the
-   * preflight does not check it.
+   * A body equal to the head of the concept of its `_id` returns null. But a
+   * copy (§9) sets that body on a new concept: core's verdict checks it.
    */
   async _preflightBody(fm, body) {
     const text = nfc(body)
