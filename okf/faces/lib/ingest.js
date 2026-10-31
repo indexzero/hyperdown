@@ -54,8 +54,8 @@ const HEX64 = /^[0-9a-f]{64}$/
 const RESERVED_FRONTMATTER = new Set(['_id', '_rev'])
 // The shortest tag (§3 makeTag): a 64-hex writer key and one hex digit of seq.
 const MIN_TAG = '0'.repeat(65)
-// D-055 Q2: the record of each pending file whose ingest created a concept
-// and did not complete, `{ files: { <rel>: <_id> } }` (see _keepCreated).
+// D-055 Q2, D-060 F04: the record of the concept of each pending file,
+// `{ concepts: { <_id>: { at, path, sha256, gone? } } }` (see "pending files").
 // The faces reserve `.okf-` names for their own state.
 const PENDING_FILE = '.okf-pending.json'
 
@@ -254,9 +254,9 @@ export class IngestWatcher extends EventEmitter {
         if (err.code === 'ENOENT') return this._deleteUnlocked(rel)
         throw err
       }
-      const hash = sha256(raw)
+      const file = { hash: sha256(raw), owned: undefined } // owned: the concept of a file with no _id of its own
       const manifest = await loadManifest(this.root)
-      if (manifest.files[rel] === hash || this._ingested.get(rel) === hash) {
+      if (manifest.files[rel] === file.hash || this._ingested.get(rel) === file.hash) {
         // Our own materialized bytes, or an edit already ingested: not a human
         // edit — nothing to diff (§9 self-echo suppression).
         this.emit('skip', { path: rel, reason: 'unchanged' })
@@ -279,12 +279,12 @@ export class IngestWatcher extends EventEmitter {
       const appended = []
       let parsed
       try {
-        parsed = await this._ingestParsed(rel, fm || {}, body, appended)
+        parsed = await this._ingestParsed(rel, fm || {}, body, appended, file)
       } catch (err) {
-        await this._keepCreated(rel, appended)
+        await this._keepPending(rel, file)
         throw err
       }
-      const { ops, established } = parsed
+      const { ops, established, id } = parsed
 
       if (!established) {
         // No concept corresponds to this file (e.g. missing/empty `type`, so
@@ -301,16 +301,16 @@ export class IngestWatcher extends EventEmitter {
       // it. Each rejection is reported by name.
       const rejected = await this._rejections(appended)
       if (rejected.length > 0) {
-        await this._keepCreated(rel, appended)
+        await this._keepPending(rel, file)
         for (const r of rejected) this.emit('rejected', { path: rel, op: r.op.type, reason: r.reason })
         return ops
       }
-      await this._setPending(rel, null)
-      this._ingested.set(rel, hash)
+      await this._clearPending(rel, id)
+      this._ingested.set(rel, file.hash)
       // Account the ingested bytes into the manifest: they are now known to
       // the system, so the next materialize MAY regenerate the file (its
       // canonical bytes) instead of treating the human edit as still-pending.
-      await this._touchManifest(rel, hash)
+      await this._touchManifest(rel, file.hash)
       if (typeof this.vault.update === 'function') await this.vault.update()
       this.emit('ops', { path: rel, ops })
       return ops
@@ -363,9 +363,9 @@ export class IngestWatcher extends EventEmitter {
    * Diff a parsed file against the view and emit the minimal op set.
    * Resolves identity first (§6/§9: known/adopt/mint + copy detection +
    * conflict-copy awareness), then diffs fields and body. Each op that it
-   * appends goes on `appended` as `{ op, tag }`, for core's verdict.
+   * appends goes on `appended` as `{ op, tag }`, for core's verdict. `file`: see _ownedConcept.
    */
-  async _ingestParsed(rel, fm, body, appended) {
+  async _ingestParsed(rel, fm, body, appended, file) {
     if (typeof this.vault.update === 'function') await this.vault.update()
 
     const P = rel.slice(0, -3) // strip '.md'
@@ -382,7 +382,7 @@ export class IngestWatcher extends EventEmitter {
     }
 
     const emitted = []
-    const id = await this._ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted, appended)
+    const id = await this._ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted, appended, file)
     if (id == null) return { ops: emitted, established: false } // could not create (e.g. missing type)
 
     if (typeof this.vault.update === 'function') await this.vault.update()
@@ -432,7 +432,7 @@ export class IngestWatcher extends EventEmitter {
     }
 
     for (const op of ops) await this._apply(op, appended)
-    return { ops: emitted.concat(ops), established: true }
+    return { ops: emitted.concat(ops), established: true, id }
   }
 
   /**
@@ -440,7 +440,7 @@ export class IngestWatcher extends EventEmitter {
    * CreateConcept when adopting, minting, or copy-splitting; the created id
    * is appended to `emitted`.
    */
-  async _ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted, appended) {
+  async _ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted, appended, file) {
     const rawId = typeof fm._id === 'string' ? nfc(fm._id) : undefined
 
     if (rawId) {
@@ -457,7 +457,7 @@ export class IngestWatcher extends EventEmitter {
               // A distinct file holds the original path: mint a fresh copy,
               // or reuse the copy that a pending ingest of this file made.
               this.emit('copy', { path: rel, of: rawId })
-              return (await this._pendingConcept(rel)) ?? this._create(authoredPath, fm, undefined, emitted, appended)
+              return this._ownedConcept(rel, authoredPath, fm, emitted, appended, file)
             }
           }
         }
@@ -470,7 +470,7 @@ export class IngestWatcher extends EventEmitter {
     // §9: missing _id → mint (write-back happens on the next materialize,
     // which stamps the deterministic minted _id into the file). A pending
     // ingest of this file already minted one: reuse it (D-055 Q2).
-    return (await this._pendingConcept(rel)) ?? this._create(authoredPath, fm, undefined, emitted, appended)
+    return this._ownedConcept(rel, authoredPath, fm, emitted, appended, file)
   }
 
   /** Emit a CreateConcept; return the concept id (adopted id or minted tag). */
@@ -741,9 +741,12 @@ export class IngestWatcher extends EventEmitter {
       this.emit('delete-skipped', { path: rel, reason: 'conflict-copy' })
       return []
     }
-    const id = await this.vault.val(K.path(P))
+    // A pending file deletes the concept that the record names for it (it
+    // can have lost a path collision); another file, the holder of its path.
+    const id = (await this._pendingOf(rel)) ?? (await this.vault.val(K.path(P)))
     if (id === undefined) return [] // no concept holds this path
     if (!this.confirmDelete || !(await this.confirmDelete(id, rel))) {
+      await this._gonePending(rel)
       this.emit('delete-skipped', { path: rel, id })
       return []
     }
@@ -755,10 +758,11 @@ export class IngestWatcher extends EventEmitter {
     // and the pending record of the path, so a later scan retries it.
     const rejected = await this._rejections(appended)
     if (rejected.length > 0) {
+      await this._gonePending(rel)
       for (const r of rejected) this.emit('rejected', { path: rel, op: r.op.type, reason: r.reason })
       return [op]
     }
-    await this._setPending(rel, null)
+    await this._clearPending(rel, id)
     this._ingested.delete(rel)
     await this._touchManifest(rel, null)
     if (typeof this.vault.update === 'function') await this.vault.update()
@@ -782,7 +786,7 @@ export class IngestWatcher extends EventEmitter {
       ops.push(...(await this.ingestFile(rel)))
     }
     const listed = new Set(Object.keys((await loadManifest(this.root)).files))
-    for (const rel of Object.keys((await this._loadPending()).files)) listed.add(rel)
+    for (const { path } of Object.values((await this._loadPending()).concepts)) listed.add(path)
     const onDisk = new Set(rels)
     for (const rel of [...listed].sort(byteCmp)) {
       if (!rel.endsWith('.md') || onDisk.has(rel) || isReservedFile(rel)) continue
@@ -802,53 +806,127 @@ export class IngestWatcher extends EventEmitter {
     })
   }
 
-  // ---------- pending files (D-055 Q2) ----------
+  // ---------- pending files (D-055 Q2, D-060 F04) ----------
   //
   // The rule: a new file gets its _id only when materialize stamps it,
-  // after the file is recorded as ingested. If an ingest of a file creates
-  // a concept (a mint or a copy split) and does not complete, because core
+  // after the file is recorded as ingested. A file with no _id of its own
+  // (a note without _id, or a copy) gets a concept from its ingest (a mint
+  // or a copy split). If that ingest does not complete, because core
   // rejected one of its ops or the ingest threw, the file stays pending
-  // without an _id. So the watcher records the created _id for the path in
-  // PENDING_FILE. A later ingest of that path, in this watcher or in another
-  // one, uses that concept where it would mint or split a copy, while the
-  // view holds it. So a pending file never gets a second concept. The record
-  // goes when an ingest of the path completes, or when its delete runs.
+  // without an _id. So the watcher records, in PENDING_FILE, the concept of
+  // the file: { at, path, sha256 }, keyed by the concept's _id. `path` is
+  // the file, `sha256` the bytes of that ingest, and `at` the concept's
+  // path in the view then. A later ingest, in this watcher or in another
+  // one, takes the recorded concept where it would mint or split a copy,
+  // only on evidence that the file is the same (_pendingConcept):
+  //
+  //   - the file at `path`: an edit, or a retry of the same bytes;
+  //   - a file at another path with the same bytes, while the disk no
+  //     longer holds `path`: a rename. The ingest moves the concept there.
+  //
+  // And only while the concept is live at `at`. A concept that a note with
+  // its _id, or another writer, moved away is no longer the file's. A
+  // record that a delete pass found gone (`gone`), and that deleted
+  // nothing, takes back only the same bytes at `path`: a new note there is
+  // a new concept. The record of a concept goes when an ingest of its file
+  // or of the concept completes, or when the delete of the file takes
+  // effect. Import mode reads no record (D-060 F21).
+  //
+  // What the disk cannot show: a rename and an edit in one step, while no
+  // watcher runs, is a new file (the old concept waits for the delete of
+  // `path`). And before a delete pass sees `path` gone, a new note at
+  // `path` looks like an edit.
 
   /**
-   * The recorded concept of a pending `rel`, if the view still holds it.
-   * Import mode (importNote) reads no record (D-060 F21): the face is inert
-   * source, and its `.okf-pending.json` is state of another directory.
+   * The concept of a file that holds no _id of its own (a note without
+   * _id, or a copy, §9): the pending record's concept for the file, else a
+   * new concept (_create). `file` is ingestFile's { hash, owned }: owned
+   * notes the concept, so a failed ingest records it (_keepPending). Import
+   * mode passes no `file`, and reads no record (D-060 F21): the face is
+   * inert source, and its `.okf-pending.json` is state of another directory.
    */
-  async _pendingConcept(rel) {
-    if (this._import !== null) return undefined
-    const id = (await this._loadPending()).files[rel]
-    if (typeof id !== 'string') return undefined
-    return (await this.vault.val(K.cMeta(id))) !== undefined ? id : undefined
+  async _ownedConcept(rel, authoredPath, fm, emitted, appended, file) {
+    if (file === undefined) return this._create(authoredPath, fm, undefined, emitted, appended)
+    const id = (await this._pendingConcept(rel, file.hash)) ?? (await this._create(authoredPath, fm, undefined, emitted, appended))
+    if (id != null) file.owned = id
+    return id
   }
 
-  /** Record the concept that this ingest of `rel` created, if the view holds it. */
-  async _keepCreated(rel, appended) {
-    const entry = appended.find((a) => a.created !== undefined)
-    if (entry === undefined) return
+  /** The recorded concept for the file at `rel` with the bytes `hash`, on the evidence above, or undefined. */
+  async _pendingConcept(rel, hash) {
+    const { concepts } = await this._loadPending()
+    let renamed
+    for (const id of Object.keys(concepts).sort(byteCmp)) {
+      const e = concepts[id]
+      if (e.path === rel) {
+        if ((e.gone !== true || e.sha256 === hash) && (await this._stays(id, e.at))) return id
+      } else if (renamed === undefined && e.sha256 === hash && (await statOrNull(join(this.root, e.path))) === null) {
+        if (await this._stays(id, e.at)) renamed = id
+      }
+    }
+    return renamed
+  }
+
+  /** Is concept `id` live, at the path `at` that its record saw? */
+  async _stays(id, at) {
+    const meta = await this.vault.val(K.cMeta(id))
+    if (meta === undefined || meta.deleted != null) return false
+    const rec = await this.vault.val(K.cPath(id))
+    return rec !== undefined && rec.path === at
+  }
+
+  /** The concept that the record names for the file `rel`, while it stays; a stale record of `rel` goes. */
+  async _pendingOf(rel) {
+    const { concepts } = await this._loadPending()
+    const id = Object.keys(concepts).find((k) => concepts[k].path === rel)
+    if (id === undefined) return undefined
+    if (await this._stays(id, concepts[id].at)) return id
+    await this._writePending((cs) => {
+      if (cs[id] !== undefined && cs[id].path === rel) delete cs[id]
+    })
+    return undefined
+  }
+
+  /** Record file.owned, the concept that this incomplete ingest of `rel` used, while the view holds it live. */
+  async _keepPending(rel, file) {
+    if (file.owned === undefined) return
     if (typeof this.vault.update === 'function') await this.vault.update()
-    if ((await this.vault.val(K.cMeta(entry.created))) === undefined) return
-    await this._setPending(rel, entry.created)
+    const meta = await this.vault.val(K.cMeta(file.owned))
+    const rec = await this.vault.val(K.cPath(file.owned))
+    if (meta === undefined || meta.deleted != null || rec === undefined) return
+    await this._writePending((cs) => {
+      for (const k of Object.keys(cs)) if (cs[k].path === rel) delete cs[k]
+      cs[file.owned] = { at: rec.path, path: rel, sha256: file.hash }
+    })
   }
 
-  /** Set (`id`) or clear (null) the record of `rel`. Writes only on a change. */
-  _setPending(rel, id) {
+  /** An ingest of `rel` or of concept `id` completed, or the delete of `rel` took effect: their records go. */
+  _clearPending(rel, id) {
+    return this._writePending((cs) => {
+      if (id !== undefined) delete cs[id]
+      for (const k of Object.keys(cs)) if (cs[k].path === rel) delete cs[k]
+    })
+  }
+
+  /** A delete pass found the file `rel` gone and deleted nothing: its record is gone (see above). */
+  _gonePending(rel) {
+    return this._writePending((cs) => {
+      for (const k of Object.keys(cs)) if (cs[k].path === rel) cs[k] = { ...cs[k], gone: true }
+    })
+  }
+
+  /** Change the record with `mutate(concepts)`, under its lock. Writes only on a change. */
+  _writePending(mutate) {
     return withPathLock(this.registry, PENDING_FILE, async () => {
-      const pending = await this._loadPending()
-      if ((pending.files[rel] ?? null) === id) return
-      if (id === null) delete pending.files[rel]
-      else pending.files[rel] = id
-      if (Object.keys(pending.files).length === 0) {
+      const { concepts } = await this._loadPending()
+      const before = canonical.stableStringify(concepts)
+      mutate(concepts)
+      if (canonical.stableStringify(concepts) === before) return
+      if (Object.keys(concepts).length === 0) {
         await atomicUnlink(this.root, PENDING_FILE)
         return
       }
-      const sorted = { files: {} }
-      for (const k of Object.keys(pending.files).sort(byteCmp)) sorted.files[k] = pending.files[k]
-      await atomicWrite(this.root, PENDING_FILE, Buffer.from(canonical.stableStringify(sorted) + '\n', 'utf8'))
+      await atomicWrite(this.root, PENDING_FILE, Buffer.from(canonical.stableStringify({ concepts }) + '\n', 'utf8'))
     })
   }
 
@@ -857,11 +935,15 @@ export class IngestWatcher extends EventEmitter {
     try {
       raw = await readFile(join(this.root, PENDING_FILE), 'utf8')
     } catch (err) {
-      if (err.code === 'ENOENT') return { files: {} }
+      if (err.code === 'ENOENT') return { concepts: {} }
       throw err
     }
     const parsed = JSON.parse(raw)
-    return { files: parsed && parsed.files && typeof parsed.files === 'object' ? { ...parsed.files } : {} }
+    const concepts = {}
+    for (const [id, e] of Object.entries((parsed && parsed.concepts) || {})) {
+      if (e && typeof e.at === 'string' && typeof e.path === 'string' && typeof e.sha256 === 'string') concepts[id] = { ...e }
+    }
+    return { concepts }
   }
 
   async close() {

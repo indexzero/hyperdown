@@ -157,12 +157,29 @@ events:
 - `copy` `{ path, of }`, `delete-skipped`, `skip`, `warning` and `error`.
 
 A new file gets its `_id` only when `materialize` stamps it. If an ingest
-creates a concept for a new file and does not complete, the watcher
-records that `_id` for the path in `<dir>/.okf-pending.json`. A later
-ingest of the path, in any watcher, reuses that concept, so the file
-never gets a second one. The record goes when an ingest of the path
-completes, or when its delete runs (`okf/faces/lib/ingest.js:799-809`).
-Tests: the two "D-055 Q2" tests in `okf/test/faces-ingest.test.js`.
+gives a concept to a file with no `_id` of its own (a note without `_id`,
+or a copy) and does not complete, the watcher records that concept in
+`<dir>/.okf-pending.json`: the file's path, the bytes of that ingest
+(`sha256`), and the concept's path in the view (`at`). A later ingest, in
+any watcher, takes that concept only on evidence that the file is the
+same:
+
+- the file at the recorded path: an edit, or a retry of the same bytes;
+- a file at another path with the same bytes, while the recorded path is
+  gone from the disk: a rename. The ingest moves the concept to the new
+  path, so a renamed pending file never gets a second concept.
+
+The record attaches nothing once its concept is not live at `at`: a note
+with the concept's `_id`, or another writer, moved it away. When a delete
+pass finds the file gone and deletes nothing (no confirmation, or core
+rejected the delete), the record takes back only the same bytes at its
+path, and a new note there gets a concept of its own. The record of a
+concept goes when an ingest of its file or of the concept completes, or
+when the delete of the file takes effect. A rename and an edit in one
+step, while no watcher runs, is a new file, and the old concept waits for
+the delete of the old path (`okf/faces/lib/ingest.js:809-838`). Tests:
+the two "D-055 Q2" tests and the three "D-060 F04" tests in
+`okf/test/faces-ingest.test.js`.
 
 > The note codec keeps body bytes exactly: `parseNote(renderNote(pairs,
 > body)).body === body` for every body and every non-empty `pairs` (a note

@@ -3,7 +3,7 @@
 // rename+concurrent-edit merge across a roundtrip, and the guarded delete.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { encodeOp } from '../core/index.js'
 import {
@@ -370,7 +370,7 @@ test('a confirmed delete that core rejects emits rejected, keeps the manifest en
   await assert.rejects(w.ingestFile('other/new.md'))
   await v.update()
   const newId = await v.val(K.path('other/new'))
-  assert.deepEqual(await pendingOf(dir), { files: { 'other/new.md': newId } })
+  assert.deepEqual(await pendingOf(dir), { 'other/new.md': { id: newId, gone: false } })
   await v.writers.setPolicy(v.localKey, { namespacePrefixes: ['team'] })
   await v.update()
   await rm(join(dir, 'other/x.md'))
@@ -391,7 +391,7 @@ test('a confirmed delete that core rejects emits rejected, keeps the manifest en
   assert.deepEqual(ingested, [], "no 'ops' event for a rejected delete")
   assert.equal((await v.val(K.cMeta(id))).deleted ?? null, null, 'other/x stays live')
   assert.ok(Object.hasOwn((await manifestOf(dir)).files, 'other/x.md'), 'the manifest keeps other/x.md')
-  assert.deepEqual(await pendingOf(dir), { files: { 'other/new.md': newId } }, 'the pending record stays')
+  assert.deepEqual(await pendingOf(dir), { 'other/new.md': { id: newId, gone: true } }, 'the pending record stays, marked gone')
 
   // The writer may write anywhere again: the next scan retries the delete.
   await v.writers.setPolicy(v.localKey, { namespacePrefixes: [] })
@@ -472,7 +472,7 @@ test('a later ingest of a new file whose ingest failed after its create reuses t
   await assert.rejects(w.ingestFile('bad.md'))
   await v.update()
   assert.deepEqual(await conceptIds(v), [id], 'the second ingest created no second concept')
-  assert.deepEqual(JSON.parse(await readFile(join(dir, '.okf-pending.json'), 'utf8')), { files: { 'bad.md': id } })
+  assert.deepEqual(await pendingOf(dir), { 'bad.md': { id, gone: false } })
 
   // The human drops the bad field. That ingest completes on the same
   // concept, and the record goes.
@@ -520,6 +520,120 @@ test('scan() deletes a pending file that is gone, though the manifest never list
   assert.ok(!report.written.includes('new.md'), 'materialize does not restore new.md')
 })
 
+// ---------- D-060 F04: the pending record attaches a file only on evidence ----------
+
+/**
+ * A vault whose maxOpBytes is 4096, its bundle directory, a watcher, and a
+ * pending new note at a.md: core accepted its create-concept and rejected
+ * its set-body (nearLimitNote). Returns { v, dir, w, id, near, seeds }.
+ */
+async function pendingNote(t, opts = {}) {
+  const limit = 4096
+  const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
+  const dir = await tmpDir('bundle')
+  const w = await createIngestWatcher(v, dir, { watch: false, ...opts })
+  t.after(async () => {
+    await w.close()
+    await v.close()
+  })
+  await materialize(v, dir)
+  const near = await nearLimitNote(v, limit)
+  const seeds = await seedIds(v)
+  await writeFile(join(dir, 'a.md'), near)
+  await w.scan()
+  const id = await v.val(K.path('a'))
+  assert.notEqual(id, undefined, 'setup: core accepted the create')
+  return { v, dir, w, id, near, seeds }
+}
+
+/** The concepts of a vault's view that are not in `known`, sorted. */
+async function newConcepts(v, known) {
+  return (await conceptIds(v)).filter((c) => !known.includes(c))
+}
+
+test('a renamed pending file keeps its concept: scan() moves the concept with it and attaches no second one (D-060 F04)', async (t) => {
+  // Before the fix, the record was keyed by path, so b.md minted a second
+  // concept, and the first one stayed at a with no file: materialize wrote
+  // it back as a.md.
+  const { v, dir, w, id, seeds } = await pendingNote(t)
+  await rename(join(dir, 'a.md'), join(dir, 'b.md'))
+  await w.scan()
+  assert.deepEqual(await newConcepts(v, seeds), [id], 'no second concept')
+  assert.equal((await v.val(K.cPath(id))).path, 'b', 'the concept follows the file')
+
+  // The human shortens the body: that ingest completes on the same concept.
+  await writeFile(join(dir, 'b.md'), '---\ntype: note\n---\nshort\n')
+  await w.scan()
+  assert.deepEqual(await newConcepts(v, seeds), [id])
+  await assert.rejects(readFile(join(dir, '.okf-pending.json')), { code: 'ENOENT' }, 'no record is left')
+  const report = await materialize(v, dir)
+  assert.ok(report.written.includes('b.md') && !report.written.includes('a.md'), JSON.stringify(report.written))
+})
+
+test('a stale pending record attaches no file: its concept moved with a note that carries its _id, or another writer moved it (D-060 F04)', async (t) => {
+  // 1. The human keeps the text as x.md, with the concept's _id, and
+  //    removes a.md. Then an unrelated new note appears at a.md. Before the
+  //    fix, the record of a.md stayed, and the new note took the concept
+  //    over: a set-path back to a, and its body.
+  const one = await pendingNote(t)
+  await writeFile(join(one.dir, 'x.md'), `---\n_id: ${one.id}\ntype: note\n---\nkept\n`)
+  await rm(join(one.dir, 'a.md'))
+  await one.w.scan()
+  assert.equal((await one.v.val(K.cPath(one.id))).path, 'x', 'setup: the concept moved to x')
+  await writeFile(join(one.dir, 'a.md'), '---\ntype: note\n---\nan unrelated new note\n')
+  await one.w.scan()
+  const [fresh] = await newConcepts(one.v, [...one.seeds, one.id])
+  assert.equal(await one.v.val(K.path('a')), fresh, 'the new note has a concept of its own')
+  assert.equal((await one.v.val(K.cPath(one.id))).path, 'x', 'the concept stays at x')
+  assert.equal(await headTextOf(one.v, one.id), 'kept')
+
+  // 2. Another writer moves the concept away while a.md is pending. The
+  //    record no longer names the concept of a.md, so the next ingest of
+  //    a.md does not move the concept back.
+  const two = await pendingNote(t)
+  await two.v.setPath(two.id, 'moved')
+  await two.v.update()
+  await writeFile(join(two.dir, 'a.md'), '---\ntype: note\n---\nshort\n')
+  await two.w.scan()
+  assert.equal((await two.v.val(K.cPath(two.id))).path, 'moved', 'the concept stays where the other writer moved it')
+  const [own] = await newConcepts(two.v, [...two.seeds, two.id])
+  assert.equal(await two.v.val(K.path('a')), own)
+})
+
+test('a pending record whose file a scan found gone attaches only the same bytes back, never a new note (D-060 F04)', async (t) => {
+  // No confirmDelete: the scan skips the delete, and the record stays for a
+  // later confirmed delete. Before the fix, an unrelated new note at a.md
+  // took the concept over.
+  const { v, dir, w, id, near, seeds } = await pendingNote(t)
+  const skipped = []
+  w.on('delete-skipped', (e) => skipped.push(e.path))
+  await rm(join(dir, 'a.md'))
+  await w.scan()
+  assert.deepEqual(skipped, ['a.md'])
+
+  // The same bytes come back: the same file, so the same concept.
+  await writeFile(join(dir, 'a.md'), near)
+  await w.scan()
+  assert.deepEqual(await newConcepts(v, seeds), [id], 'the same bytes reattach the concept')
+
+  // Gone again, then an unrelated new note at a.md: a concept of its own.
+  await rm(join(dir, 'a.md'))
+  await w.scan()
+  await writeFile(join(dir, 'a.md'), '---\ntype: note\n---\nan unrelated new note\n')
+  await w.scan()
+  const fresh = await newConcepts(v, [...seeds, id])
+  assert.equal(fresh.length, 1, 'the new note has a concept of its own')
+  assert.equal(await headTextOf(v, fresh[0]), 'an unrelated new note')
+  assert.equal((await v.val(K.cPath(id))).path, 'a', 'the concept keeps its path')
+})
+
+/** The head body text of concept `id`. */
+async function headTextOf(v, id) {
+  await v.update()
+  const head = await v.val(K.cBody(id))
+  return head === undefined ? undefined : (await v.val(K.cRev(id, head))).text
+}
+
 /**
  * A new note whose set-body op is 1 byte over `limit` when the store
  * appends it as the next node of this writer: core accepts its
@@ -559,9 +673,12 @@ async function manifestOf(dir) {
   return JSON.parse(await readFile(join(dir, '.okf-manifest.json'), 'utf8'))
 }
 
-/** The pending record of a bundle directory (D-055 Q2). */
+/** The pending record of a bundle directory (D-055 Q2, D-060 F04), by file: { <path>: { id, gone } }. */
 async function pendingOf(dir) {
-  return JSON.parse(await readFile(join(dir, '.okf-pending.json'), 'utf8'))
+  const { concepts } = JSON.parse(await readFile(join(dir, '.okf-pending.json'), 'utf8'))
+  const out = {}
+  for (const [id, e] of Object.entries(concepts)) out[e.path] = { id, gone: e.gone === true }
+  return out
 }
 
 /** Every flag/rejected record in a vault's view, as { key: reason }. */

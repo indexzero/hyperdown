@@ -861,6 +861,25 @@ saga is the cautionary tale). The rules are frozen:
   actual size, before any op for that file is appended; sibling files in
   the same run are unaffected. Apply's `oversize-op` reject stays
   untouched — validate at the boundary, defend in depth.
+- **Pending files (D-055 Q2, D-060 F04).** A file with no `_id` of its
+  own (a note without `_id`, or a copy) gets its concept from its ingest,
+  and its `_id` only when materialize stamps it, after the ingest
+  completes. An ingest that core rejects in part, or that throws, leaves
+  the file pending. So ingest records the concept of each pending file in
+  the peer-local file `<bundle>/.okf-pending.json`: the file's path, the
+  sha256 of the bytes of that ingest, and the concept's path in the view
+  then (`at`). A later ingest takes the recorded concept where it would
+  mint or split a copy only on evidence that the file is the same: the
+  file at the recorded path, or a file at another path with the same
+  bytes while the recorded path is gone from the disk (a rename: the
+  ingest moves the concept). It never takes a concept that is not live at
+  `at`. A record whose file a delete pass found gone, and that deleted
+  nothing, takes back only the same bytes at its path. The record of a
+  concept goes when an ingest of its file or of the concept completes, or
+  when the delete of the file takes effect. `scan()` tries the delete of
+  each path that the emission manifest or the pending record lists and
+  the disk no longer holds, and the delete of a pending path deletes the
+  recorded concept, behind the confirmation guard.
 - **Path-scoped one-shot ingest (ADR-001).** The one-shot scan set is the
   whole bundle, restricted to the argument set when trailing
   bundle-relative paths are given (concurrent-writer politeness: one
@@ -941,7 +960,7 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   `index.md` and `log.md`. It ignores the emission manifest of the face:
   the manifest is materialize's peer-local echo suppression, and a check
   against it would skip every note as a self-echo. It ignores the pending
-  record of ingest (`.okf-pending.json`) too: that is state of a live
+  record of ingest (`.okf-pending.json`, §9) too: that is state of a live
   directory, not of a generation. It treats every `_rev`
   as absent: in the fresh vault no base exists, so each head is the
   concept's first revision (`base: null`), the only flag-free fresh start
