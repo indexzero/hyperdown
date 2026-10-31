@@ -16,7 +16,7 @@
 // directories).
 import { createHash } from 'node:crypto'
 import { dirname } from 'node:path'
-import { keyspace as K, canonical, dirOf } from '@auto-okf/core'
+import { keyspace as K, canonical, dirOf, casefoldPath } from '@auto-okf/core'
 import { readView, readLog, collisionKey } from './view.js'
 import { renderNote, emitFrontmatter, parseNote, yamlToValues } from './yaml.js'
 import {
@@ -136,6 +136,40 @@ function lossyFields(concept, rel, text) {
   return out
 }
 
+/**
+ * §10, D-060 F03: the concept paths that a case-insensitive file system
+ * cannot hold. Two spellings that fold together (casefoldPath: NFC, then
+ * lowercase) are one directory or one file there, such as the directories
+ * of `Notes/a` and `notes/b`. The file system keeps the spelling that was
+ * written first, and the import gives the concept that spelling. reconcile
+ * writes in byte order, so in an empty directory the first spelling in byte
+ * order is the one that stays. Returns [{ id, path, key: 'path', before,
+ * after }] for each placed note whose path changes under those spellings:
+ * `before` the concept's path in the view, `after` the path that its note
+ * gives back. It reads no disk, so the report is the same on every file
+ * system, a case-sensitive one too (I9).
+ */
+function lossyPaths(placed) {
+  const prefixes = (rel) => rel.split('/').map((_, i, segs) => segs.slice(0, i + 1).join('/'))
+  const first = new Map() // fold -> its first spelling in byte order, of a directory or a note path
+  for (const p of placed) {
+    for (const s of prefixes(p.rel)) {
+      const fold = casefoldPath(s)
+      if (!first.has(fold) || byteCmp(s, first.get(fold)) < 0) first.set(fold, s)
+    }
+  }
+  const out = []
+  for (const p of placed) {
+    // The spelling that each segment gets: the name of the first spelling of its prefix.
+    const held = prefixes(p.rel).map((s) => lastComponent(first.get(casefoldPath(s)))).join('/')
+    if (held === p.rel) continue
+    const loser = p.rel !== `${p.concept.path}.md`
+    const after = loser ? held.slice(0, -3).replace(/\.conflict-[0-9a-f]{8,}$/, '') : held.slice(0, -3)
+    out.push({ id: p.concept.id, path: p.rel, key: 'path', before: [p.concept.path], after: [after] })
+  }
+  return out
+}
+
 function sameValues(a, b) {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) if (byteForm(a[i]) !== byteForm(b[i])) return false
@@ -148,7 +182,8 @@ function sameValues(a, b) {
  * Returns Map<rel, Buffer>. Shared with status() (ADR-002) so the
  * porcelain's states are judged against the exact bytes materialize would
  * write. With `opts.lossy` (an array), it parses each rendered note back
- * and pushes each field value that the note cannot hold (lossyFields).
+ * and pushes each field value that the note cannot hold (lossyFields), and
+ * each path that a case-insensitive file system cannot hold (lossyPaths).
  */
 export async function planBundle(vault, opts = {}) {
   if (typeof vault.update === 'function') await vault.update()
@@ -208,7 +243,10 @@ export async function planBundle(vault, opts = {}) {
     planned.set(p.rel, Buffer.from(text, 'utf8'))
     if (Array.isArray(opts.lossy)) opts.lossy.push(...lossyFields(p.concept, p.rel, text))
   }
-  if (Array.isArray(opts.lossy)) opts.lossy.sort((a, b) => byteCmp(a.path, b.path) || byteCmp(a.key, b.key))
+  if (Array.isArray(opts.lossy)) {
+    opts.lossy.push(...lossyPaths(placed))
+    opts.lossy.sort((a, b) => byteCmp(a.path, b.path) || byteCmp(a.key, b.key))
+  }
 
   // ---- 3. per-directory index.md (OKF §6) ----
   const dirs = new Set([''])
@@ -258,10 +296,13 @@ export async function planBundle(vault, opts = {}) {
  * `lossy` is [{ id, path, key, before, after }]: each field value that its
  * note cannot hold (§10). materialize parses each rendered note back and
  * compares each field with the view: a scalar null that the note omits, a
- * second `type` value, a reference or an object written as a string. A
- * generation (materialize, then import) would lose such a value, so an
- * operator fixes it in the vault before the import. `ok` does not read it:
- * the caller decides (`auto-okf materialize` exits 1).
+ * second `type` value, a reference or an object written as a string. An
+ * entry with the key `path` is a note path whose spelling folds together
+ * with another one, such as `notes/b` beside `Notes/a` (lossyPaths): a
+ * case-insensitive file system holds both in one directory. A generation
+ * (materialize, then import) would lose such a value, so an operator fixes
+ * it in the vault before the import. `ok` does not read it: the caller
+ * decides (`auto-okf materialize` exits 1).
  *
  * `warnings` is [] for an unencrypted vault. For an encrypted vault it is
  * [{ kind: 'plaintext', path: root, message }]: the directory now holds the

@@ -723,7 +723,7 @@ saga is the cautionary tale). The rules are frozen:
   headings (OKF §7 MUST), newest first, entries
   generated from the `log/` family: creations, renames (old → new),
   deletions, undeletions, conflict resolutions and path collisions
-  (`okf/core/lib/apply.js` events, `okf/faces/lib/materialize.js:555-585`).
+  (`okf/core/lib/apply.js` events, `okf/faces/lib/materialize.js:618-648`).
   A generation writes no entry (§10). The narration is a
   *projection of the actual op log* — auto-okf's structural upgrade over
   hand-maintained convention. Dates come from each op's `at` field (§3),
@@ -997,11 +997,20 @@ values that the view can: a scalar `null` is omitted, only the first
 string. import cannot see such a change, because it reads only the face.
 So materialize parses each note that it renders back, reads each field the
 way ingest reads it, and compares it with the view. Each difference is in
-`report.lossy` as `{ id, path, key, before, after }`.
-`auto-okf materialize` prints a warning for each one and exits 1. The
-operator changes the value in the vault to one that the face can hold,
-and materializes again, before the import (`okf/faces/lib/materialize.js`
-`lossyFields`).
+`report.lossy` as `{ id, path, key, before, after }`. A path is such a
+value too. Two spellings that fold together (NFC, then lowercase), such as
+the directories of `Notes/a` and `notes/b`, are one directory on a
+case-insensitive file system, such as APFS, the macOS default. There the
+import gives each note the spelling that was written first, and
+materialize writes in byte order. So materialize groups the directory
+prefixes and the note paths by their folded form. For each note whose
+path changes under the first spelling in byte order, `report.lossy` holds
+an entry with the key `path`: `before` the concept's path, `after` the
+path that the note gives back. The report reads no disk, so it is the same
+on a case-sensitive file system. `auto-okf materialize` prints a warning
+for each entry and exits 1. The operator changes the value in the vault
+to one that the face can hold, and materializes again, before the import
+(`okf/faces/lib/materialize.js` `lossyFields`, `lossyPaths`).
 
 ## 11. Invariants (the test suite maps to these)
 
@@ -1032,8 +1041,9 @@ and materializes again, before the import (`okf/faces/lib/materialize.js`
 - **I11 Roundtrip:** materialize, then import into a fresh vault (a
   generation, §10), preserves every live concept's `_id`, `type`, fields,
   tags, path, and head body byte-for-byte. `materialize` reports every
-  value that the face cannot hold, and an operator fixes those values
-  before `import` (§10).
+  value that the face cannot hold, a path that a case-insensitive file
+  system cannot hold too, and an operator fixes those values before
+  `import` (§10).
 
 ## 12. Non-goals (v1)
 

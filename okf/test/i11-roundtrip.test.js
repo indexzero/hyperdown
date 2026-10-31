@@ -950,3 +950,53 @@ test('T24: materialize reports every value that the face cannot hold, by _id and
   await old.close()
   await res.vault.close()
 })
+
+/** Is the file system of `dir` case-insensitive? It writes `Case-Probe` in `dir`, then reads `case-probe`. */
+async function caseInsensitive(dir) {
+  await writeFile(join(dir, 'Case-Probe'), '')
+  return readFile(join(dir, 'case-probe')).then(() => true, () => false)
+}
+
+test('F03 (D-060): materialize reports each path whose spelling folds together with another one as lossy (key path), on every file system; fixed in the vault, the generation keeps every path', async () => {
+  // Core sees no collision: the full paths differ when casefolded. But the
+  // directories Notes/ and notes/ fold together, and so do Notes/sub/ and
+  // notes/Sub/. A case-insensitive file system (APFS by default) holds each
+  // pair in one directory, the one written first. materialize writes in
+  // byte order, so notes/b.md lands in Notes/, and the import gives the
+  // concept the path Notes/b. Before the fix, report.lossy was empty.
+  const old = await Bundle.init(await tmpDir('fold-vault'))
+  const ids = {}
+  for (const path of ['Notes/a', 'notes/b', 'notes/Sub/c', 'Notes/sub/d']) {
+    const { tag } = await old.createConcept(path, 'note')
+    await old.setBody(tag, null, `body of ${path}`)
+    ids[path] = tag
+  }
+  await old.update()
+  const base = await tmpDir('fold')
+  const report = await materialize(old, join(base, 'face'))
+  assert.deepEqual(report.lossy, [
+    { id: ids['notes/Sub/c'], path: 'notes/Sub/c.md', key: 'path', before: ['notes/Sub/c'], after: ['Notes/sub/c'] },
+    { id: ids['notes/b'], path: 'notes/b.md', key: 'path', before: ['notes/b'], after: ['Notes/b'] }
+  ])
+  if (await caseInsensitive(base)) {
+    // What the report prevents: the import changes each reported path.
+    const res = await importFace(Bundle.init, join(base, 'face'), join(base, 'vault'))
+    const live = await liveConcepts(res.vault)
+    assert.equal(live.get(ids['notes/b']).path, 'Notes/b')
+    assert.equal(live.get(ids['notes/Sub/c']).path, 'Notes/sub/c')
+    await res.vault.close()
+  }
+
+  // The operator gives each concept one spelling. The next materialize
+  // reports nothing, and the generation keeps every path.
+  await old.setPath(ids['notes/b'], 'Notes/b')
+  await old.setPath(ids['notes/Sub/c'], 'Notes/sub/c')
+  await old.update()
+  const fixed = await tmpDir('fold-fixed')
+  assert.deepEqual((await materialize(old, join(fixed, 'face'))).lossy, [])
+  const res = await importFace(Bundle.init, join(fixed, 'face'), join(fixed, 'vault'), { metadata: old.metadata, predecessorKey: old.keyHex })
+  const pathById = async (v) => new Map([...(await liveConcepts(v))].map(([id, c]) => [id, c.path]))
+  assert.deepEqual(await pathById(res.vault), await pathById(old))
+  await res.vault.close()
+  await old.close()
+})

@@ -1615,3 +1615,19 @@ test('F02 (D-060): materialize marks the face of an encrypted vault, and import 
   const plain = await cli(['import', join(plainBase, 'face'), join(plainBase, 'out')])
   assert.equal(plain.code, 0, plain.stdout + plain.stderr)
 })
+
+test('F03 (D-060): auto-okf materialize exits 1 and names a path whose spelling folds together with another one, before an import', async () => {
+  // On APFS, the default file system of macOS, Notes/ and notes/ are one
+  // directory. Before the fix, materialize exited 3 with a notice for
+  // Notes/b.md, and the import gave the concept the path Notes/b.
+  const base = await tmpDir('mat-fold')
+  const storage = join(base, 'vault')
+  const v = await Bundle.init(storage)
+  await v.createConcept('Notes/a', 'note')
+  const { tag: b } = await v.createConcept('notes/b', 'note')
+  await v.close()
+  const r = await cli(['materialize', storage, join(base, 'face')])
+  assert.equal(r.code, 1, r.stdout + r.stderr)
+  assert.match(r.stderr, new RegExp(`^warning: notes/b\\.md: the face cannot hold the value of 'path' \\(_id ${b}\\): the vault holds \\["notes/b"\\], the face holds \\["Notes/b"\\]$`, 'm'))
+  assert.match(r.stderr, /^error: 1 value\(s\) that the face cannot hold; fix each one in the vault before import \(SPEC §10\)$/m)
+})

@@ -277,8 +277,14 @@ as a string. `importFace` reads only the face, so it cannot see such a
 change. So `materialize` parses each note that it renders back and
 compares each field with the view. Each difference is in `report.lossy` as
 `{ id, path, key, before, after }` (`before` the view's values, `after`
-what the note gives back). An operator fixes those values in the vault,
-and materializes again, before the import (SPEC §10).
+what the note gives back). A path is such a value too: two spellings that
+fold together (NFC, then lowercase), such as the directories of `Notes/a`
+and `notes/b`, are one directory on a case-insensitive file system such as
+APFS. There the import gives `notes/b` the spelling `Notes/b`. So
+`materialize` reports each such note with the key `path` (`before` the
+concept's path, `after` the path that the note gives back), on every file
+system. An operator fixes those values in the vault, and materializes
+again, before the import (SPEC §10).
 
 ## Install
 
