@@ -242,8 +242,8 @@ not a vault key
 (`IMPORT_PREDECESSOR_INVALID`); and a face that holds an entry that is not
 a regular file or a directory, such as a symlink (`IMPORT_FACE_ENTRY`), a
 `.conflict-<hex>` note (`IMPORT_CONFLICT_COPY`: resolve the collision in
-the face first), a note at a reserved `.okf-` name
-(`IMPORT_RESERVED_NAME`) or a note whose frontmatter holds no `_id`
+the face first), a note at a reserved `.okf-` name or under a directory
+with one, in any case (`IMPORT_RESERVED_NAME`) or a note whose frontmatter holds no `_id`
 (`IMPORT_MISSING_ID`: import keeps each `_id`, and cannot keep one that
 the note does not hold). A missing `initBundle` throws
 `IMPORT_NO_INITBUNDLE`.

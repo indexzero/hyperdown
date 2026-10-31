@@ -27,7 +27,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, open, readFile, readdir, readlink, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import { canonical } from '@auto-okf/core'
+import { canonical, casefoldPath } from '@auto-okf/core'
 
 export const MANIFEST_FILE = '.okf-manifest.json'
 
@@ -264,12 +264,16 @@ export function isIgnoredPath(rel) {
 }
 
 /**
- * True when the terminal component is a dot-file name that the faces reserve
- * for their own state: `.okf-*`, such as MANIFEST_FILE. The import of a face
- * (§10) takes dot-segment concept paths, and refuses a note at these names.
+ * True when any segment of `rel`, casefolded (NFC, then lowercase), is a
+ * dot name that the faces reserve for their own state: `.okf-*`, such as
+ * MANIFEST_FILE. The import of a face (§10) takes dot-segment concept
+ * paths, and refuses a note at such a name or under a directory with one
+ * (D-060 F08): the faces write their state files at these names.
  */
-export function isReservedDotFile(rel) {
-  return String(rel).split(/[\\/]/).pop().startsWith('.okf-')
+export function hasReservedSegment(rel) {
+  return String(rel)
+    .split(/[\\/]/)
+    .some((seg) => casefoldPath(seg).startsWith('.okf-'))
 }
 
 /** True when the terminal component is a reserved OKF face (index.md/log.md). */

@@ -1088,3 +1088,19 @@ test('F07 (D-060): materialize reports a field value that holds a lone UTF-16 su
   assert.deepEqual(report.lossy, [{ id: tag, path: 'notes/s.md', key: 'label', before: ['a\uD800b'], after: ['a\uFFFDb'] }])
   await old.close()
 })
+
+test('F08 (D-060): import refuses a note under a directory with a reserved .okf- name, in any case, by name, before it writes', async () => {
+  // Before the fix, the check read the last path segment only. A face with
+  // .okf-manifest.json/n.md imported, and each materialize and ingest of
+  // the new vault then failed EISDIR on the directory.
+  const base = await tmpDir('imp-okf-dir')
+  const face = join(base, 'face')
+  const note = (id) => `---\n_id: ${id}\ntype: note\n---\n\nbody\n`
+  await writeTree(face, new Map([
+    ['.okf-manifest.json/n.md', note('ab'.repeat(32))],
+    ['notes/.OKF-State/m.md', note('cd'.repeat(32))],
+    ['plain.md', note('ef'.repeat(32))]
+  ]))
+  const err = await expectRefusal(() => importFace(Bundle.init, face, join(base, 'vault')), 'IMPORT_RESERVED_NAME', base, [face])
+  assert.deepEqual(err.paths, ['.okf-manifest.json/n.md', 'notes/.OKF-State/m.md'])
+})

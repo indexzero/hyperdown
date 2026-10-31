@@ -304,7 +304,8 @@ auto-okf import ./face ./vault-e1 \
   not empty, or is not a directory. Give a new `<dir>`.
 - `IMPORT_CONFLICT_COPY`: the face holds a `.conflict-<hex>` note, so a
   path collision is still open. Resolve it in the face.
-- `IMPORT_RESERVED_NAME`: the face holds a note at a reserved `.okf-` name.
+- `IMPORT_RESERVED_NAME`: the face holds a note at a reserved `.okf-` name,
+  or under a directory with one, in any case.
 - `IMPORT_MISSING_ID`: the face holds a note whose frontmatter holds no
   `_id`. A generation keeps each `_id`: give the note its `_id`, or remove
   it.

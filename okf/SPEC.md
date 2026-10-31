@@ -940,7 +940,8 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
 - **Refusals, before any write, each by name.** A `<new-dir>` that is
   pinned, not empty, or not a directory (a store there would take the
   import or the key). A face that holds a `.conflict-<hex>` note (a
-  collision is still open), a note at a reserved `.okf-` name, a note
+  collision is still open), a note at a reserved `.okf-` name or under a
+  directory with one (any segment, casefolded), a note
   whose frontmatter holds no `_id` (`IMPORT_MISSING_ID`: import keeps each
   `_id`, and a minted one would differ from the face), or an entry that is
   not a regular file or a directory, such as a symlink. A

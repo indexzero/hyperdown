@@ -30,7 +30,7 @@ import { dirname, join, resolve } from 'node:path'
 import { planBundle } from './materialize.js'
 import { parseNote } from './yaml.js'
 import { createIngestWatcher } from './ingest.js'
-import { ENCRYPTED_FILE, isReservedDotFile, isReservedFile } from './fsatomic.js'
+import { ENCRYPTED_FILE, hasReservedSegment, isReservedFile } from './fsatomic.js'
 import { compareNotes } from './verify.js'
 
 // §7: a conflicted copy is a note whose terminal name ends `.conflict-<hex>.md`.
@@ -86,7 +86,7 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  *                                  collision is still open. Resolve it in
  *                                  the face first
  *   IMPORT_RESERVED_NAME           the face holds a note at a reserved `.okf-`
- *                                  name
+ *                                  name, or under a directory with one
  *   IMPORT_MISSING_ID              the face holds a note whose frontmatter
  *                                  holds no `_id` (import keeps each `_id`)
  * Each of the last four carries `err.paths`.
@@ -182,7 +182,7 @@ export async function importFace(initBundle, faceDir, dir, opts = {}) {
  * is on disk. Then refuse, by name and in this order: an entry that is not a
  * regular file or a directory (IMPORT_FACE_ENTRY: import reads only what is
  * in the face, so a symlink never leads it out), a conflicted copy
- * (IMPORT_CONFLICT_COPY) and a note at a reserved `.okf-` name
+ * (IMPORT_CONFLICT_COPY), a note at or under a reserved `.okf-` name
  * (IMPORT_RESERVED_NAME: core takes such a path, but the faces reserve the
  * name for their own state), and a note whose frontmatter holds no `_id`
  * (IMPORT_MISSING_ID). A note with no frontmatter block goes on, and fails
@@ -199,7 +199,7 @@ async function readFace(faceDir) {
       else if (!e.isFile()) refused.entry.push(child)
       else if (!child.endsWith('.md') || isReservedFile(child)) continue
       else if (CONFLICT_COPY_RE.test(child)) refused.conflict.push(child)
-      else if (isReservedDotFile(child)) refused.reserved.push(child)
+      else if (hasReservedSegment(child)) refused.reserved.push(child)
       else notes.set(child, await readFile(join(root, child)))
     }
   }
