@@ -47,12 +47,17 @@ const HEX64 = /^[0-9a-f]{64}$/
 // spec-silent admitted-writer ceiling pinned here and in core).
 // swarm.allow (T25) is the static allowlist of the swarm firewall: the
 // hyperswarm public keys, 64 hex each, that every peer of the vault admits
-// and dials (Bundle.swarm()). It is not an input of apply, so applyConfig
-// leaves it out, but it is in the pinned hash like every other field.
+// and dials (Bundle.swarm()). swarm.genesis (D-060 F01) is the creator's
+// swarm key, one key of allow, or null: the invite binds it to genesisKey,
+// so a folded RemoveWriter of genesisKey cuts it (Bundle
+// _refreshAllowlistOnce). The genesis record of gov/ holds no swarm key,
+// because core seeds it from the apply config alone. Neither field is an
+// input of apply, so applyConfig leaves the group out, but it is in the
+// pinned hash like every other field.
 export const METADATA_DEFAULTS = {
   limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
   rate: { defaultCeiling: 1024 },
-  swarm: { allow: [] },
+  swarm: { allow: [], genesis: null },
   schemaVersion: 1,
   encrypted: false,
   predecessorKey: null
@@ -99,18 +104,34 @@ export function createMetadata(input = {}) {
 }
 
 /**
- * The swarm group of an input. The empty default applies only when a field
- * is absent: no swarm, or a swarm without allow (G3-P9 F04). A swarm that
- * is not an object is refused by name. Every other key of the group passes
- * through, and validateMetadata refuses it by name.
+ * The swarm group of an input. A default applies only when its field is
+ * absent: no swarm, or a swarm without allow or without genesis (G3-P9
+ * F04). A swarm that is not an object is refused by name. genesis is null
+ * or a swarm key, 32 bytes or 64 hex characters in any case, else
+ * VAULT_BAD_SWARM_GENESIS. Every other key of the group passes through, and
+ * validateMetadata refuses it by name.
  */
 function swarmGroup(swarm) {
-  if (swarm === undefined) return { allow: [...METADATA_DEFAULTS.swarm.allow] }
+  if (swarm === undefined) return { allow: [...METADATA_DEFAULTS.swarm.allow], genesis: METADATA_DEFAULTS.swarm.genesis }
   if (swarm === null || typeof swarm !== 'object' || Array.isArray(swarm)) {
     throw new TypeError('metadata.swarm must be an object with an allow list')
   }
   const allow = swarm.allow === undefined ? [...METADATA_DEFAULTS.swarm.allow] : swarmKeyList(swarm.allow, 'metadata.swarm.allow')
-  return { ...swarm, allow }
+  return { ...swarm, allow, genesis: swarmGenesis(swarm.genesis) }
+}
+
+/** An input swarm.genesis as 64 lowercase hex, or null when it is absent or null. */
+export function swarmGenesis(genesis) {
+  if (genesis === undefined || genesis === null) return null
+  const hex = swarmKeyHex(genesis)
+  if (hex === null) throw swarmGenesisError('metadata.swarm.genesis is not a swarm key (32 bytes or 64 hex characters)')
+  return hex
+}
+
+export function swarmGenesisError(message) {
+  const err = new TypeError(`VAULT_BAD_SWARM_GENESIS: ${message}`)
+  err.code = 'VAULT_BAD_SWARM_GENESIS'
+  return err
 }
 
 /**
@@ -191,15 +212,21 @@ export function validateMetadata(meta) {
   return meta
 }
 
-/** T25: swarm is a closed group whose one key, allow, is in canonical form. */
+/**
+ * T25: swarm is a closed group of two keys in canonical form. allow is a
+ * sorted list of distinct keys. genesis (D-060 F01) is null or one key of
+ * allow.
+ */
 function validateSwarm(swarm) {
   if (!swarm || typeof swarm !== 'object' || Array.isArray(swarm)) {
     throw new TypeError('metadata.swarm must be an object with an allow list')
   }
   for (const k of Object.keys(swarm)) {
-    if (k !== 'allow') throw new TypeError(`metadata.swarm.${k} is not a metadata version ${METADATA_VERSION} field`)
+    if (k !== 'allow' && k !== 'genesis') {
+      throw new TypeError(`metadata.swarm.${k} is not a metadata version ${METADATA_VERSION} field`)
+    }
   }
-  const { allow } = swarm
+  const { allow, genesis } = swarm
   if (!Array.isArray(allow) || allow.some((k) => typeof k !== 'string' || !HEX64.test(k))) {
     throw new TypeError('metadata.swarm.allow must be an array of 64-char lowercase-hex keys')
   }
@@ -207,6 +234,12 @@ function validateSwarm(swarm) {
     if (!(allow[i - 1] < allow[i])) {
       throw new TypeError('metadata.swarm.allow must be sorted and hold each key once')
     }
+  }
+  if (genesis !== null && (typeof genesis !== 'string' || !HEX64.test(genesis))) {
+    throw new TypeError('metadata.swarm.genesis must be null or a 64-char lowercase-hex key')
+  }
+  if (genesis !== null && !allow.includes(genesis)) {
+    throw new TypeError('metadata.swarm.genesis must be one of metadata.swarm.allow')
   }
 }
 

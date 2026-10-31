@@ -100,7 +100,9 @@ import {
   generationId,
   keyHex,
   swarmKeyHex,
-  swarmKeyList
+  swarmKeyList,
+  swarmGenesis,
+  swarmGenesisError
 } from './metadata.js'
 
 // §10: writer cores (and autobee's system/view cores) derive under this
@@ -349,6 +351,9 @@ export class Bundle extends EventEmitter {
     // see the header) lists its own swarm key in metadata.swarm.allow. The
     // invite then names one peer that every joiner admits and dials, so a
     // joiner can reach the vault before it has folded any gov/writer record.
+    // D-060 F01: the creator also binds that key to genesisKey
+    // (metadata.swarm.genesis), so a folded RemoveWriter of the creator cuts
+    // it (_refreshAllowlistOnce).
     const creator = b4a.equals(this.db.key, this.db.local.key)
     let meta = stored
     if (!meta) {
@@ -449,12 +454,15 @@ export class Bundle extends EventEmitter {
 
   /**
    * The metadata input, with the creator's own swarm key in swarm.allow
-   * (T25). A supplied list is validated first (G3-P9 F04): a value that is
-   * not an array, a bad key or a key listed twice fails
-   * VAULT_BAD_SWARM_ALLOW by name. The empty list applies only when allow
-   * is absent. The creator's key goes in once, also when the list names it.
-   * A swarm that is not an object passes through to createMetadata, which
-   * refuses it by name.
+   * (T25) and in swarm.genesis (D-060 F01). A supplied list is validated
+   * first (G3-P9 F04): a value that is not an array, a bad key or a key
+   * listed twice fails VAULT_BAD_SWARM_ALLOW by name. The empty list
+   * applies only when allow is absent. The creator's key goes in once, also
+   * when the list names it. A supplied genesis that is not the creator's
+   * own key fails VAULT_BAD_SWARM_GENESIS by name: the binding names the
+   * swarm key of genesisKey, and only the creator holds it. A swarm that is
+   * not an object passes through to createMetadata, which refuses it by
+   * name.
    */
   _withOwnSwarmKey(creator, input) {
     if (!creator) return input
@@ -462,7 +470,12 @@ export class Bundle extends EventEmitter {
     if (swarm === null || typeof swarm !== 'object' || Array.isArray(swarm)) return input
     const allow = swarm.allow === undefined ? [] : swarmKeyList(swarm.allow, 'metadata.swarm.allow')
     const own = b4a.toString(this._swarmKeyPair.publicKey, 'hex')
-    return { ...input, swarm: { ...swarm, allow: allow.includes(own) ? allow : [...allow, own] } }
+    if (swarm.genesis !== undefined && swarmGenesis(swarm.genesis) !== own) {
+      throw swarmGenesisError(
+        `metadata.swarm.genesis names ${swarmGenesis(swarm.genesis)}, not the swarm key of the creator ${own}`
+      )
+    }
+    return { ...input, swarm: { ...swarm, allow: allow.includes(own) ? allow : [...allow, own], genesis: own } }
   }
 
   // ---------- apply wiring (core apply over the autobee contract) ----------
@@ -1273,6 +1286,17 @@ export class Bundle extends EventEmitter {
       const writer = K.parseKey(key)[2]
       if ((await this.val(K.govRemoved(writer))) === undefined) live.add(value.swarmKey)
       else removed.add(value.swarmKey)
+    }
+    // D-060 F01: the genesis record holds no swarm key, because core seeds
+    // it from the apply config alone. The pinned invite binds the creator's
+    // swarm key to genesisKey instead (metadata.swarm.genesis), so a folded
+    // RemoveWriter of genesisKey takes that key out as it takes out the key
+    // on any removed writer's record. Every peer of the invite pins the same
+    // binding, and every peer folds the same gov/, so each peer, a reopen and
+    // a fresh joiner compute the same set.
+    const { genesis } = this.metadata.swarm
+    if (genesis !== null && (await this.val(K.govRemoved(this.metadata.genesisKey))) !== undefined) {
+      removed.add(genesis)
     }
     // No await from here on, so a revokePeer() that ran during the reads
     // above is in _revokedPeers now.

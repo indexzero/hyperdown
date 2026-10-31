@@ -125,7 +125,7 @@ test('validateMetadata accepts a version 2 document whose rate holds only defaul
     rate: { defaultCeiling: 1024 },
     schemaVersion: 1,
     encrypted: false,
-    swarm: { allow: [] }
+    swarm: { allow: [], genesis: null }
   }
   assert.equal(validateMetadata(doc), doc)
 })
@@ -133,15 +133,16 @@ test('validateMetadata accepts a version 2 document whose rate holds only defaul
 test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys, and it is in the hash (T25)', () => {
   const k1 = '1'.repeat(64)
   const k2 = 'ab'.repeat(32)
-  // the default is an empty allowlist, when the field is absent
-  assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64) }).swarm, { allow: [] })
-  assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64), swarm: {} }).swarm, { allow: [] })
+  // the default is an empty allowlist and no bound creator key, when the
+  // fields are absent
+  assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64) }).swarm, { allow: [], genesis: null })
+  assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64), swarm: {} }).swarm, { allow: [], genesis: null })
   // createMetadata lowercases and sorts, so peers pin the same bytes
   const meta = createMetadata({
     genesisKey: 'a'.repeat(64),
     swarm: { allow: [k2.toUpperCase(), Buffer.from(k1, 'hex')] }
   })
-  assert.deepEqual(meta.swarm, { allow: [k1, k2] })
+  assert.deepEqual(meta.swarm, { allow: [k1, k2], genesis: null })
   assert.notEqual(
     metadataHash(meta),
     metadataHash(createMetadata({ genesisKey: 'a'.repeat(64) })),
@@ -158,7 +159,7 @@ test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys,
     [{ ...good, swarm: { allow: [k2.toUpperCase()] } }, /metadata\.swarm\.allow must be an array of 64-char lowercase-hex keys/],
     [{ ...good, swarm: { allow: [k2, k1] } }, /metadata\.swarm\.allow must be sorted and hold each key once/],
     [{ ...good, swarm: { allow: [k1, k1] } }, /metadata\.swarm\.allow must be sorted and hold each key once/],
-    [{ ...good, swarm: { allow: [], extra: 1 } }, /metadata\.swarm\.extra is not a metadata version 2 field/]
+    [{ ...good, swarm: { allow: [], genesis: null, extra: 1 } }, /metadata\.swarm\.extra is not a metadata version 2 field/]
   ]
   for (const [doc, re] of refused) assert.throws(() => validateMetadata(doc), re)
   assert.throws(
@@ -189,6 +190,68 @@ test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys,
       `refused: swarm ${JSON.stringify(swarm)}`
     )
   }
+})
+
+test('swarm.genesis binds one key of the allowlist to genesisKey: null or a listed 64-hex key, and it is in the hash (D-060 F01)', async (t) => {
+  const k1 = '1'.repeat(64)
+  const k2 = 'ab'.repeat(32)
+  // createMetadata takes 32 bytes or 64 hex in any case, as for allow
+  const bound = createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [k1, k2], genesis: k2.toUpperCase() } })
+  assert.deepEqual(bound.swarm, { allow: [k1, k2], genesis: k2 })
+  assert.deepEqual(
+    createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [k1], genesis: Buffer.from(k1, 'hex') } }).swarm,
+    { allow: [k1], genesis: k1 }
+  )
+  assert.notEqual(
+    metadataHash(bound),
+    metadataHash(createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [k1, k2] } })),
+    'the binding is part of the pinned hash'
+  )
+  for (const [genesis, re] of [
+    ['xyz', /metadata\.swarm\.genesis is not a swarm key/],
+    [Buffer.alloc(31), /metadata\.swarm\.genesis is not a swarm key/],
+    [k2, /metadata\.swarm\.genesis must be one of metadata\.swarm\.allow/]
+  ]) {
+    assert.throws(
+      () => createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [k1], genesis } }),
+      re,
+      `refused: genesis ${JSON.stringify(genesis)}`
+    )
+  }
+
+  // validateMetadata: version 2 always holds the key, null or a listed key
+  const good = createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [k1] } })
+  for (const [swarm, re] of [
+    [{ allow: [k1] }, /metadata\.swarm\.genesis must be null or a 64-char lowercase-hex key/],
+    [{ allow: [k1], genesis: 'xyz' }, /metadata\.swarm\.genesis must be null or a 64-char lowercase-hex key/],
+    [{ allow: [k2], genesis: k2.toUpperCase() }, /metadata\.swarm\.genesis must be null or a 64-char lowercase-hex key/],
+    [{ allow: [k1], genesis: k2 }, /metadata\.swarm\.genesis must be one of metadata\.swarm\.allow/]
+  ]) {
+    assert.throws(() => validateMetadata({ ...good, swarm }), re, `refused: ${JSON.stringify(swarm)}`)
+  }
+
+  // A creator binds its own swarm key, and the invite carries the binding.
+  const dirA = await tmpDir('genesis-bind-a')
+  const a = await Bundle.init(dirA, { metadata: { swarm: { allow: [k1] } } })
+  t.after(() => a.close())
+  const own = a.swarmKey.toString('hex')
+  assert.deepEqual(a.metadata.swarm, { allow: [k1, own].sort(), genesis: own })
+  assert.deepEqual((await loadMetadata(join(dirA, METADATA_FILE))).swarm.genesis, own)
+  const b = await Bundle.join(await tmpDir('genesis-bind-b'), a.key, { metadata: a.metadata })
+  t.after(() => b.close())
+  assert.equal(b.metadata.swarm.genesis, own, 'a joiner pins the binding of the invite')
+  // A joiner without the invite pins no binding.
+  const keyOnly = await Bundle.join(await tmpDir('genesis-bind-key-only'), a.key)
+  t.after(() => keyOnly.close())
+  assert.equal(keyOnly.metadata.swarm.genesis, null)
+
+  // A creator refuses to bind any key but its own, by name, before it pins.
+  const dirC = await tmpDir('genesis-bind-other')
+  await assert.rejects(
+    Bundle.init(dirC, { metadata: { swarm: { allow: [k1], genesis: k1 } } }),
+    (err) => err.code === 'VAULT_BAD_SWARM_GENESIS' && /names 1{64}, not the swarm key of the creator/.test(err.message)
+  )
+  await assert.rejects(access(join(dirC, METADATA_FILE)), 'nothing is pinned')
 })
 
 test('Bundle.init refuses a malformed metadata.swarm.allow by name, before it adds the creator key (G3-P9 F04)', async (t) => {

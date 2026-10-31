@@ -9,7 +9,9 @@
 //   its swarm firewall admits only the keys of metadata.swarm.allow and the
 //   swarm keys of live gov/writer records. The vault key is no capability
 //   to connect. swarm() joinPeers each listed key. A removed writer and a
-//   revoked peer lose their connections.
+//   revoked peer lose their connections. The invite binds the creator's
+//   swarm key to genesisKey (metadata.swarm.genesis), so a removed creator
+//   loses its connections too (D-060 F01).
 // - Every swarm test runs on a local hyperdht testnet, which the vaults
 //   reach with `bootstrap` (no public DHT). hyperdht is a transitive dep of
 //   hyperswarm, resolved through the store package's module graph. Every
@@ -349,6 +351,85 @@ test("a removed writer's swarm key leaves the allowlist though a live record car
   const leakedAfterReopen = await until(async () => connected(a, b) || (await folds(b, reopened, 50)), QUIET)
   assert.equal(leakedAfterReopen, false, 'after the reopen, b gets no connection and no new op')
   assert.equal(swarmA.peers.get(bHex)?.banned, true, "the reopened a's firewall rejected b")
+})
+
+test("a folded RemoveWriter of the creator cuts the creator's swarm key, which the invite binds to genesisKey, also after a reopen and on a fresh joiner (D-060 F01, D-061 R01)", { timeout: 180000 }, async (t) => {
+  const tn = await testnet()
+  const a = await Bundle.init(await tmpDir('genesis-rm-a')) // the creator
+  const dirB = await tmpDir('genesis-rm-b')
+  let b = await Bundle.join(dirB, a.key, { metadata: a.metadata })
+  let c = null
+  t.after(async () => {
+    await a.close()
+    await b.close()
+    if (c) await c.close()
+    await tn.destroy()
+  })
+  const aHex = hex(a.swarmKey)
+  const creator = hex(a.localKey)
+  assert.ok(a.metadata.swarm.allow.includes(aHex), "the invite lists the creator's swarm key")
+
+  await a.addWriter(b.localKey, { indexer: true, swarmKey: b.swarmKey })
+  await withDeadline(a.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'a.swarm()')
+  const swarmB = await withDeadline(b.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'b.swarm()')
+  assert.ok(
+    await until(async () => {
+      await b.update()
+      return b.isIndexer && connected(a, b) && connected(b, a)
+    }, DEADLINE),
+    'b folds its admission as an indexer, and the two connect'
+  )
+  // The genesis record carries no swarm key: core seeds it from the apply
+  // config alone. The invite binds the creator's swarm key instead.
+  assert.equal((await b.val(K.govWriter(creator))).swarmKey, undefined, 'the genesis record holds no swarm key')
+
+  // The second indexer removes the creator. Its own fold cuts the creator.
+  await b.removeWriter(a.localKey)
+  await b.update()
+  assert.notEqual(await b.val(K.govRemoved(creator)), undefined, 'the removal is in the view of b')
+  assert.ok(await until(() => !connected(a, b) && !connected(b, a), DEADLINE), "b's fold destroys the creator's connection")
+
+  // The creator dials again: it joins the swarm anew, looks the topic up,
+  // and finds b. b's firewall refuses it.
+  await withDeadline(a.leaveSwarm(), DEADLINE, 'a.leaveSwarm()')
+  await withDeadline(a.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'a.swarm() again')
+  assert.ok(await until(() => connected(a, b) || swarmB.peers.get(aHex)?.banned === true, DEADLINE), 'the creator reached b again')
+  const { tag: after } = await b.createConcept('genesis-rm/after', 'note')
+  await b.setField(after, 'title', ['after the removal'])
+  const leaked = await until(async () => connected(a, b) || (await folds(a, after, 50)), QUIET)
+  assert.equal(leaked, false, 'the removed creator gets no new connection and no new op')
+  assert.equal(swarmB.peers.get(aHex)?.banned, true, "b's firewall refused the creator")
+
+  // A reopen reads the binding from the pinned invite and the removal from
+  // gov/ again, so the creator stays out.
+  await b.close()
+  b = await Bundle.open(dirB)
+  const reopened = await withDeadline(b.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'reopened b.swarm()')
+  assert.ok(await until(() => connected(a, b) || reopened.peers.get(aHex)?.banned === true, DEADLINE), 'the creator reached the reopened b')
+  const { tag: again } = await b.createConcept('genesis-rm/reopened', 'note')
+  await b.setField(again, 'title', ['after the reopen'])
+  const leakedAfterReopen = await until(async () => connected(a, b) || (await folds(a, again, 50)), QUIET)
+  assert.equal(leakedAfterReopen, false, 'after the reopen, the creator gets no connection and no new op')
+  assert.equal(reopened.peers.get(aHex)?.banned, true, "the reopened b's firewall refused the creator")
+  assert.equal(b.metadata.swarm.genesis, aHex, "the pinned invite binds the creator's swarm key to genesisKey")
+
+  // A fresh joiner with the invite dials the creator first, because the
+  // invite lists it. Once it folds the removal, it stops: the same rule on
+  // the same pinned invite and the same gov/ cuts the creator.
+  c = await Bundle.join(await tmpDir('genesis-rm-c'), a.key, { metadata: a.metadata })
+  await b.addWriter(c.localKey, { swarmKey: c.swarmKey })
+  await b.update()
+  const swarmC = await withDeadline(c.swarm({ bootstrap: tn.bootstrap, allow: [hex(b.swarmKey)] }), DEADLINE, 'c.swarm()')
+  assert.equal(swarmC.peers.get(aHex)?.explicit, true, 'the fresh joiner dials the creator of the invite')
+  assert.ok(
+    await until(async () => {
+      await c.update()
+      return (await c.val(K.govRemoved(creator))) !== undefined && c.writable
+    }, DEADLINE),
+    'the fresh joiner folds the removal and its own admission over b'
+  )
+  assert.ok(await until(() => swarmC.peers.get(aHex)?.explicit !== true, DEADLINE), 'the fresh joiner stops dialing the removed creator')
+  assert.equal(connected(c, a), false, 'the fresh joiner holds no connection to the removed creator')
 })
 
 test('a flood of fresh swarm keys leaves at most 64 ban records, and the firewall still rejects every key (G3-P9 F02)', { timeout: TEST_TIMEOUT }, async (t) => {
