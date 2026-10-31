@@ -42,6 +42,22 @@ export const ROOT_GENERATION = 'root'
 
 const HEX64 = /^[0-9a-f]{64}$/
 
+// limits/rate defaults mirror @auto-okf/core lib/apply.js DEFAULTS exactly
+// (§3 limits; §8 rate — defaultCeiling, the only rate setting, is the
+// spec-silent admitted-writer ceiling pinned here and in core).
+// swarm (T25, D-060 F01) holds the static allowlist of the swarm firewall
+// and the creator's bound swarm key: see validateSwarm. It is not an input
+// of apply, so applyConfig leaves it out, but it is in the pinned hash like
+// every other field.
+export const METADATA_DEFAULTS = {
+  limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
+  rate: { defaultCeiling: 1024 },
+  swarm: { allow: [], genesis: null },
+  schemaVersion: 1,
+  encrypted: false,
+  predecessorKey: null
+}
+
 // D-060 F22: the top-level keys of a version 2 document, and no other. The
 // document is closed like its groups: a key outside this list is refused by
 // name, in a loaded document and in the input of createMetadata, never
@@ -63,27 +79,6 @@ function refuseUnknownFields(doc) {
   for (const k of Object.keys(doc)) {
     if (!FIELDS.includes(k)) throw new TypeError(`metadata.${k} is not a metadata version ${METADATA_VERSION} field`)
   }
-}
-
-// limits/rate defaults mirror @auto-okf/core lib/apply.js DEFAULTS exactly
-// (§3 limits; §8 rate — defaultCeiling, the only rate setting, is the
-// spec-silent admitted-writer ceiling pinned here and in core).
-// swarm.allow (T25) is the static allowlist of the swarm firewall: the
-// hyperswarm public keys, 64 hex each, that every peer of the vault admits
-// and dials (Bundle.swarm()). swarm.genesis (D-060 F01) is the creator's
-// swarm key, one key of allow, or null: the invite binds it to genesisKey,
-// so a folded RemoveWriter of genesisKey cuts it (Bundle
-// _refreshAllowlistOnce). The genesis record of gov/ holds no swarm key,
-// because core seeds it from the apply config alone. Neither field is an
-// input of apply, so applyConfig leaves the group out, but it is in the
-// pinned hash like every other field.
-export const METADATA_DEFAULTS = {
-  limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
-  rate: { defaultCeiling: 1024 },
-  swarm: { allow: [], genesis: null },
-  schemaVersion: 1,
-  encrypted: false,
-  predecessorKey: null
 }
 
 /**
@@ -145,14 +140,14 @@ function swarmGroup(swarm) {
 }
 
 /** An input swarm.genesis as 64 lowercase hex, or null when it is absent or null. */
-export function swarmGenesis(genesis) {
+function swarmGenesis(genesis) {
   if (genesis === undefined || genesis === null) return null
   const hex = swarmKeyHex(genesis)
   if (hex === null) throw swarmGenesisError('metadata.swarm.genesis is not a swarm key (32 bytes or 64 hex characters)')
   return hex
 }
 
-export function swarmGenesisError(message) {
+function swarmGenesisError(message) {
   const err = new TypeError(`VAULT_BAD_SWARM_GENESIS: ${message}`)
   err.code = 'VAULT_BAD_SWARM_GENESIS'
   return err
@@ -238,9 +233,15 @@ export function validateMetadata(meta) {
 }
 
 /**
- * T25: swarm is a closed group of two keys in canonical form. allow is a
- * sorted list of distinct keys. genesis (D-060 F01) is null or one key of
- * allow.
+ * T25: swarm is a closed group of two keys in canonical form.
+ * - allow is the static allowlist of the swarm firewall: the hyperswarm
+ *   public keys, 64 hex each, sorted, each once, that every peer of the
+ *   vault admits and dials (Bundle.swarm()).
+ * - genesis (D-060 F01) is the creator's swarm key, one key of allow, or
+ *   null. The invite binds it to genesisKey, so a folded RemoveWriter of
+ *   genesisKey cuts it (Bundle _refreshAllowlistOnce). The genesis record
+ *   of gov/ holds no swarm key, because core seeds it from the apply config
+ *   alone.
  */
 function validateSwarm(swarm) {
   if (!swarm || typeof swarm !== 'object' || Array.isArray(swarm)) {

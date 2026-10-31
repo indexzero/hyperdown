@@ -100,9 +100,7 @@ import {
   generationId,
   keyHex,
   swarmKeyHex,
-  swarmKeyList,
-  swarmGenesis,
-  swarmGenesisError
+  swarmKeyList
 } from './metadata.js'
 
 // §10: writer cores (and autobee's system/view cores) derive under this
@@ -482,9 +480,13 @@ export class Bundle extends EventEmitter {
     if (swarm === null || typeof swarm !== 'object' || Array.isArray(swarm)) return input
     const allow = swarm.allow === undefined ? [] : swarmKeyList(swarm.allow, 'metadata.swarm.allow')
     const own = b4a.toString(this._swarmKeyPair.publicKey, 'hex')
-    if (swarm.genesis !== undefined && swarmGenesis(swarm.genesis) !== own) {
-      throw swarmGenesisError(
-        `metadata.swarm.genesis names ${swarmGenesis(swarm.genesis)}, not the swarm key of the creator ${own}`
+    if (swarm.genesis !== undefined && swarmKeyHex(swarm.genesis) !== own) {
+      const given = swarmKeyHex(swarm.genesis)
+      throw vaultError(
+        'VAULT_BAD_SWARM_GENESIS',
+        given === null
+          ? 'metadata.swarm.genesis is not a swarm key (32 bytes or 64 hex characters)'
+          : `metadata.swarm.genesis names ${given}, not the swarm key of the creator ${own}`
       )
     }
     return { ...input, swarm: { ...swarm, allow: allow.includes(own) ? allow : [...allow, own], genesis: own } }
