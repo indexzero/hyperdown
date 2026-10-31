@@ -1009,13 +1009,17 @@ test("F21 (D-060): import mode reads no .okf-pending.json of the face: a stale r
   // (the fidelity error then named both notes), and a record that does not
   // parse threw a bare SyntaxError.
   const X = 'ab'.repeat(32)
+  const b = `---\n_id: ${X}\ntype: note\n---\n\nnote b, a copy of a\n`
   const notes = [
     ['a.md', `---\n_id: ${X}\ntype: note\n---\n\nnote a\n`],
-    ['b.md', `---\n_id: ${X}\ntype: note\n---\n\nnote b, a copy of a\n`]
+    ['b.md', b]
   ]
+  // A record in the format of ingest (D-060 F04) that names X for b.md,
+  // with the bytes of b.md, while X is at the path a.
+  const stale = { concepts: { [X]: { at: 'a', path: 'b.md', sha256: createHash('sha256').update(b).digest('hex') } } }
   for (const [name, record] of [
-    ['stale', JSON.stringify({ files: { 'b.md': X } }) + '\n'],
-    ['unparseable', '{"files": {']
+    ['stale', JSON.stringify(stale) + '\n'],
+    ['unparseable', '{"concepts": {']
   ]) {
     const base = await tmpDir(`imp-pending-${name}`)
     await writeTree(join(base, 'face'), new Map([...notes, ['.okf-pending.json', record]]))
