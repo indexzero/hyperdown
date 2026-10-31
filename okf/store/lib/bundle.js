@@ -423,9 +423,13 @@ export class Bundle extends EventEmitter {
    * (autobee-wakeup index.js:19-23), and no new length reaches it. Without
    * the wakeup, that peer stays behind until somebody writes. A revoked
    * writer keeps its record, so it wakes too: every peer folds its later
-   * nodes and rejects their ops. A key that only seen/ holds wakes never:
-   * a member can make any number of such keys (G32), and each wakeup opens
-   * a core.
+   * nodes, and core's §8 revocation check decides each op. It rejects an
+   * op that sorts after the removal, except an op in flight within the
+   * window of the removal, and an op that sorts before the removal takes
+   * effect. So revocation stops cooperating clients only
+   * (okf/SECURITY_MODEL.md, the trust model). A key that only seen/ holds
+   * wakes never: a member can make any number of such keys (G32), and
+   * each wakeup opens a core.
    */
   async _wakeWriters() {
     const self = b4a.toString(this.db.local.key, 'hex')
@@ -1148,11 +1152,15 @@ export class Bundle extends EventEmitter {
    * - the swarm key of each gov/writer record with no gov/removed record,
    *   and
    * - the keys of `allow`, the local list of this peer (G3-P9 F03),
-   * minus the swarm key of each removed writer (also when a live record,
-   * metadata.swarm.allow or `allow` carries the same key), and minus each
-   * key that revokePeer() cut. It is read again after every fold (the
-   * update handler), so an admission opens the firewall, and a folded
-   * RemoveWriter cuts the writer as revokePeer() does.
+   * minus the bound swarm key of each removed writer (also when a live
+   * record, metadata.swarm.allow or `allow` carries the same key), and
+   * minus each key that revokePeer() cut. The bound key of a writer is the
+   * swarmKey on its gov/writer record, and for genesisKey also the key that
+   * metadata.swarm.genesis binds (D-060 F01). A writer with no bound key
+   * keeps what the invite or a local list grants its swarm key. The
+   * allowlist is read again after every fold (the update handler), so an
+   * admission opens the firewall, and a folded RemoveWriter cuts the
+   * writer as revokePeer() does.
    *
    * `opts`: exactly one DHT choice, or the call fails VAULT_SWARM_DHT.
    *   bootstrap  ['host:port' | { host, port }, ...]: the bootstrap nodes of
@@ -1186,8 +1194,10 @@ export class Bundle extends EventEmitter {
     const dht = swarmDhtOptions(bootstrap, publicDht)
     const local = allow === undefined ? [] : swarmKeyList(allow, 'allow')
     if (!this.swarmInstance) {
-      // Until the first _refreshAllowlist() below, the allowlist is empty,
-      // and the firewall rejects every key.
+      // The firewall reads _allowed. On the first call it is empty until
+      // the _refreshAllowlist() below. After leaveSwarm() it still holds
+      // the last list, and that refresh replaces it. The swarm listens and
+      // dials only after the refresh, so no stale list decides an attempt.
       this.swarmInstance = new Hyperswarm({
         ...dht,
         keyPair: this._swarmKeyPair,
@@ -1246,10 +1256,11 @@ export class Bundle extends EventEmitter {
    * Cut a peer (T25): take its swarm key out of the live allowlist, destroy
    * its open connections, and leavePeer it. The key stays out for the life
    * of this Bundle, also when gov/writer or metadata.swarm.allow still name
-   * it. A folded RemoveWriter has the same effect for the swarm key of the
-   * removed writer, through the update handler. This stops the peer's
-   * replication with this peer only. The other peers cut it when they fold
-   * the RemoveWriter, or when each of them calls revokePeer().
+   * it. A folded RemoveWriter has the same effect for the bound swarm key
+   * of the removed writer (see swarm()), through the update handler. This
+   * stops the peer's replication with this peer only. The other peers cut
+   * it when they fold the RemoveWriter, or when each of them calls
+   * revokePeer().
    */
   revokePeer(swarmKey) {
     const key = swarmKeyBuffer(swarmKey)
