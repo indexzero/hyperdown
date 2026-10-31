@@ -986,7 +986,7 @@ test('T17: materialize warns when it writes an encrypted vault as plaintext, and
   assert.equal(pmat.stderr, '')
 })
 
-test('T24: auto-okf materialize exits 1 and names each value that the face cannot hold; an encrypted vault prints no value', async () => {
+test('T24: auto-okf materialize exits 1 and names each value that the face cannot hold; an encrypted vault prints no value, no path and no key (D-060 F23)', async () => {
   const base = await tmpDir('mat-lossy')
   const storage = join(base, 'vault')
   const v = await Bundle.init(storage)
@@ -1005,8 +1005,9 @@ test('T24: auto-okf materialize exits 1 and names each value that the face canno
   assert.match(r.stdout, /^materialized /m)
   await access(join(base, 'face', 'notes', 'ref.md'))
 
-  // An encrypted vault: the warning names the note, the key and the _id,
-  // and holds no value, because stderr can reach a log.
+  // An encrypted vault: the warning names the _id only. The path, the key
+  // and the values are contents of the vault, and stderr can reach a log
+  // (D-060 F23: before the fix, the line printed the path and the key).
   const enc = join(base, 'enc')
   await initEncrypted(enc)
   const ev = await Bundle.open(enc)
@@ -1015,8 +1016,8 @@ test('T24: auto-okf materialize exits 1 and names each value that the face canno
   await ev.close()
   const e = await cli(['materialize', enc, join(base, 'enc-face')])
   assert.equal(e.code, 1, e.stdout + e.stderr)
-  assert.match(e.stderr, new RegExp(`^warning: notes/secret-ref\\.md: the face cannot hold the value of 'reference' \\(_id ${secretRef}\\); values not printed: the vault is encrypted$`, 'm'))
-  assert.ok(!e.stderr.includes(SECRET), e.stderr)
+  assert.match(e.stderr, new RegExp(`^warning: the face cannot hold a value of the concept with _id ${secretRef}; the path, the key and the values are not printed: the vault is encrypted$`, 'm'))
+  for (const plain of [SECRET, 'secret-ref', 'reference']) assert.ok(!e.stderr.includes(plain), `${plain}: ${e.stderr}`)
 })
 
 // ---------- G3-P5 F03: the plaintext warning comes before the plaintext write ----------

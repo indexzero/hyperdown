@@ -717,8 +717,9 @@ async function cmdMaterialize({ args, flags }) {
     }
     // §10: a value that the face cannot hold. A generation (materialize,
     // then import) would lose it, so the operator fixes it in the vault
-    // before the import. The values stay off stderr for an encrypted vault:
-    // stderr can reach a log.
+    // before the import. For an encrypted vault the line names the _id
+    // only: the path, the key and the values are contents of the vault, and
+    // stderr can reach a log (D-060 F23).
     const encrypted = vault.metadata.encrypted === true
     for (const l of report.lossy) process.stderr.write(lossyLine(l, encrypted))
     if (report.lossy.length > 0) {
@@ -741,11 +742,14 @@ async function cmdMaterialize({ args, flags }) {
  * One `warning:` line for a value that the face cannot hold (§10):
  * `warning: notes/a.md: the face cannot hold the value of 'reference'
  * (_id <id>): the vault holds [...], the face holds [...]`. For an encrypted
- * vault the line holds no value.
+ * vault the line names the `_id` alone, an opaque tag: no path, no key and
+ * no value.
  */
 function lossyLine({ id, path, key, before, after }, encrypted) {
+  if (encrypted) {
+    return `warning: the face cannot hold a value of the concept with _id ${id}; the path, the key and the values are not printed: the vault is encrypted\n`
+  }
   const head = `warning: ${path}: the face cannot hold the value of '${key}' (_id ${id})`
-  if (encrypted) return `${head}; values not printed: the vault is encrypted\n`
   return `${head}: the vault holds ${JSON.stringify(before)}, the face holds ${JSON.stringify(after)}\n`
 }
 
