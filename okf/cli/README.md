@@ -305,6 +305,9 @@ auto-okf import ./face ./vault-e1 \
 - `IMPORT_CONFLICT_COPY`: the face holds a `.conflict-<hex>` note, so a
   path collision is still open. Resolve it in the face.
 - `IMPORT_RESERVED_NAME`: the face holds a note at a reserved `.okf-` name.
+- `IMPORT_MISSING_ID`: the face holds a note whose frontmatter holds no
+  `_id`. A generation keeps each `_id`: give the note its `_id`, or remove
+  it.
 - `IMPORT_FACE_ENTRY`: the face holds an entry that is not a regular file
   or a directory, such as a symlink.
 - `IMPORT_ENCRYPTION_KEY_REQUIRED`: the face holds `.okf-encrypted`, or
@@ -328,7 +331,9 @@ imports it with `_id` adoption. It ignores the emission manifest and every
 `IMPORT_REJECTED`. After the import, the notes of the new vault must equal
 the notes of the face, byte for byte, without `_rev` lines (`index.md` and
 `log.md` are not compared). A difference exits 1 with `IMPORT_FIDELITY`,
-which names each difference. On each failure, `import` removes only what
+which names each difference. A note that does not import, such as one
+without `type`, is a `warning:` line and a difference, so a successful
+`import` prints no warning. On each failure, `import` removes only what
 it created while it held the claim: the entries that it wrote in `<dir>`,
 the claim, and `<dir>` itself when `import` made it. An existing empty
 `<dir>` stays, empty. On success it prints

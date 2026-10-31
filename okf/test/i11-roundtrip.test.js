@@ -430,7 +430,7 @@ test('I11 (T24): materialize, then import, round-trips a non-trivial bundle with
   const nu = res.vault
   // A, B and C are live. D is tombstoned, so the face does not hold it.
   assert.deepEqual(res.counts, { notes: 3, imported: 3 })
-  assert.deepEqual(res.warnings, [])
+  assert.ok(!('warnings' in res), 'a successful import has no warning (D-060 F06)')
   assert.equal(res.dir, join(base, 'vault'))
   // The face is inert source: import writes nothing to it.
   assert.equal(await treeHash(face), faceBytes, 'import changed the face')
@@ -710,7 +710,7 @@ test('D-048 F02 (T24): an op that core rejects fails the import by name, and imp
   // 1. A vault whose metadata shows a larger maxOpBytes than the one it
   //    pins: the preflight reads the shown limit, and core rejects the op.
   const base = await tmpDir('imp-rej')
-  await writeTree(join(base, 'face'), new Map([['notes/big.md', `---\ntype: note\n---\n\n${'z'.repeat(3000)}\n`]]))
+  await writeTree(join(base, 'face'), new Map([['notes/big.md', `---\n_id: ${'ab'.repeat(32)}\ntype: note\n---\n\n${'z'.repeat(3000)}\n`]]))
   const lying = async (dir, opts) => {
     const v = await Bundle.init(dir, { ...opts, metadata: { ...opts.metadata, limits: { maxOpBytes: 2000 } } })
     const shown = { ...v.metadata, limits: { ...v.metadata.limits, maxOpBytes: 1000000 } }
@@ -1041,4 +1041,36 @@ test('F05 (D-060): a successful import leaves no claim file, at the top of <dir>
   assert.ok(!(await entries(join(dir, 'db'))).includes('okf-import-claim'), 'the claim stays in <dir>/db/')
   await res.vault.close()
   await old.close()
+})
+
+test('F06 (D-060): import refuses a note whose frontmatter holds no _id, by name, before it writes; a note that does not import fails the import with its warning; a successful import returns no warnings', async () => {
+  // Before the fix, a note without _id got a minted _id, and the import
+  // failed IMPORT_FIDELITY ('differs') with no warning. And importFace
+  // documented warnings on success, which no successful import can carry:
+  // a note that warns does not round-trip.
+  const base = await tmpDir('imp-noid')
+  const face = join(base, 'face')
+  await writeTree(face, new Map([
+    ['notes/ok.md', `---\n_id: ${'cd'.repeat(32)}\ntype: note\n---\n\nok\n`],
+    ['notes/fresh.md', '---\ntype: note\n---\n\nfresh\n'],
+    ['notes/untitled.md', '---\ntitle: x\n---\n\nno type and no _id\n']
+  ]))
+  const run = () => importFace(Bundle.init, face, join(base, 'vault'))
+  const err = await expectRefusal(run, 'IMPORT_MISSING_ID', base, [face])
+  assert.deepEqual(err.paths, ['notes/fresh.md', 'notes/untitled.md'])
+  assert.ok(err.message.includes('notes/fresh.md, notes/untitled.md'), err.message)
+
+  // A note with an _id and no type establishes no concept: the import
+  // fails IMPORT_FIDELITY, and the warning says why.
+  await rm(join(face, 'notes', 'fresh.md'))
+  await writeFile(join(face, 'notes', 'untitled.md'), `---\n_id: ${'ef'.repeat(32)}\ntitle: x\n---\n\nno type\n`)
+  const fid = await expectFailure(run, 'IMPORT_FIDELITY', base)
+  assert.deepEqual(fid.differences, [{ path: 'notes/untitled.md', kind: 'missing' }])
+  assert.deepEqual(fid.warnings.map((w) => [w.kind, w.path]), [['ingest', 'notes/untitled.md']])
+
+  // A successful import returns no warnings: it has none.
+  await rm(join(face, 'notes', 'untitled.md'))
+  const res = await run()
+  assert.deepEqual(Object.keys(res).sort(), ['counts', 'dir', 'generation', 'vault'])
+  await res.vault.close()
 })

@@ -222,7 +222,8 @@ const res = await importFace(Bundle.init, './generation-face', './vault-e1', {
 // res.vault      — the fresh, OPEN vault (the caller closes it)
 // res.generation — the per-generation corestore namespace id
 // res.counts     — { notes, imported }: notes read, notes that made a concept
-// res.warnings   — [{ kind, path, message }], e.g. a note without `type`
+// (no warnings: a note that warns, such as one without `type`, fails the
+// import, and the error carries err.warnings)
 await res.vault.close()
 ```
 
@@ -241,8 +242,10 @@ not a vault key
 (`IMPORT_PREDECESSOR_INVALID`); and a face that holds an entry that is not
 a regular file or a directory, such as a symlink (`IMPORT_FACE_ENTRY`), a
 `.conflict-<hex>` note (`IMPORT_CONFLICT_COPY`: resolve the collision in
-the face first) or a note at a reserved `.okf-` name
-(`IMPORT_RESERVED_NAME`). A missing `initBundle` throws
+the face first), a note at a reserved `.okf-` name
+(`IMPORT_RESERVED_NAME`) or a note whose frontmatter holds no `_id`
+(`IMPORT_MISSING_ID`: import keeps each `_id`, and cannot keep one that
+the note does not hold). A missing `initBundle` throws
 `IMPORT_NO_INITBUNDLE`.
 
 **One import at a time holds `dir`.** Before it calls `initBundle`,
@@ -272,7 +275,11 @@ materialize of the new vault (its byte plan, in memory) must equal the
 notes of the face, byte for byte, without `_rev` lines. `index.md` and
 `log.md` are regenerated faces that import never reads, so the check
 leaves them out. A difference throws `IMPORT_FIDELITY`, with every
-difference in the message and in `err.differences`. On any failure after
+difference in the message and in `err.differences`. A note that warns
+does not round-trip: a note without `type` establishes no concept
+(`missing`), and a copy of another note's `_id` gets a new `_id`
+(`differs`). So each warning comes with a difference, the error carries
+the warnings as `err.warnings`, and a successful import has none. On any failure after
 the new vault exists, `importFace` closes it and removes what it created:
 each entry that it wrote in `dir` while it held the claim, the claim, and
 then each directory that it made for `dir`, when that directory is empty.
@@ -324,7 +331,7 @@ npm install @auto-okf/faces
 | --- | --- |
 | `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; `opts.onPlaintext` is awaited with the plaintext warning before the first write of an encrypted vault, and the face of an encrypted vault gets the mark `.okf-encrypted`; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root, warnings, lossy }`, `lossy` the values that the face cannot hold (above) |
 | `createIngestWatcher(vault, dir, opts)` | start the watcher; `opts`: `confirmDelete`, `debounce`, `settle`, `watch:false` (drive `ingestFile`/`scan` manually); events `ops`, `rejected`, `oversize` and the others above |
-| `importFace(initBundle, faceDir, dir, opts)` | SPEC §10 generation: a new vault in a new or empty `dir`, filled from the notes of the face; `initBundle` is the store factory (`Bundle.init`); `opts`: `encryptionKey`, `metadata` (carries `limits`, `rate`, `schemaVersion`, never `swarm`), `predecessorKey`; returns `{ vault, dir, generation, counts, warnings }`; errors carry an `IMPORT_*` code (above) |
+| `importFace(initBundle, faceDir, dir, opts)` | SPEC §10 generation: a new vault in a new or empty `dir`, filled from the notes of the face; `initBundle` is the store factory (`Bundle.init`); `opts`: `encryptionKey`, `metadata` (carries `limits`, `rate`, `schemaVersion`, never `swarm`), `predecessorKey`; returns `{ vault, dir, generation, counts }`; errors carry an `IMPORT_*` code (above), and the errors after the refusals carry `err.warnings` |
 | `status(vault, dir)` | read-only per-file state rows `[{ path, state }]` (ADR-002) |
 | `wanted(vault)` | `[{ path, count, referrers }]`, most-wanted first (from `wanted/` + `wantedrank/`) |
 | `readView(reader)` / `readLog(reader)` | the pure view→model projection materialize builds on |

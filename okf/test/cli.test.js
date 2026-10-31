@@ -1631,3 +1631,13 @@ test('F03 (D-060): auto-okf materialize exits 1 and names a path whose spelling 
   assert.match(r.stderr, new RegExp(`^warning: notes/b\\.md: the face cannot hold the value of 'path' \\(_id ${b}\\): the vault holds \\["notes/b"\\], the face holds \\["Notes/b"\\]$`, 'm'))
   assert.match(r.stderr, /^error: 1 value\(s\) that the face cannot hold; fix each one in the vault before import \(SPEC §10\)$/m)
 })
+
+test('F06 (D-060): auto-okf import refuses a note whose frontmatter holds no _id, by name, before it writes', async () => {
+  const base = await tmpDir('imp-cli-noid')
+  await oldWithFace(base, async (v) => v.createConcept('notes/a', 'note'))
+  await writeFile(join(base, 'face', 'notes', 'fresh.md'), '---\ntype: note\n---\n\nfresh\n')
+  const r = await cli(['import', join(base, 'face'), join(base, 'out')])
+  assert.equal(r.code, 1, r.stdout + r.stderr)
+  assert.match(r.stderr, /^auto-okf import: IMPORT_MISSING_ID: the face \S+ holds a note whose frontmatter holds no _id.*: notes\/fresh\.md$/m)
+  assert.deepEqual(await entries(base), ['face', 'old'], 'the refusal created something')
+})

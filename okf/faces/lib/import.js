@@ -23,12 +23,12 @@
 // initBundle, then with the files of the new vault (claimDir). So a second
 // import into the same directory refuses by name and deletes nothing.
 //
-// This module imports no substrate (the rest of @auto-okf/faces does not
-// either). The @auto-okf/store `Bundle.init` is passed in as `initBundle`;
-// the CLI (okf/cli) wires the two together.
+// This module imports no substrate, as the rest of @auto-okf/faces: the CLI
+// (okf/cli) passes the @auto-okf/store `Bundle.init` in as `initBundle`.
 import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rm, rmdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { planBundle } from './materialize.js'
+import { parseNote } from './yaml.js'
 import { createIngestWatcher } from './ingest.js'
 import { ENCRYPTED_FILE, isReservedDotFile, isReservedFile } from './fsatomic.js'
 import { compareNotes } from './verify.js'
@@ -87,7 +87,9 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  *                                  the face first
  *   IMPORT_RESERVED_NAME           the face holds a note at a reserved `.okf-`
  *                                  name
- * Each of the last three carries `err.paths`.
+ *   IMPORT_MISSING_ID              the face holds a note whose frontmatter
+ *                                  holds no `_id` (import keeps each `_id`)
+ * Each of the last four carries `err.paths`.
  *   IMPORT_DIR_CLAIMED             another import holds `dir`: its claim
  *                                  file okf-import-claim exists. This
  *                                  import writes no file, and it removes
@@ -103,13 +105,15 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  * claim, and the claim. Then it removes each directory that it made, `dir`
  * or a parent of it, when that directory is empty. An existing `dir` stays.
  * Every error after the refusals carries `err.warnings` and `err.counts`.
+ * `err.warnings` is [{ kind, path, message }]: kind 'ingest' (a note that
+ * does not parse, or that establishes no concept) or 'copy' (a note whose
+ * `_id` another note holds: import minted a new `_id`). Such a note does
+ * not round-trip, so each warning comes with a difference (D-060 F06).
  *
  * Returns { vault (the new vault, OPEN: the caller closes it), dir,
- *   generation, counts: { notes, imported }, warnings }. `notes` counts the
- * notes read from the face, and `imported` the notes that established a
- * concept. `warnings` is [{ kind, path, message }]: kind 'ingest' (a note
- * that does not parse, or that establishes no concept) or 'copy' (a note
- * whose `_id` another note holds: import minted a new `_id`).
+ *   generation, counts: { notes, imported } }. `notes` counts the notes read
+ * from the face, and `imported` the notes that established a concept. A
+ * successful import has no warning.
  */
 export async function importFace(initBundle, faceDir, dir, opts = {}) {
   if (typeof initBundle !== 'function') {
@@ -157,7 +161,7 @@ export async function importFace(initBundle, faceDir, dir, opts = {}) {
     const differences = compareNotes(face.notes, await renderedNotes(vault))
     if (differences.length > 0) throw fidelityError(face.root, differences)
     await outDir.done()
-    return { vault, dir: vaultDir, generation: vault.generation, counts, warnings }
+    return { vault, dir: vaultDir, generation: vault.generation, counts }
   } catch (err) {
     if (err !== null && typeof err === 'object') {
       if (err.warnings === undefined) err.warnings = warnings
@@ -180,12 +184,14 @@ export async function importFace(initBundle, faceDir, dir, opts = {}) {
  * in the face, so a symlink never leads it out), a conflicted copy
  * (IMPORT_CONFLICT_COPY) and a note at a reserved `.okf-` name
  * (IMPORT_RESERVED_NAME: core takes such a path, but the faces reserve the
- * name for their own state).
+ * name for their own state), and a note whose frontmatter holds no `_id`
+ * (IMPORT_MISSING_ID). A note with no frontmatter block goes on, and fails
+ * the fidelity check with a warning: it establishes no concept.
  */
 async function readFace(faceDir) {
   const root = await realpath(faceDir)
   const notes = new Map()
-  const refused = { entry: [], conflict: [], reserved: [] }
+  const refused = { entry: [], conflict: [], reserved: [], id: [] }
   const walk = async (rel) => {
     for (const e of await readdir(rel === '' ? root : join(root, rel), { withFileTypes: true })) {
       const child = rel === '' ? e.name : `${rel}/${e.name}`
@@ -198,6 +204,10 @@ async function readFace(faceDir) {
     }
   }
   await walk('')
+  for (const [rel, raw] of notes) {
+    const { fm } = parseNote(raw.toString('utf8'))
+    if (fm !== null && !(typeof fm._id === 'string' && fm._id !== '')) refused.id.push(rel)
+  }
   const refuse = (code, paths, what) => {
     paths.sort(byteCmp)
     const err = importError(code, `the face ${root} holds ${what}: ${paths.join(', ')}`)
@@ -223,6 +233,14 @@ async function readFace(faceDir) {
       'IMPORT_RESERVED_NAME',
       refused.reserved,
       'a note at a reserved .okf- name. The faces reserve these names for their own state: give the note another name'
+    )
+  }
+  if (refused.id.length > 0) {
+    throw refuse(
+      'IMPORT_MISSING_ID',
+      refused.id,
+      "a note whose frontmatter holds no _id. A generation keeps each concept's _id, and import cannot keep " +
+        'one that the note does not hold: give the note its _id (lowercase hex, SPEC §6), or remove it'
     )
   }
   return { root, notes }
@@ -334,24 +352,6 @@ async function claimDir(dir) {
   }
 }
 
-/**
- * rmdir `dir`, then each parent of it up to `created`, the first directory
- * that this import's mkdir created. It stops at the first directory that
- * rmdir cannot remove, such as one that is not empty. No-op when `created`
- * is undefined.
- */
-async function removeDirs(dir, created) {
-  if (created === undefined) return
-  for (let d = dir; ; d = dirname(d)) {
-    try {
-      await rmdir(d)
-    } catch {
-      return
-    }
-    if (d === created || dirname(d) === d) return
-  }
-}
-
 /** The new vault's key: undefined for no key (undefined or null), else a 32-byte Buffer or Uint8Array. */
 function keyOption(key) {
   if (key === undefined || key === null) return undefined
@@ -387,6 +387,24 @@ function carriedMetadata(metadata, predecessorKey) {
   }
   if (predecessorKey !== null) out.predecessorKey = predecessorKey
   return out
+}
+
+/**
+ * rmdir `dir`, then each parent of it up to `created`, the first directory
+ * that this import's mkdir created. It stops at the first directory that
+ * rmdir cannot remove, such as one that is not empty. No-op when `created`
+ * is undefined.
+ */
+async function removeDirs(dir, created) {
+  if (created === undefined) return
+  for (let d = dir; ; d = dirname(d)) {
+    try {
+      await rmdir(d)
+    } catch {
+      return
+    }
+    if (d === created || dirname(d) === d) return
+  }
 }
 
 /** The notes of a materialize of `vault`, in memory: index.md and log.md left out. */

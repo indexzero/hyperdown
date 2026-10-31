@@ -954,7 +954,8 @@ async function cmdFlags({ args, flags }) {
 /**
  * T24: `import <face-dir> <dir>` (SPEC §10). importFace refuses a pinned,
  * non-empty or non-directory <dir>, and a face that holds a conflicted copy,
- * a reserved .okf- note or a symlink, before it writes anything. It claims
+ * a reserved .okf- note, a note without _id or a symlink, and the face of an
+ * encrypted vault without a key, before it writes anything. It claims
  * <dir> before it creates the vault, so a second import into the same <dir>
  * refuses (IMPORT_DIR_CLAIMED, G3-P8 F01). It checks the new vault against
  * the face, and on a difference (IMPORT_FIDELITY) it removes only what it
@@ -976,12 +977,12 @@ async function cmdImport({ args, flags }) {
   } catch (err) {
     // run() prints the message and exits 1. The warnings say why a note did
     // not import, and IMPORT_FIDELITY names every difference in its message.
+    // A successful import has no warning (D-060 F06).
     for (const w of err.warnings || []) process.stderr.write(warningLine(w))
     if (err.code === 'IMPORT_FIDELITY') process.stderr.write(`notes:       ${importCountsLine(err.counts)}\n`)
     throw err
   }
   try {
-    for (const w of res.warnings) process.stderr.write(warningLine(w))
     printIdentity(res.vault)
     console.log(`storage:     ${res.dir}`)
     console.log(`generation:  ${res.generation}`)

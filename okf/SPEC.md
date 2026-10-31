@@ -940,8 +940,10 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
 - **Refusals, before any write, each by name.** A `<new-dir>` that is
   pinned, not empty, or not a directory (a store there would take the
   import or the key). A face that holds a `.conflict-<hex>` note (a
-  collision is still open), a note at a reserved `.okf-` name, or an entry
-  that is not a regular file or a directory, such as a symlink. A
+  collision is still open), a note at a reserved `.okf-` name, a note
+  whose frontmatter holds no `_id` (`IMPORT_MISSING_ID`: import keeps each
+  `_id`, and a minted one would differ from the face), or an entry that is
+  not a regular file or a directory, such as a symlink. A
   missing `--encryption-key` for a face that holds `.okf-encrypted`, or
   with `--metadata` of an encrypted predecessor
   (`IMPORT_ENCRYPTION_KEY_REQUIRED`): a generation of an encrypted vault is
@@ -956,7 +958,7 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   then on the files of the new vault hold `<new-dir>`, and a second import
   refuses it as not empty. A successful import removes the claim at both
   places, and a failed one removes it with the rest of what it created
-  (`okf/faces/lib/import.js:42`, `:91-94`, `done()` in `claimDir`; tests
+  (`okf/faces/lib/import.js:42`, `:93-96`, `done()` in `claimDir`; tests
   "G3-P8 F01 (T24): a second import into the same <dir> refuses by name
   before its initBundle and deletes nothing; the vault, pin and files of
   the first import stay, for an absent and an existing empty <dir>" and
@@ -1001,14 +1003,17 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   notes read from the face, byte for byte, without each `_rev` frontmatter
   line. `index.md` and `log.md` are regenerated faces that import never
   reads, so the check leaves them out. A difference fails the import by
-  name (`IMPORT_FIDELITY`, each difference listed). No verification copy
-  is written to disk.
+  name (`IMPORT_FIDELITY`, each difference listed). A note that warns
+  (one that does not parse, has no `type`, or copies another note's
+  `_id`) does not round-trip, so it fails the check, and the error carries
+  the warnings. A successful import has none. No verification copy is
+  written to disk.
 - **Cleanup on a failure.** Some failures come once the new vault exists:
   `IMPORT_FIDELITY`, `IMPORT_OVERSIZE`, `IMPORT_REJECTED` and
   `IMPORT_NOT_ENCRYPTED`. On each, import closes the new vault. It removes
   what it created while it held the claim, and then the claim. A `<new-dir>` that
   import made is removed. An existing empty `<new-dir>` stays, empty
-  (`okf/faces/lib/import.js:96-104`; test "T13 (T24): a truncated note
+  (`okf/faces/lib/import.js:98-106`; test "T13 (T24): a truncated note
   fails the import by name with IMPORT_FIDELITY, and import removes the
   new directory").
 - **Encryption.** `--encryption-key` encrypts the new vault. import reads
