@@ -24,9 +24,9 @@ how you shrink the log, rotate keys, and shed a writer.
 - **Converges.** Peers that fold the same ops hold a bit-identical view
   (I1 to I11; the fault harness and seeded fuzz check them). Every op that
   `apply` rejects leaves a `flag/rejected` entry.
-- **Connects privately.** Only writers' swarm keys pass the firewall. Peers
-  connect directly, through a bootstrap node you run, or through your own DHT.
-  The public DHT needs `--public-dht`.
+- **Connects privately.** Only [allowlisted](./store/README.md#replication)
+  swarm keys pass the firewall. Peers connect directly, through a bootstrap
+  node you run, or through your own DHT. The public DHT needs `--public-dht`.
 - **Encrypts at rest, on request.** `--encryption-key` encrypts the stored
   cores. Every writer holds the key, and every vault directory stores it.
 - **Exports and imports files.** `materialize` writes the live view as
