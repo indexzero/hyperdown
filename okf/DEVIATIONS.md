@@ -64,17 +64,23 @@ would differ, but that requires an adversary pre-occupying the tag id and is
 unreachable through ordinary ingest.
 
 **okf §9 a pending new file keeps the concept that its ingest created
-(D-055 Q2).** With the deferred write-back above, a new file has no `_id`
+(D-055 Q2, D-060 F04).** With the deferred write-back above, a new file has no `_id`
 until materialize stamps it, and materialize does that only after the file
 is recorded as ingested. An ingest that creates a concept and does not
 complete leaves the file pending without an `_id`: core rejected one of its
-ops (D-048 F02), or the ingest threw. So the watcher records that `_id` for
-the path in `<bundle>/.okf-pending.json`. A later ingest of that path uses
-the recorded concept where it would mint or split a copy, while the view
-holds it, so the file never gets a second concept. The record goes when an
-ingest of the path completes, or when its delete runs. A file that moves to
-another path before it completes mints again. Tests: the two "D-055 Q2"
-tests in `okf/test/faces-ingest.test.js`.
+ops (D-048 F02), or the ingest threw. So the watcher records the concept of
+the file in `<bundle>/.okf-pending.json`. The record holds the file's path,
+the sha256 of its bytes, and the concept's path in the view then. A later
+ingest takes the recorded concept where it would mint or split a copy,
+only on evidence that the file is the same. The evidence is the file at
+the recorded path, or a rename: the same bytes at another path while the
+recorded path is gone. It never takes a concept that is not live at the
+view path that the record saw. A record whose file a delete pass found
+gone takes back only the same bytes. The record goes when an ingest of the
+file or of the concept completes, or when the delete of the file takes
+effect. A rename and an edit in one step, while no watcher runs, mints
+again. Tests: the two "D-055 Q2" tests and the three "D-060 F04" tests in
+`okf/test/faces-ingest.test.js`.
 
 **okf §9 materialize path-safety violations are reported, never written to
 the view.** §7 notes a materialize-time containment violation "is reported on
