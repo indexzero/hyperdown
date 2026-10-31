@@ -177,7 +177,10 @@ paths.
   autobee asks for its system and view cores at manifest version 3
   (`index.js:213-221`), and its view encryption refuses a view core below
   version 3 (`lib/encryption.js:83-86`). `DEVIATIONS.md` records the
-  evidence.
+  evidence. The hyperswarm pin is exactly `4.17.0` (test: "the store pins
+  hyperswarm at exactly 4.17.0"): the store reads hyperswarm state that
+  its README does not document (`okf/store/README.md`, Replication, "A
+  bounded ban table").
 
 ## 2. Architecture: the log is the source of truth
 
