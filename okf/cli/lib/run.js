@@ -17,7 +17,7 @@
 // — unknown flag/command, extra arguments, bad flag values, and (via
 // per-command validate()) missing required arguments — to 2, never letting
 // paparam pick the code. Unknown flags are rejected strictly, as before.
-import { readFile, access, stat } from 'node:fs/promises'
+import { access, stat } from 'node:fs/promises'
 import { isIPv4 } from 'node:net'
 import { join, relative, resolve, sep } from 'node:path'
 import b4a from 'b4a'
@@ -508,25 +508,46 @@ async function cmdInit({ args, flags }) {
   return 0
 }
 
+/**
+ * `join --metadata <okf-vault.json>`: the invite, the creator's pinned
+ * document. loadMetadata validates it, so a file that is not metadata of
+ * this release fails by name, with its path, before the store exists.
+ */
+async function inviteMetadata(path) {
+  let meta
+  try {
+    meta = await loadMetadata(path)
+  } catch (err) {
+    throw new Error(`--metadata ${path}: ${err.message}`)
+  }
+  if (meta === null) throw new Error(`--metadata ${path}: no such file`)
+  return meta
+}
+
 async function cmdJoin({ args, flags }) {
-  const { dir, vaultKey: key } = args
+  const { dir } = args
+  const key = args.vaultKey !== undefined ? hexKey(args.vaultKey, 'vault key') : undefined
   const allow = flags.swarmAllow !== undefined ? swarmAllowKeys([].concat(flags.swarmAllow)) : null
   await refuseSiblingVault(dir)
-  const opts = {}
-  if (flags.encryptionKey) {
-    opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
-  }
-  if (flags.metadata) {
-    opts.metadata = JSON.parse(await readFile(flags.metadata, 'utf8'))
-  }
   // A pinned dir reopens without a key; a fresh dir needs the vault key.
   const pinned = await isPinned(dir)
   if (!pinned && key === undefined) {
     throw new UsageError('a vault key is required to join fresh storage')
   }
-  const vault = pinned && key === undefined
-    ? await Bundle.open(dir, opts)
-    : await Bundle.join(dir, hexKey(key, 'vault key'), opts)
+  // D-060 F11: fresh storage needs the invite. Without it the peer pins
+  // metadata that is not the creator's: no key of the invite, so the
+  // private swarm admits nobody, and pinned metadata never changes.
+  if (!pinned && !flags.metadata) {
+    throw new UsageError(
+      "join needs the invite to join fresh storage: --metadata <okf-vault.json>, the creator's pinned file"
+    )
+  }
+  const opts = {}
+  if (flags.encryptionKey) {
+    opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
+  }
+  if (flags.metadata) opts.metadata = await inviteMetadata(flags.metadata)
+  const vault = pinned && key === undefined ? await Bundle.open(dir, opts) : await Bundle.join(dir, key, opts)
   try {
     printIdentity(vault)
     if (allow !== null) {

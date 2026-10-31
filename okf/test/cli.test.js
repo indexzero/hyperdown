@@ -547,6 +547,50 @@ test('add-writer --swarm-key puts the swarm key on gov/writer, and a bad key is 
   }
 })
 
+test('join refuses fresh storage without the invite, by name and before it creates anything; it reads the invite by name; a directory that the store API joined without the invite refuses it later, by name (D-060 F11)', async () => {
+  const base = await tmpDir('join-invite')
+  const origin = join(base, 'origin')
+  const init = await cli(['init', origin])
+  const vaultKey = init.stdout.match(KEY_LINE)[1]
+  const re = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+
+  // The vault key alone pins metadata that is not the creator's: no swarm
+  // key of the invite, so the private swarm admits nobody.
+  const peer = join(base, 'peer')
+  const bare = await cli(['join', peer, vaultKey])
+  assert.equal(bare.code, 2, bare.stderr)
+  assert.match(bare.stderr, /join needs the invite to join fresh storage: --metadata <okf-vault.json>/)
+  await assert.rejects(access(peer), 'nothing is created')
+
+  // A bad invite file fails by name, with its path, before anything exists.
+  const junk = join(base, 'junk.json')
+  await writeFile(junk, '{ not json')
+  const badFile = await cli(['join', peer, vaultKey, '--metadata', junk])
+  assert.equal(badFile.code, 1, badFile.stderr)
+  assert.match(badFile.stderr, re(`--metadata ${junk}: `))
+  const missing = join(base, 'nope.json')
+  const noFile = await cli(['join', peer, vaultKey, '--metadata', missing])
+  assert.equal(noFile.code, 1, noFile.stderr)
+  assert.match(noFile.stderr, re(`--metadata ${missing}: no such file`))
+  await assert.rejects(access(peer), 'nothing is created')
+
+  // With the invite, the peer pins the creator's document. A reopen needs
+  // no invite.
+  const joined = await cli(['join', peer, vaultKey, '--metadata', join(origin, 'okf-vault.json')])
+  assert.equal(joined.code, 0, joined.stderr)
+  assert.deepEqual(await invite(peer), await invite(origin), 'the pinned metadata is the invite')
+  assert.equal((await cli(['join', peer])).code, 0)
+
+  // A directory that the store API joined with the vault key alone refuses
+  // the invite later, by name, with the fix.
+  const keyOnly = join(base, 'key-only')
+  const v = await Bundle.join(keyOnly, Buffer.from(vaultKey, 'hex'))
+  await v.close()
+  const late = await cli(['join', keyOnly, '--metadata', join(origin, 'okf-vault.json')])
+  assert.equal(late.code, 1, late.stderr)
+  assert.match(late.stderr, /VAULT_JOINED_WITHOUT_INVITE: .*join again in a new directory with the invite/)
+})
+
 test('add-writer refuses, by name and before it appends, a writer that no record binds to a swarm key; a promotion keeps the bound key, and the invite binds the creator (D-060 F01)', async () => {
   const base = await tmpDir('add-unbound')
   const origin = join(base, 'origin')
