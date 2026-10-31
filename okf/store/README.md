@@ -81,7 +81,7 @@ and `okf/test/store-deps.test.js` checks it.
 - `swarm()` announces the vault on the `auto-okf/2` topic,
   `sha256('auto-okf/2' ‖ discoveryKey)`, never on the bare discovery key.
   A peer that announces on another topic never finds the vault. The
-  firewall admits only members' swarm keys (see [Replication](#replication)).
+  firewall admits only the keys of its allowlist (see [Replication](#replication)).
 - A directory with no `okf-vault.json` is new storage. The store runs no
   check on what the directory already holds.
 
@@ -116,15 +116,22 @@ by name (`metadata.<key> is not a metadata version 2 field`). Its keys:
   (`defaultCeiling`) — closed groups: `validateMetadata` refuses a key that
   metadata version 2 does not define. With `genesisKey` they are the
   `createApply` config slice (`applyConfig`), identical on every peer (I2).
-- **`swarm`** (`allow`) — a closed group. `allow` is the static allowlist
-  of the swarm firewall: swarm keys, 64 lowercase hex each, sorted, each
-  key once. `createMetadata` takes 32 bytes or 64 hex characters in any
-  case, and sorts the list. It refuses a value that is not an array, a bad
-  key and a key listed twice, each with `VAULT_BAD_SWARM_ALLOW` and the
-  field name. The empty list applies only when `allow` is absent. The
-  creator of a vault always adds its own swarm key, after that check, and
-  once also when the list names it. See [Replication](#replication). Apply
-  does not read it, so `applyConfig` leaves it out. A generation never
+- **`swarm`** (`allow`, `genesis`) — a closed group. `allow` is the
+  static allowlist of the swarm firewall: swarm keys, 64 lowercase hex
+  each, sorted, each key once. `createMetadata` takes 32 bytes or 64 hex
+  characters in any case, and sorts the list. It refuses a value that is
+  not an array, a bad key and a key listed twice, each with
+  `VAULT_BAD_SWARM_ALLOW` and the field name. The empty list applies only
+  when `allow` is absent. The creator of a vault always adds its own swarm
+  key, after that check, and once also when the list names it. `genesis`
+  is the creator's swarm key, one key of `allow`, or `null`. The invite
+  binds it to `genesisKey`, so a folded `remove-writer` of the creator
+  cuts it on every peer (see [Replication](#replication)). The creator
+  writes its own key there, and refuses another one
+  (`VAULT_BAD_SWARM_GENESIS`). A peer that joins with the vault key alone
+  pins `null`. The genesis record of `gov/` holds no swarm key, because
+  core seeds it from the apply config alone. Apply does not read the
+  group, so `applyConfig` leaves it out. A generation never
   carries it: `auto-okf import --metadata` carries `limits`, `rate` and
   `schemaVersion` only (`okf/faces/lib/import.js:44`). So the invite of
   the new vault lists only the swarm key of the peer that ran the import.
@@ -171,7 +178,7 @@ a reopen needs no key), `keyPair`, `backpressure`.
 | `metadata`, `generation` | the pinned document and the §10 namespace id |
 | `append(type, payload, { backpressure })` | encode + append one §3 op; fills `clock` (see `clock()`) and `at`; resolves `{ seq, tag }` once the local core holds the op's node — `seq` is the node's position in the local core (§3). Errors: see [Appends and close](#appends-and-close) |
 | `createConcept / setField / addTag / remTag / setBody / setPath / deleteConcept / undeleteConcept / resolveConflict` | content-op helpers (thin over `append`); `remTag` computes the §5 citation set from the view |
-| `writers.add(key, { indexer, swarmKey })` | §8 governance op (apply enforces the indexer-issuer rule). `swarmKey` (32 bytes or 64 hex, optional) goes on `gov/writer/<key>`, and the swarm firewall of every peer then admits it. A bad key fails `VAULT_BAD_SWARM_KEY` before the append; core rejects a wire key that is not 32 bytes `bad-swarm-key`. A writer key that is not 32 bytes or 64 hex fails `VAULT_BAD_WRITER_KEY` before the append, in `writers.remove` and `writers.setPolicy` too; core rejects a wire writer key that is not 32 bytes `bad-writer-key`. Core rejects an `add-writer` with `indexer: false` (the default) that would demote the last live indexer `policy-governance`, as it rejects a `remove-writer` that would remove it |
+| `writers.add(key, { indexer, swarmKey })` | §8 governance op (apply enforces the indexer-issuer rule). `swarmKey` (32 bytes or 64 hex, optional) goes on `gov/writer/<key>`, and the swarm firewall of every peer then admits it. A bad key fails `VAULT_BAD_SWARM_KEY` before the append; core rejects a wire key that is not 32 bytes `bad-swarm-key`. Without `swarmKey` the writer has no bound swarm key: a later `writers.remove` cuts no key that the invite or a local list grants it (see [Replication](#replication)), and `auto-okf add-writer` refuses such an admission. A writer key that is not 32 bytes or 64 hex fails `VAULT_BAD_WRITER_KEY` before the append, in `writers.remove` and `writers.setPolicy` too; core rejects a wire writer key that is not 32 bytes `bad-writer-key`. Core rejects an `add-writer` with `indexer: false` (the default) that would demote the last live indexer `policy-governance`, as it rejects a `remove-writer` that would remove it |
 | `writers.remove(key)` | causal revocation — in-band, never positional; the emitted clock cites the target's last folded position (`seqAtRemoval`) |
 | `writers.setPolicy(key, { namespacePrefixes, rateCeiling })` | per-writer namespace + token-bucket policy; `rateCeiling` defaults to the pinned `metadata.rate.defaultCeiling`, so a call before open waits for open |
 | `clock([seq])` | the §3/§8 clock of an op, `[[writerKeyHex, position], ...]` sorted by key: the last folded position of self and of each writer with a `gov/writer` record, and no other key; with `seq`, the self entry is `seq` |
@@ -179,7 +186,7 @@ a reopen needs no key), `keyPair`, `backpressure`.
 | `update()`, `updated()`, `flush()` | autobee lifecycle passthrough |
 | `snapshotHash()`, `hash()` | I2/I3 full-range view hash, byte-compatible with core `MemView.hash()` (`hash()` is an alias) |
 | `replicate(isInitiator \| stream)` | direct replication stream |
-| `swarm({ bootstrap, allow, publicDht })`, `leaveSwarm()` | replication over a private hyperswarm that the Bundle owns, behind a firewall on members' swarm keys (see [Replication](#replication)). `allow` is a local list of swarm keys that this peer alone admits and dials |
+| `swarm({ bootstrap, allow, publicDht })`, `leaveSwarm()` | replication over a private hyperswarm that the Bundle owns, behind a firewall on the keys of its allowlist (see [Replication](#replication)). `allow` is a local list of swarm keys that this peer alone admits and dials |
 | `revokePeer(swarmKey)` | take a swarm key out of this peer's allowlist, destroy its open connections, and `leavePeer` it, for the life of the Bundle |
 | `close()` | closes autobee, settles every append that started before it, then closes the owned corestore |
 
@@ -192,7 +199,7 @@ and `fastForward: false`, and grants every writer at weight 0 (SPEC §8,
 - `writable` signals substrate admission: autobee has added this writer
   (autobee@2.12.1 `index.js:196-198`). Until then `writable` is false, and
   `append` fails `VAULT_NOT_WRITABLE` (`err.writerKey` names the key)
-  before the op takes a seq (`okf/store/lib/bundle.js:884-892`).
+  before the op takes a seq (`okf/store/lib/bundle.js:915-923`).
 - `writable` is not okf membership. Core grants the key of every
   `add-writer` op that it folds at the substrate, a rejected one too
   (`okf/core/lib/apply.js:375`). So a writer that is not an indexer can
@@ -237,7 +244,7 @@ with one of these codes:
 before it, then closes the owned corestore.
 
 `append` reports durable, not accepted. Its `{ seq, tag }` says that the
-local core holds the node (`okf/store/lib/bundle.js:689-703`). It does not
+local core holds the node (`okf/store/lib/bundle.js:720-734`). It does not
 say that apply accepted the op. Read the verdict from the view: a
 rejected op has `flag/rejected/<writerKey>/<seq>` (`auto-okf flags <dir>
 rejected`). Read it in your write loop, because a reorder can change it
@@ -297,15 +304,21 @@ hyperswarm. The vault key is not a capability to connect:
 - **A swarm key per peer.** The swarm listens and dials with `swarmKey`,
   which the store derives from the peer's own corestore, so it stays the
   same across restarts.
-- **A firewall on members' swarm keys.** The swarm rejects every remote
-  key outside the allowlist, on an incoming handshake and before a dial
+- **A firewall on an allowlist.** The swarm rejects every remote key
+  outside the allowlist, on an incoming handshake and before a dial
   (hyperswarm `firewall`). The allowlist is the keys of
   `metadata.swarm.allow`, the `swarmKey` of each `gov/writer` record
   that has no `gov/removed` record, and the keys of `allow`, this peer's
-  local list. The swarm key of a removed writer is not in it, also when
-  `metadata.swarm.allow` or `allow` lists the key, and also when another,
-  live `gov/writer` record carries the same key. The store
-  reads the allowlist again after every fold. A peer that holds the vault
+  local list. So a key of the invite or of the local list passes, writer
+  or not. The bound swarm key of a removed writer is not in it, also
+  when `metadata.swarm.allow` or `allow` lists the key, and also when
+  another, live `gov/writer` record carries the same key. The bound key
+  is the `swarmKey` on the writer's record, and for the creator also
+  `metadata.swarm.genesis`. A writer with no bound key keeps what the
+  invite or a local list grants its swarm key after its removal: admit
+  each writer with `swarmKey`, or cut such a key with `revokePeer` on
+  each peer, or with a new generation. The store reads the allowlist
+  again after every fold. A peer that holds the vault
   key and the invite, but no admitted swarm key, gets no connection, so it
   reaches neither the replication nor autobee's wakeup protocol (G44 in
   [SECURITY_MODEL.md](../SECURITY_MODEL.md)).
@@ -326,8 +339,10 @@ hyperswarm. The vault key is not a capability to connect:
 - **Revocation.** `revokePeer(swarmKey)` takes a key out of this peer's
   allowlist, destroys its open connections, and stops the direct dials to
   it (`leavePeer`), until this Bundle closes. A folded `remove-writer` has
-  the same effect, on every peer that folds it, for the swarm key on the
-  removed writer's record. Each peer cuts only its own connections.
+  the same effect, on every peer that folds it, also after a reopen, for
+  the bound swarm key of the removed writer: the key on its record, or
+  the creator's key that the invite binds. Each peer cuts only its own
+  connections.
 - **A DHT by choice.** `bootstrap` is the list of the bootstrap nodes of a
   private DHT (`'host:port'` or `{ host, port }`), for example the node
   that `auto-okf bootstrap` runs. `publicDht: true` uses hyperdht's
@@ -356,7 +371,10 @@ Two shapes of membership use the same swarm:
    peer in `metadata.swarm.allow`, and every peer joins with that invite.
    `swarm()` calls `joinPeer` for each listed key, so a pre-provisioned
    fleet needs no topic: its peers dial each other by key. A peer can read
-   its swarm key before it holds a vault (`auto-okf keys <dir>`).
+   its swarm key before it holds a vault (`auto-okf keys <dir>`). The
+   invite binds only the creator's key to a writer key. So admit each
+   writer of the fleet with `writers.add(writerKey, { swarmKey })` too, or
+   its removal cuts nothing that the invite grants.
 2. **A late joiner.** An indexer admits it with
    `writers.add(writerKey, { swarmKey })`. Each peer admits the swarm key
    when it folds the `add-writer`, and finds the joiner on the
@@ -391,11 +409,15 @@ rebuild equality, hyperswarm replication on the `auto-okf/2` topic over a
 local testnet, the private swarm (the swarm key, the firewall against a
 peer with the vault key and no admitted swarm key, the cut of a removed
 writer and of `revokePeer`, the cut of a removed writer whose swarm key a
-live record also carries, across a reopen, at most 64 ban records after a
-flood of fresh keys, a pre-provisioned pair over `joinPeer`, a joiner
-admitted after a ban, a late joiner whose creator is offline through
-`allow`, and the refusal of a malformed `allow`), and the dependency
-resolution of the store.
+live record also carries, across a reopen, the cut of a removed creator
+through `metadata.swarm.genesis`, across a reopen and on a fresh joiner,
+at most 64 ban records after a flood of fresh keys, a pre-provisioned
+pair over `joinPeer`, a joiner admitted after a ban, a late joiner whose
+creator is offline through `allow`, the refusal of a malformed `allow`,
+and a local list file that is refused by name and written whole),
+metadata that is a closed document (`swarm.genesis`, an unknown top-level
+key, a directory that joined without the invite), and the dependency
+resolution and exact pins of the store.
 
 ## License
 
