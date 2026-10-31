@@ -21,10 +21,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { Bundle, K, METADATA_FILE, loadMetadata, pair, sleep, tmpDir, until } from './store-helpers.js'
+import { LOCAL_ALLOW_FILE, loadLocalAllow, saveLocalAllow } from '../store/index.js'
 
 const storeRequire = createRequire(new URL('../store/index.js', import.meta.url))
 const Hyperswarm = storeRequire('hyperswarm')
@@ -653,6 +654,32 @@ test('swarm({ allow }) refuses a malformed local list by name, before it makes a
     )
   }
   assert.equal(a.swarmInstance, null, 'a refusal makes no swarm')
+})
+
+test('loadLocalAllow refuses a file that is not JSON by name, with its path; saveLocalAllow replaces the file whole, through a rename (D-060 F20)', async () => {
+  const dir = await tmpDir('local-allow')
+  const path = join(dir, LOCAL_ALLOW_FILE)
+  const k1 = 'ab'.repeat(32)
+  const k2 = '12'.repeat(32)
+  for (const raw of ['{ "allow": [', '', 'not json']) {
+    await writeFile(path, raw)
+    await assert.rejects(
+      loadLocalAllow(dir),
+      (err) => err.code === 'VAULT_BAD_SWARM_ALLOW' && err.message.includes(`${path} is not JSON`),
+      `refused: ${JSON.stringify(raw)}`
+    )
+  }
+
+  // A write never changes the file in place: a reader sees the old list or
+  // the new one, whole. The new file comes in through a rename, so it is a
+  // new inode, and no temporary file stays.
+  assert.deepEqual(await saveLocalAllow(dir, [k1]), [k1])
+  const before = await stat(path)
+  assert.deepEqual(await saveLocalAllow(dir, [k1, k2]), [k2, k1])
+  const after = await stat(path)
+  assert.notEqual(after.ino, before.ino, 'the write replaces the file through a rename')
+  assert.deepEqual(await loadLocalAllow(dir), [k2, k1])
+  assert.deepEqual(await readdir(dir), [LOCAL_ALLOW_FILE], 'no temporary file stays')
 })
 
 test('a vault derives its swarm key from its own store, so the key is stable across a reopen (T25)', { timeout: TEST_TIMEOUT }, async (t) => {

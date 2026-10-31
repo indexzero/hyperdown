@@ -339,6 +339,11 @@ hyperswarm. The vault key is not a capability to connect:
   adds its keys. `saveLocalAllow(dir, keys)` and `loadLocalAllow(dir)`
   keep the list in `<dir>/okf-swarm-allow.json` (`LOCAL_ALLOW_FILE`), for
   `auto-okf join --swarm-allow` and `auto-okf watch --swarm`.
+  `saveLocalAllow` writes a new file and renames it over the old one, so
+  a reader or a crash finds the old list or the new one, whole.
+  `loadLocalAllow` refuses a file that is not JSON, or not
+  `{ "allow": [...] }` with valid, distinct keys, with
+  `VAULT_BAD_SWARM_ALLOW` and the file's path.
 - **The Bundle owns the swarm.** `leaveSwarm()` and `close()` leave the
   topic and the listed peers, clear the local list, and destroy it.
 
