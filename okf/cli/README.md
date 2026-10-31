@@ -411,7 +411,9 @@ per command) and exits 0.
   `_id`, its base and its clock, and the clock grows with each admitted
   writer (SPEC §8). `ingest` encodes the op before it appends anything
   (`okf/faces/lib/ingest.js:355-359`), and
-  refuses an oversize file by name (exit 1, siblings unaffected). Split
+  refuses an oversize file by name (exit 1, siblings unaffected), with the
+  size of the encoded op: `error: drafts/big.md: its set-body op is 71,290
+  bytes encoded; maxOpBytes is 65,536`. Split
   the document into smaller linked concepts. Test: "the oversize preflight
   encodes the set-body op: a body just below maxOpBytes whose op is over
   it appends nothing and stays pending (D-048 F02)".

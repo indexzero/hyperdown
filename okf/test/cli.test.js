@@ -222,7 +222,7 @@ test('ingest preflights maxOpBytes: oversize file named, siblings unaffected (AD
 
   const ing = await cli(['ingest', storage, bundle])
   assert.equal(ing.code, 1, 'an oversize preflight refusal is an error exit')
-  assert.match(ing.stderr, /^error: big\.md body is 70,000 bytes; maxOpBytes is 65,536$/m)
+  assert.match(ing.stderr, /^error: big\.md: its set-body op is 70,\d{3} bytes encoded; maxOpBytes is 65,536$/m)
   assert.match(ing.stdout, /ingested small\.md: create-concept/, 'the sibling still ingested')
   assert.doesNotMatch(ing.stdout, /ingested big\.md/)
 
@@ -1640,4 +1640,23 @@ test('F06 (D-060): auto-okf import refuses a note whose frontmatter holds no _id
   assert.equal(r.code, 1, r.stdout + r.stderr)
   assert.match(r.stderr, /^auto-okf import: IMPORT_MISSING_ID: the face \S+ holds a note whose frontmatter holds no _id.*: notes\/fresh\.md$/m)
   assert.deepEqual(await entries(base), ['face', 'old'], 'the refusal created something')
+})
+
+test('F09 (D-060): the oversize line of ingest prints the encoded op size and the limit, so a body below the limit is never the error', async () => {
+  // The preflight measures the encoded set-body op (D-048 F02). Before the
+  // fix, the line printed the body size: "edge.md body is 4,000 bytes;
+  // maxOpBytes is 4,096", which calls a body below the limit too large.
+  const base = await tmpDir('oversize-op')
+  const storage = join(base, 'vault')
+  const bundle = join(base, 'bundle')
+  const v = await Bundle.init(storage, { metadata: { limits: { maxOpBytes: 4096 } } })
+  await v.close()
+  await mkdir(bundle, { recursive: true })
+  await writeFile(join(bundle, 'edge.md'), `---\ntype: note\n---\n${'x'.repeat(4000)}\n`)
+  const r = await cli(['ingest', storage, bundle])
+  assert.equal(r.code, 1, r.stdout + r.stderr)
+  const m = /^error: edge\.md: its set-body op is ([\d,]+) bytes encoded; maxOpBytes is 4,096$/m.exec(r.stderr)
+  assert.ok(m, r.stderr)
+  assert.ok(Number(m[1].replace(/,/g, '')) > 4096, m[1])
+  assert.ok(!r.stderr.includes('4,000'), 'the line names no body size')
 })

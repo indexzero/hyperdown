@@ -450,10 +450,14 @@ function localHex(vault) {
   return b4a.toString(vault.localKey, 'hex')
 }
 
-/** `error: drafts/big.md body is 71,204 bytes; maxOpBytes is 65,536` (ADR-005). */
-function oversizeLine({ path, bytes, limit }) {
+/**
+ * `error: drafts/big.md: its set-body op is 71,290 bytes encoded; maxOpBytes
+ * is 65,536` (ADR-005, D-060 F09): the preflight measures the encoded op
+ * (D-048 F02), so the line names that size, never the body's.
+ */
+function oversizeLine({ path, opBytes, limit }) {
   const n = (v) => v.toLocaleString('en-US')
-  return `error: ${path} body is ${n(bytes)} bytes; maxOpBytes is ${n(limit)}\n`
+  return `error: ${path}: its set-body op is ${n(opBytes)} bytes encoded; maxOpBytes is ${n(limit)}\n`
 }
 
 /**
