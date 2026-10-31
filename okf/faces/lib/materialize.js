@@ -110,7 +110,8 @@ function conflictHash(id) {
 
 /**
  * §10: the field values of `concept` that its rendered note cannot hold.
- * Parse the note back, read each field the way ingest reads it (yamlToValues,
+ * `text` is the note as its bytes decode, so a lone surrogate shows as
+ * U+FFFD. Parse the note back, read each field the way ingest reads it (yamlToValues,
  * then the canonical array that apply stores), and compare it with the view.
  * Returns [{ id, path, key, before, after }]: `before` the view's values,
  * `after` the values that the note gives back ([] when the note omits the
@@ -239,9 +240,11 @@ export async function planBundle(vault, opts = {}) {
   // ---- 2. planned bytes: concept files ----
   const planned = new Map() // rel -> Buffer
   for (const p of placed) {
-    const text = renderNote(frontmatterPairs(p.concept), p.concept.headText)
-    planned.set(p.rel, Buffer.from(text, 'utf8'))
-    if (Array.isArray(opts.lossy)) opts.lossy.push(...lossyFields(p.concept, p.rel, text))
+    const buf = Buffer.from(renderNote(frontmatterPairs(p.concept), p.concept.headText), 'utf8')
+    planned.set(p.rel, buf)
+    // D-060 F07: parse the bytes that the note holds, not the string: UTF-8
+    // cannot hold a lone surrogate, so the file gets U+FFFD in its place.
+    if (Array.isArray(opts.lossy)) opts.lossy.push(...lossyFields(p.concept, p.rel, buf.toString('utf8')))
   }
   if (Array.isArray(opts.lossy)) {
     opts.lossy.push(...lossyPaths(placed))
@@ -296,7 +299,8 @@ export async function planBundle(vault, opts = {}) {
  * `lossy` is [{ id, path, key, before, after }]: each field value that its
  * note cannot hold (§10). materialize parses each rendered note back and
  * compares each field with the view: a scalar null that the note omits, a
- * second `type` value, a reference or an object written as a string. An
+ * second `type` value, a reference or an object written as a string, a lone
+ * UTF-16 surrogate that the UTF-8 note holds as U+FFFD. An
  * entry with the key `path` is a note path whose spelling folds together
  * with another one, such as `notes/b` beside `Notes/a` (lossyPaths): a
  * case-insensitive file system holds both in one directory. A generation

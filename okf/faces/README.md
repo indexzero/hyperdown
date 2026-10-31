@@ -305,9 +305,10 @@ never removes the mark.
 
 **materialize reports every value that the face cannot hold.** The face
 cannot hold some values that the view can: a scalar `null` is omitted, only
-the first `type` value is written, and a reference or an object is written
-as a string. `importFace` reads only the face, so it cannot see such a
-change. So `materialize` parses each note that it renders back and
+the first `type` value is written, a reference or an object is written as
+a string, and a lone UTF-16 surrogate in a string becomes U+FFFD in the
+UTF-8 note. `importFace` reads only the face, so it cannot see such a
+change. So `materialize` parses the bytes of each note that it renders back and
 compares each field with the view. Each difference is in `report.lossy` as
 `{ id, path, key, before, after }` (`before` the view's values, `after`
 what the note gives back). A path is such a value too: two spellings that

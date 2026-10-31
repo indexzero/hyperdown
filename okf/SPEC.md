@@ -723,7 +723,7 @@ saga is the cautionary tale). The rules are frozen:
   headings (OKF §7 MUST), newest first, entries
   generated from the `log/` family: creations, renames (old → new),
   deletions, undeletions, conflict resolutions and path collisions
-  (`okf/core/lib/apply.js` events, `okf/faces/lib/materialize.js:618-648`).
+  (`okf/core/lib/apply.js` events, `okf/faces/lib/materialize.js:622-652`).
   A generation writes no entry (§10). The narration is a
   *projection of the actual op log* — auto-okf's structural upgrade over
   hand-maintained convention. Dates come from each op's `at` field (§3),
@@ -1026,10 +1026,12 @@ across a generation is an acceptance criterion (§14).
 **`materialize` reports every value that the face cannot hold. An
 operator fixes those values before `import`.** The face cannot hold some
 values that the view can: a scalar `null` is omitted, only the first
-`type` value is written, and a reference or an object is written as a
-string. import cannot see such a change, because it reads only the face.
-So materialize parses each note that it renders back, reads each field the
-way ingest reads it, and compares it with the view. Each difference is in
+`type` value is written, a reference or an object is written as a
+string, and a lone UTF-16 surrogate in a string becomes U+FFFD in the
+UTF-8 note. import cannot see such a change, because it reads only the
+face. So materialize parses the bytes of each note that it renders back,
+reads each field the way ingest reads it, and compares it with the
+view. Each difference is in
 `report.lossy` as `{ id, path, key, before, after }`. A path is such a
 value too. Two spellings that fold together (NFC, then lowercase), such as
 the directories of `Notes/a` and `notes/b`, are one directory on a

@@ -1074,3 +1074,17 @@ test('F06 (D-060): import refuses a note whose frontmatter holds no _id, by name
   assert.deepEqual(Object.keys(res).sort(), ['counts', 'dir', 'generation', 'vault'])
   await res.vault.close()
 })
+
+test('F07 (D-060): materialize reports a field value that holds a lone UTF-16 surrogate: the note gets U+FFFD in its place', async () => {
+  // A set-field value travels as JSON, so the view keeps a lone surrogate.
+  // The note is UTF-8, which cannot hold one: the file gets U+FFFD.
+  // Before the fix, lossyFields parsed the JavaScript string, not the
+  // bytes written, so report.lossy was empty and the import changed the value.
+  const old = await Bundle.init(await tmpDir('lossy-surrogate-vault'))
+  const { tag } = await old.createConcept('notes/s', 'note')
+  await old.setField(tag, 'label', 'a\uD800b')
+  await old.update()
+  const report = await materialize(old, await tmpDir('lossy-surrogate-face'))
+  assert.deepEqual(report.lossy, [{ id: tag, path: 'notes/s.md', key: 'label', before: ['a\uD800b'], after: ['a\uFFFDb'] }])
+  await old.close()
+})
