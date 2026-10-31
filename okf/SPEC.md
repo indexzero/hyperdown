@@ -961,7 +961,7 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   then on the files of the new vault hold `<new-dir>`, and a second import
   refuses it as not empty. A successful import removes the claim at both
   places, and a failed one removes it with the rest of what it created
-  (`okf/faces/lib/import.js:42`, `:93-96`, `done()` in `claimDir`; tests
+  (`okf/faces/lib/import.js:311-353`, `claimDir`; tests
   "G3-P8 F01 (T24): a second import into the same <dir> refuses by name
   before its initBundle and deletes nothing; the vault, pin and files of
   the first import stay, for an absent and an existing empty <dir>" and
@@ -1016,7 +1016,8 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   `IMPORT_NOT_ENCRYPTED`. On each, import closes the new vault. It removes
   what it created while it held the claim, and then the claim. A `<new-dir>` that
   import made is removed. An existing empty `<new-dir>` stays, empty
-  (`okf/faces/lib/import.js:98-106`; test "T13 (T24): a truncated note
+  (`okf/faces/lib/import.js:165-176`, `release()` at `:341-347`; test
+  "T13 (T24): a truncated note
   fails the import by name with IMPORT_FIDELITY, and import removes the
   new directory").
 - **Encryption.** `--encryption-key` encrypts the new vault. import reads

@@ -290,8 +290,8 @@ a member can still flood it.**
   invite, and a swarm key outside the allowlist, never connects (T25,
   G44)". A stream that a caller opens with `Bundle.replicate()` passes no
   firewall: the caller chooses the peer at the other end
-  (`store/lib/bundle.js:60-63`). A member with a connection can send the
-  announce.
+  (`store/lib/bundle.js:1141-1143`). A member with a connection can send
+  the announce.
 - autobee's untrusted-writer cap does not bound it. The cap is skipped
   while the local writer is trusted (`lib/writers.js:262`), and with no
   `isTrusted` and no `mostRecentTrusted` hook every key is trusted
