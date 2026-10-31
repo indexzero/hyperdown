@@ -32,8 +32,8 @@ how you shrink the log, rotate keys, and shed a writer.
 - **Encrypts at rest, on request.** `--encryption-key` encrypts the stored
   cores. Every writer holds the key, and every vault directory stores it.
 - **Exports and imports files.** `materialize` writes the live view as
-  plaintext, with no flags. Its `log.md` names past paths. The ingest
-  watcher turns edits into ops.
+  plaintext: no flags, and `log.md` names past paths. The ingest watcher
+  turns edits into ops.
 
 ## What will bite you
 
