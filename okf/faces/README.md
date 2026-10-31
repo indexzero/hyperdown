@@ -279,11 +279,13 @@ difference in the message and in `err.differences`. A note that warns
 does not round-trip: a note without `type` establishes no concept
 (`missing`), and a copy of another note's `_id` gets a new `_id`
 (`differs`). So each warning comes with a difference, the error carries
-the warnings as `err.warnings`, and a successful import has none. On any failure after
-the new vault exists, `importFace` closes it and removes what it created:
-each entry that it wrote in `dir` while it held the claim, the claim, and
-then each directory that it made for `dir`, when that directory is empty.
-An existing `dir` stays. No verification copy is written to disk.
+the warnings as `err.warnings`, and a successful import has none.
+
+On any failure after the new vault exists, `importFace` closes it and
+removes what it created: each entry that it wrote in `dir`, the claim with
+them, and then each directory that it made for `dir`, when that directory
+is empty. An existing `dir` stays. No verification copy is written to
+disk.
 
 A generation is the eviction point, so `opts.metadata` never carries the
 `swarm` allowlist (`okf/faces/lib/import.js:44`, `:380-390`). The invite

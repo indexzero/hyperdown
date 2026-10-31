@@ -817,8 +817,9 @@ async function cmdIngest(parsed) {
     watcher.on('skip', ({ reason }) => {
       if (reason === 'unchanged') upToDate++
     })
-    // ADR-005: an oversize body is refused per file, before any of its ops;
-    // sibling files in the same run still ingest, but the run exits 1.
+    // ADR-005: a file whose encoded set-body op is oversize is refused per
+    // file, before any of its ops; sibling files in the same run still
+    // ingest, but the run exits 1.
     let oversize = 0
     watcher.on('oversize', (o) => {
       oversize++
