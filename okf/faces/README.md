@@ -235,7 +235,8 @@ claim goes when the import ends. A claim that stays after a signal also
 refuses: when no import runs, remove `dir`.
 
 **Import-mode ingest** (`IngestWatcher.importNote`) ignores the emission
-manifest of the face, treats every `_rev` as absent (each head becomes the
+manifest and the pending record (`.okf-pending.json`) of the face, treats
+every `_rev` as absent (each head becomes the
 concept's first revision), and imports dot-segment paths such as
 `.drafts/idea`. Before it appends an op it checks the encoded op against
 the new vault's `maxOpBytes` (`IMPORT_OVERSIZE`), and an op that core

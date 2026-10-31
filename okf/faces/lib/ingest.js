@@ -598,8 +598,8 @@ export class IngestWatcher extends EventEmitter {
    * once, and the fidelity check compares the same bytes. Import mode
    * differs from ingestFile:
    *
-   *   - It reads no emission manifest and writes none. The face is inert
-   *     source: no note is a self-echo, and import never writes the face.
+   *   - It reads no emission manifest and no pending record, and writes
+   *     neither. The face is inert source: no note is a self-echo.
    *   - It treats `_rev` as absent. No base exists in the fresh vault, so
    *     each head is the concept's first revision (base null), and `_rev`
    *     re-derives (§6, §14).
@@ -808,8 +808,13 @@ export class IngestWatcher extends EventEmitter {
   // view holds it. So a pending file never gets a second concept. The record
   // goes when an ingest of the path completes, or when its delete runs.
 
-  /** The recorded concept of a pending `rel`, if the view still holds it. */
+  /**
+   * The recorded concept of a pending `rel`, if the view still holds it.
+   * Import mode (importNote) reads no record (D-060 F21): the face is inert
+   * source, and its `.okf-pending.json` is state of another directory.
+   */
   async _pendingConcept(rel) {
+    if (this._import !== null) return undefined
     const id = (await this._loadPending()).files[rel]
     if (typeof id !== 'string') return undefined
     return (await this.vault.val(K.cMeta(id))) !== undefined ? id : undefined

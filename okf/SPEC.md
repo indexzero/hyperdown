@@ -940,7 +940,9 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   face at any depth, dot segments included, except the regenerated faces
   `index.md` and `log.md`. It ignores the emission manifest of the face:
   the manifest is materialize's peer-local echo suppression, and a check
-  against it would skip every note as a self-echo. It treats every `_rev`
+  against it would skip every note as a self-echo. It ignores the pending
+  record of ingest (`.okf-pending.json`) too: that is state of a live
+  directory, not of a generation. It treats every `_rev`
   as absent: in the fresh vault no base exists, so each head is the
   concept's first revision (`base: null`), the only flag-free fresh start
   (§5), and `_rev` re-derives (§14). After one generation every head is

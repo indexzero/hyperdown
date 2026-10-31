@@ -1000,3 +1000,27 @@ test('F03 (D-060): materialize reports each path whose spelling folds together w
   await res.vault.close()
   await old.close()
 })
+
+test("F21 (D-060): import mode reads no .okf-pending.json of the face: a stale record attaches no note, and a record that does not parse is not read", async () => {
+  // The pending record is ingest state of a live bundle directory. Before
+  // the fix, import mode read the face's record for a copy: a record that
+  // named the _id of an earlier note moved that concept to the copy's path
+  // (the fidelity error then named both notes), and a record that does not
+  // parse threw a bare SyntaxError.
+  const X = 'ab'.repeat(32)
+  const notes = [
+    ['a.md', `---\n_id: ${X}\ntype: note\n---\n\nnote a\n`],
+    ['b.md', `---\n_id: ${X}\ntype: note\n---\n\nnote b, a copy of a\n`]
+  ]
+  for (const [name, record] of [
+    ['stale', JSON.stringify({ files: { 'b.md': X } }) + '\n'],
+    ['unparseable', '{"files": {']
+  ]) {
+    const base = await tmpDir(`imp-pending-${name}`)
+    await writeTree(join(base, 'face'), new Map([...notes, ['.okf-pending.json', record]]))
+    const err = await expectFailure(() => importFace(Bundle.init, join(base, 'face'), join(base, 'vault')), 'IMPORT_FIDELITY', base)
+    // Only the copy differs: import minted a new _id for it (a 'copy' warning).
+    assert.deepEqual(err.differences, [{ path: 'b.md', kind: 'differs' }], name)
+    assert.deepEqual(err.warnings.map((w) => [w.kind, w.path]), [['copy', 'b.md']], name)
+  }
+})
