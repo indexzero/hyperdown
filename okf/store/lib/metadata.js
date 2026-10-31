@@ -42,6 +42,29 @@ export const ROOT_GENERATION = 'root'
 
 const HEX64 = /^[0-9a-f]{64}$/
 
+// D-060 F22: the top-level keys of a version 2 document, and no other. The
+// document is closed like its groups: a key outside this list is refused by
+// name, in a loaded document and in the input of createMetadata, never
+// carried.
+const FIELDS = [
+  'version',
+  'genesisKey',
+  'appendOnly',
+  'generation',
+  'predecessorKey',
+  'limits',
+  'rate',
+  'swarm',
+  'schemaVersion',
+  'encrypted'
+]
+
+function refuseUnknownFields(doc) {
+  for (const k of Object.keys(doc)) {
+    if (!FIELDS.includes(k)) throw new TypeError(`metadata.${k} is not a metadata version ${METADATA_VERSION} field`)
+  }
+}
+
 // limits/rate defaults mirror @auto-okf/core lib/apply.js DEFAULTS exactly
 // (§3 limits; §8 rate — defaultCeiling, the only rate setting, is the
 // spec-silent admitted-writer ceiling pinned here and in core).
@@ -83,6 +106,7 @@ export function generationId(predecessorKey) {
  * the two coincide by construction on every peer.
  */
 export function createMetadata(input = {}) {
+  refuseUnknownFields(input)
   if (input.appendOnly !== undefined && input.appendOnly !== true) {
     throw new TypeError('appendOnly is an immutable vault constant and MUST be true (§8)')
   }
@@ -175,6 +199,7 @@ export function validateMetadata(meta) {
   if (meta.version !== METADATA_VERSION) {
     throw new Error(`unsupported vault metadata version: ${meta.version}`)
   }
+  refuseUnknownFields(meta)
   if (typeof meta.genesisKey !== 'string' || !HEX64.test(meta.genesisKey)) {
     throw new TypeError('metadata.genesisKey must be a 64-char lowercase-hex key')
   }

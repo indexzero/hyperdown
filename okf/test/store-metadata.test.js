@@ -313,6 +313,33 @@ test('limits and rate are closed: a key that metadata version 2 does not define 
   await assert.rejects(() => Bundle.open(dir), /metadata\.rate\.extra is not a metadata version 2 field/)
 })
 
+test('version 2 metadata is a closed document: an unknown top-level key, the deleted predecessorCheckpoint too, is refused by name (D-060 F22)', async (t) => {
+  const good = createMetadata({ genesisKey: 'a'.repeat(64) })
+  for (const key of ['predecessorCheckpoint', 'extra']) {
+    const re = new RegExp(`metadata\\.${key} is not a metadata version 2 field`)
+    assert.throws(() => validateMetadata({ ...good, [key]: { seq: 0 } }), re, `validateMetadata: ${key}`)
+    assert.throws(() => createMetadata({ genesisKey: 'a'.repeat(64), [key]: { seq: 0 } }), re, `createMetadata: ${key}`)
+  }
+
+  // A document on disk with the key does not load or open.
+  const re = /metadata\.predecessorCheckpoint is not a metadata version 2 field/
+  const dir = await tmpDir('meta-top-closed')
+  const v = await Bundle.init(dir)
+  await v.close()
+  const path = join(dir, METADATA_FILE)
+  const doc = JSON.parse(await readFile(path, 'utf8'))
+  await writeFile(path, JSON.stringify({ ...doc, predecessorCheckpoint: { seq: 0 } }))
+  await assert.rejects(() => loadMetadata(path), re)
+  await assert.rejects(() => Bundle.open(dir), re)
+
+  // An invite with the key is refused, and nothing is pinned.
+  const a = await Bundle.init(await tmpDir('meta-top-a'))
+  t.after(() => a.close())
+  const dirB = await tmpDir('meta-top-b')
+  await assert.rejects(Bundle.join(dirB, a.key, { metadata: { ...a.metadata, predecessorCheckpoint: { seq: 0 } } }), re)
+  await assert.rejects(access(join(dirB, METADATA_FILE)), 'nothing is pinned')
+})
+
 test('a mismatched invite is refused (metadata is convergence-relevant)', async (t) => {
   const dir = await tmpDir('meta-invite')
   const v = await Bundle.init(dir)

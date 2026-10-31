@@ -88,7 +88,10 @@ and `okf/test/store-deps.test.js` checks it.
 ## What the store pins
 
 **Vault metadata** (`okf-vault.json`, written at `init`, loaded at open,
-byte-identical on every peer — `metadataHash` is the cross-peer pin):
+byte-identical on every peer — `metadataHash` is the cross-peer pin). The
+document is closed: `validateMetadata`, and so `loadMetadata`, and
+`createMetadata` refuse a top-level key that version 2 does not define,
+by name (`metadata.<key> is not a metadata version 2 field`). Its keys:
 
 - **`version: 2`** — see [Vaults this release opens](#vaults-this-release-opens).
 - **`genesisKey`** — the vault key. A creator passes autobee no key, so
