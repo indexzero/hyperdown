@@ -378,8 +378,9 @@ per command) and exits 0.
   that knows the vault key can still look up the topic announcement. It
   names the swarm keys of the announcing peers and the DHT nodes that
   relay to them. Each attempt of a rejected peer also costs a member one
-  handshake message, and a ban record that the store bounds at 64 (the
-  oldest ban is lifted first, and the firewall still rejects that key).
+  handshake message, hyperdht's record of the attempt for 10 s, and a ban
+  record that the store bounds at 64 (the oldest ban is lifted first, and
+  the firewall still rejects that key).
 - Governance commands verify their effect in the view after appending: if the
   issuing peer is not a confirmed indexer, apply rejects the op
   (`flag/rejected`, reason `policy-governance`) and the command exits 1 with

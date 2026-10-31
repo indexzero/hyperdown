@@ -327,7 +327,8 @@ hyperswarm. The vault key is not a capability to connect:
   keeps at most 64 such records, hyperswarm's default `maxPeers`. Past
   that bound it lifts the oldest ban and frees its record. The firewall
   still rejects that key at its next attempt. So a flood of fresh keys
-  costs one handshake per attempt and at most 64 records (G44 in
+  costs one handshake per attempt, hyperdht's record of each attempt for
+  10 s, and at most 64 ban records (G44 in
   [SECURITY_MODEL.md](../SECURITY_MODEL.md)). The table reads hyperswarm
   state that the hyperswarm README does not document: `PeerInfo.banned`,
   and banned records with no connection in `swarm.peers`, which the
