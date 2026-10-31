@@ -1396,17 +1396,18 @@ test('T24: auto-okf import carries --metadata and records --predecessor in the n
   assert.deepEqual(await entries(base), ['face', 'new', 'old'])
 
   // A --metadata file that is missing, or not metadata of this release,
-  // is refused by name before import writes anything.
-  await writeFile(join(base, 'v1.json'), JSON.stringify({ ...old, version: 1 }))
+  // is refused by name before import writes anything. Version 3 is a
+  // version that no release wrote (RAILS 22b, D-060 F18).
+  await writeFile(join(base, 'v3.json'), JSON.stringify({ ...old, version: 3 }))
   for (const [file, message] of [
     [join(base, 'missing.json'), /^auto-okf import: --metadata \S+missing\.json: no such file$/m],
-    [join(base, 'v1.json'), /^auto-okf import: --metadata \S+v1\.json: unsupported vault metadata version: 1$/m]
+    [join(base, 'v3.json'), /^auto-okf import: --metadata \S+v3\.json: unsupported vault metadata version: 3$/m]
   ]) {
     const res = await cli(['import', join(base, 'face'), join(base, 'refused'), '--metadata', file])
     assert.equal(res.code, 1, res.stdout + res.stderr)
     assert.match(res.stderr, message)
   }
-  assert.deepEqual(await entries(base), ['face', 'new', 'old', 'v1.json'])
+  assert.deepEqual(await entries(base), ['face', 'new', 'old', 'v3.json'])
 })
 
 test('T24: auto-okf import --encryption-key makes a vault whose files hold no plaintext of the face; an unencrypted control holds it; no plaintext warning', async () => {
