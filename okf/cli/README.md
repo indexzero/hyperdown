@@ -65,7 +65,7 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 
 | command | what it does |
 | --- | --- |
-| `init <dir>` | create a new vault at `<dir>`; prints the vault key, this peer's writer key and swarm key, and the generation namespace; refuses a dir already pinned. `<dir>/okf-vault.json` is the invite: share it with the vault key. `--swarm-allow <hex64,...>` pins those swarm keys in the invite (`metadata.swarm.allow`); the creator's own swarm key is always pinned. See [Private swarm](#private-swarm) |
+| `init <dir>` | create a new vault at `<dir>`; prints the vault key, this peer's writer key and swarm key, and the generation namespace; refuses a dir already pinned. `<dir>/okf-vault.json` is the invite: share it with the vault key. `--swarm-allow <hex64>` (repeatable, one key per value, as for `join`) pins each key in the invite (`metadata.swarm.allow`); the creator's own swarm key is always pinned. A bad or repeated key is a usage error (exit 2) before the store exists. See [Private swarm](#private-swarm) |
 | `join <dir> <vault-key>` | join an existing vault by key; `--encryption-key <hex64>` and `--metadata <invite.json>` carry the invite (a private swarm needs it: it names the swarm keys that the peer can reach first); when `<dir>` is already pinned the key is optional (reopen + reprint keys). `--swarm-allow <hex64>` (repeatable) keeps a local list of swarm keys in `<dir>/okf-swarm-allow.json` that this peer alone admits and dials, such as the key of the indexer that admitted it; it is never written to the invite, and each `join --swarm-allow` replaces the list (see [Private swarm](#private-swarm)). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:884-892`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key and swarm key to an indexer (`add-writer --swarm-key`), then replicate (`watch --swarm --bootstrap`). See [Joining a vault](#joining-a-vault) |
 | `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8). An `add-writer` that apply rejects still grants the key at the substrate (`okf/core/lib/apply.js:375`): the key becomes writable, and apply rejects each of its ops (see [Joining a vault](#joining-a-vault)). `--swarm-key` puts the writer's swarm key on its `gov/writer` record, and the swarm firewall of every peer admits it once it folds the op |
 | `keys <dir>` | print the vault key, this peer's writer key and its swarm key. A `<dir>` without a vault prints the swarm key only: it already exists (the store derives it from the directory's corestore, which `keys` creates when it is new), so a pre-provisioned fleet can collect every key before `init --swarm-allow` |
@@ -199,7 +199,7 @@ $ auto-okf keys ./peer-1
 swarm key:   9e41d2a7…
 
 # the creator pins every key in the invite
-$ auto-okf init ./vault --swarm-allow 9e41d2a7…,52c0f1e8…
+$ auto-okf init ./vault --swarm-allow 9e41d2a7… --swarm-allow 52c0f1e8…
 
 # each peer joins with the invite
 $ auto-okf join ./peer-1 <vault-key> --metadata ./vault/okf-vault.json
@@ -420,7 +420,7 @@ predecessor without a key, before it writes; its usage errors exit 2;
 `add-writer`; `undelete` restores a tombstone; `watch` ingests a foreground
 edit and exits cleanly on SIGINT;
 `keys` prints the writer key and the swarm key, and the swarm key before a
-vault exists; `init --swarm-allow` pins the keys; `add-writer --swarm-key`
+vault exists; `init --swarm-allow` pins every key, and refuses a bad or repeated key before the store exists; `add-writer --swarm-key`
 puts the key on `gov/writer`; `join --swarm-allow` keeps a local list apart
 from the invite, and refuses a bad or repeated key; `watch --swarm` refuses
 by name without `--bootstrap` or `--public-dht`; `bootstrap` refuses a bad

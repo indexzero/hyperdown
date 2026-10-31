@@ -493,20 +493,28 @@ test('keys prints the writer key and the swarm key, and the swarm key before the
   assert.equal(keys.stdout.match(KEY_LINE)[1], init.stdout.match(KEY_LINE)[1])
 })
 
-test('init --swarm-allow pins the listed keys and the creator key in the invite, and refuses a bad key (T25)', async () => {
+test('init --swarm-allow pins every value and the creator key in the invite, one key per value, and refuses a bad or repeated key before the store exists (T25, D-060 F10)', async () => {
   const base = await tmpDir('swarm-allow')
   const k1 = 'ab'.repeat(32)
   const k2 = '12'.repeat(32)
   const storage = join(base, 'vault')
-  const out = await cli(['init', storage, '--swarm-allow', `${k1},${k2.toUpperCase()}`])
+  const out = await cli(['init', storage, '--swarm-allow', k1, '--swarm-allow', k2.toUpperCase()])
   assert.equal(out.code, 0, out.stderr)
   const own = out.stdout.match(SWARM_LINE)[1]
-  assert.deepEqual((await invite(storage)).swarm.allow, [k1, k2, own].sort())
+  assert.deepEqual((await invite(storage)).swarm.allow, [k1, k2, own].sort(), 'every value is pinned')
 
-  const bad = await cli(['init', join(base, 'bad'), '--swarm-allow', `${k1},nothex`])
-  assert.equal(bad.code, 2, 'a bad key is a usage error')
-  assert.match(bad.stderr, /--swarm-allow must be a comma-separated list of 64-hex swarm keys/)
-  await assert.rejects(access(join(base, 'bad', 'okf-vault.json')), 'nothing is pinned')
+  // The grammar of join --swarm-allow: one key per value.
+  for (const [name, flags, re] of [
+    ['nothex', ['--swarm-allow', 'nothex'], /--swarm-allow must be 64 hex characters/],
+    ['comma', ['--swarm-allow', `${k1},${k2}`], /--swarm-allow must be 64 hex characters/],
+    ['twice', ['--swarm-allow', k1, '--swarm-allow', k1.toUpperCase()], new RegExp(`--swarm-allow lists ${k1} twice`)]
+  ]) {
+    const dir = join(base, `bad-${name}`)
+    const bad = await cli(['init', dir, ...flags])
+    assert.equal(bad.code, 2, `${name}: a usage error: ${bad.stderr}`)
+    assert.match(bad.stderr, re, name)
+    await assert.rejects(access(dir), `${name}: the store does not exist`)
+  }
 })
 
 test('add-writer --swarm-key puts the swarm key on gov/writer, and a bad key is a usage error (T25)', async () => {

@@ -150,9 +150,9 @@ function buildCli() {
       arg('<dir>', 'vault storage directory'),
       flag('--encryption-key <hex64>', 'encrypt the vault with this key (64 hex chars)'),
       flag(
-        '--swarm-allow <hex64,...>',
-        "pin these swarm keys in the invite (metadata.swarm.allow); this peer's own swarm key is always pinned"
-      ),
+        '--swarm-allow <hex64>',
+        "pin this swarm key in the invite (metadata.swarm.allow; repeatable); this peer's own swarm key is always pinned"
+      ).multiple(),
       requiredArgs('<dir>')
     ),
     sub(
@@ -373,21 +373,13 @@ function hexKey(value, what) {
   return b4a.from(s, 'hex')
 }
 
-/** `--swarm-allow k1,k2`: 64-hex swarm keys, comma-separated (T25). */
-function swarmAllow(value) {
-  const keys = String(value).split(',').map((k) => k.trim().toLowerCase())
-  if (!keys.every((k) => /^[0-9a-f]{64}$/.test(k))) {
-    throw new UsageError('--swarm-allow must be a comma-separated list of 64-hex swarm keys')
-  }
-  return keys
-}
-
 /**
- * `join --swarm-allow <hex64>` (G3-P9 F03): each value is one 64-hex swarm
- * key, and no key twice. A bad or repeated key is a usage error, before
- * the vault opens.
+ * `--swarm-allow <hex64>` of `init` (T25, D-060 F10) and of `join` (G3-P9
+ * F03), one grammar: each value is one 64-hex swarm key, the flag repeats,
+ * and no key comes twice. A bad or repeated key is a usage error, before
+ * the store exists or opens.
  */
-function localAllow(values) {
+function swarmAllowKeys(values) {
   const keys = []
   for (const value of values) {
     const hex = b4a.toString(hexKey(value, '--swarm-allow'), 'hex')
@@ -493,6 +485,7 @@ async function rejectionFor(vault, seq) {
 
 async function cmdInit({ args, flags }) {
   const dir = args.dir
+  const allow = flags.swarmAllow !== undefined ? swarmAllowKeys([].concat(flags.swarmAllow)) : null
   await refuseSiblingVault(dir)
   if (await isPinned(dir)) {
     throw new Error(`'${dir}' is already a vault (${METADATA_FILE} exists)`)
@@ -501,9 +494,7 @@ async function cmdInit({ args, flags }) {
   if (flags.encryptionKey) {
     opts.encryptionKey = hexKey(flags.encryptionKey, '--encryption-key')
   }
-  if (flags.swarmAllow !== undefined) {
-    opts.metadata = { swarm: { allow: swarmAllow(flags.swarmAllow) } }
-  }
+  if (allow !== null) opts.metadata = { swarm: { allow } }
   const vault = await Bundle.init(dir, opts)
   try {
     printIdentity(vault)
@@ -519,7 +510,7 @@ async function cmdInit({ args, flags }) {
 
 async function cmdJoin({ args, flags }) {
   const { dir, vaultKey: key } = args
-  const allow = flags.swarmAllow !== undefined ? localAllow([].concat(flags.swarmAllow)) : null
+  const allow = flags.swarmAllow !== undefined ? swarmAllowKeys([].concat(flags.swarmAllow)) : null
   await refuseSiblingVault(dir)
   const opts = {}
   if (flags.encryptionKey) {
