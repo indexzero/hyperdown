@@ -37,7 +37,7 @@ how you shrink the log, rotate keys, and shed a writer.
 | Fact | What to do | Home |
 |---|---|---|
 | Any writer, or any key a writer ever named, can halt every peer for good. | Admit only keys you would trust with the whole vault. | SECURITY_MODEL, G2 |
-| Removing a writer stops cooperating clients only. A modified client backdates past it, with no flag. | To evict, import into the next generation and do not add the key again. | SECURITY_MODEL, G34 |
+| Removing a writer stops cooperating clients only. A modified client backdates past it, with no rejection flag. | To evict, import into the next generation and do not add the key again. | SECURITY_MODEL, G34 |
 | Writers order concurrent writes by their own clocks. | Keep clocks in sync. A slow clock loses every race. Two hours ahead stalls the peer. | SPEC §8 |
 | A non-indexer writer has a budget of 1024 ops, refilled by accepted indexer ops. | Raise the ceiling, or admit the agents as indexers. | SPEC §8 |
 | `append` reports durable, not accepted. Ingest reports the verdict of its own fold, and a reorder can change it. | Read `flags rejected` in your write loop. | store README |

@@ -15,11 +15,12 @@ it twice:
 1. The snippet is a symptom — the API bakes a noun into every verb
    (`initVault`, `openVault`, `joinVault`) that disambiguates nothing.
    Investigation confirmed: both systems already carry identical statics
-   (`init`/`open`/`join` on the store class, okf `store/lib/vault.js:151–165`,
-   vault-ld `:125–139`); okf's free functions are one-line wrappers over
-   them; no competing `open{Foo}`/`init{Foo}` exists (only an internal
-   `openInner`); the SPEC never names the wrappers; the packages are
-   unpublished.
+   (`init`/`open`/`join` on the store class: okf `store/lib/bundle.js:215-234`,
+   which was `store/lib/vault.js:151-165` when this ADR was written, and
+   vault-ld `store/lib/vault.js:124-143`); okf's free functions were
+   one-line wrappers over them; no competing `open{Foo}`/`init{Foo}`
+   exists (only an internal `openInner`); the SPEC never names the
+   wrappers; the packages are unpublished.
 2. The noun itself is imported vocabulary. vault-ld was written first;
    "vault" leaked into its sibling. Upstream OKF (v0.2, the pointer in
    `okf/OKF.SPEC.v2.md`) defines the **bundle** as "a self-contained,
