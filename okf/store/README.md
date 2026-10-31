@@ -354,8 +354,11 @@ hyperswarm. The vault key is not a capability to connect:
   that this peer admits and dials (`joinPeer`), and no other peer. They
   are never written to the metadata, and no other peer reads them. A
   value that is not an array, a bad key or a key listed twice fails
-  `VAULT_BAD_SWARM_ALLOW` before the swarm exists. A second `swarm()` call
-  adds its keys. `saveLocalAllow(dir, keys)` and `loadLocalAllow(dir)`
+  `VAULT_BAD_SWARM_ALLOW` before the swarm exists. A second `swarm()`
+  call before `leaveSwarm()` adds its keys to the local list, and keeps
+  the swarm and the DHT of the first call: it checks its own `bootstrap`
+  or `publicDht`, and then does not use it. To change the DHT, call
+  `leaveSwarm()` first. `saveLocalAllow(dir, keys)` and `loadLocalAllow(dir)`
   keep the list in `<dir>/okf-swarm-allow.json` (`LOCAL_ALLOW_FILE`), for
   `auto-okf join --swarm-allow` and `auto-okf watch --swarm`.
   `saveLocalAllow` writes a new file and renames it over the old one, so
