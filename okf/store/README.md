@@ -144,6 +144,13 @@ new vault (or, with `key`, joins that vault). A `key` that differs from
 the pinned vault key fails `VAULT_KEY_MISMATCH`. Invite metadata that
 differs from the pinned document fails `VAULT_METADATA_MISMATCH`.
 
+A join with the vault key alone pins metadata with an empty swarm group
+(`allow: []`, `genesis: null`). That suits `replicate()`, but `swarm()`
+then admits no key of the invite. Pinned metadata never changes, so such
+a directory refuses the invite later with `VAULT_JOINED_WITHOUT_INVITE`.
+The fix: join again in a new directory, with the invite as `metadata`.
+`auto-okf join` needs the invite for fresh storage.
+
 `opts`: `metadata` (invite overrides incl. `predecessorKey`),
 `encryptionKey` (32 bytes, end to end — writer cores, system and view
 encrypted at rest; autobee keeps the key in the local core's user data, so

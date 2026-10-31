@@ -323,6 +323,27 @@ test('a mismatched invite is refused (metadata is convergence-relevant)', async 
   )
 })
 
+test('a directory that joined with the vault key alone refuses the invite later, by name, with the fix; any other difference stays VAULT_METADATA_MISMATCH (D-060 F11)', async (t) => {
+  const a = await Bundle.init(await tmpDir('late-invite-a'))
+  t.after(() => a.close())
+  const dir = await tmpDir('late-invite-b')
+  const b = await Bundle.join(dir, a.key) // the vault key alone
+  assert.equal(b.metadata.swarm.genesis, null, 'it pins no binding of the creator')
+  assert.deepEqual(b.metadata.swarm.allow, [], 'and no key of the invite')
+  await b.close()
+
+  const named = (err) =>
+    err.code === 'VAULT_JOINED_WITHOUT_INVITE' &&
+    /pinned metadata never changes; join again in a new directory with the invite/.test(err.message)
+  await assert.rejects(Bundle.open(dir, { metadata: a.metadata }), named, 'Bundle.open with the invite')
+  await assert.rejects(Bundle.join(dir, a.key, { metadata: a.metadata }), named, 'Bundle.join with the invite')
+  await assert.rejects(
+    Bundle.open(dir, { metadata: { limits: { maxPathBytes: 512 } } }),
+    (err) => err.code === 'VAULT_METADATA_MISMATCH',
+    'another difference'
+  )
+})
+
 test('generation chain: predecessorKey alone pins a deterministic writer namespace (§10)', async (t) => {
   const predecessorKey = 'd'.repeat(64)
 

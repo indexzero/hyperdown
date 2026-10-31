@@ -376,6 +376,18 @@ export class Bundle extends EventEmitter {
         })
       )
       if (metadataHash(invited) !== metadataHash(meta)) {
+        // D-060 F11: every creator binds its swarm key (swarm.genesis). A
+        // pinned document without the binding was made from the vault key
+        // alone, so it lacks the swarm group of the invite.
+        if (meta.swarm.genesis === null && invited.swarm.genesis !== null) {
+          throw vaultError(
+            'VAULT_JOINED_WITHOUT_INVITE',
+            'this directory joined without the invite, so its pinned metadata has no swarm group of the ' +
+              'invite (metadata.swarm.genesis is null), and pinned metadata never changes; join again in a new ' +
+              'directory with the invite (Bundle.join(dir, key, { metadata: invite }), or ' +
+              '`auto-okf join <dir> <vault-key> --metadata <okf-vault.json>`)'
+          )
+        }
         throw vaultError('VAULT_METADATA_MISMATCH', 'invite metadata differs from pinned metadata')
       }
     }
