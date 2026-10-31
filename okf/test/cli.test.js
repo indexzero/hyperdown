@@ -418,9 +418,10 @@ test('join + add-writer + remove-writer round trip (§8 governance plumbing)', a
   const init = await cli(['init', origin])
   const vaultKey = init.stdout.match(KEY_LINE)[1]
 
-  const joined = await cli(['join', peer, vaultKey])
+  const joined = await cli(['join', peer, vaultKey, '--metadata', join(origin, 'okf-vault.json')])
   assert.equal(joined.code, 0, joined.stderr)
   const writerKey = joined.stdout.match(WRITER_LINE)[1]
+  const swarmKey = joined.stdout.match(SWARM_LINE)[1]
   assert.notEqual(writerKey, vaultKey, 'the peer has its own writer core')
   await access(join(peer, 'okf-vault.json')) // joined storage is pinned
 
@@ -429,7 +430,7 @@ test('join + add-writer + remove-writer round trip (§8 governance plumbing)', a
   assert.equal(reopen.code, 0, reopen.stderr)
   assert.equal(reopen.stdout.match(WRITER_LINE)[1], writerKey)
 
-  const added = await cli(['add-writer', origin, writerKey, '--indexer'])
+  const added = await cli(['add-writer', origin, writerKey, '--indexer', '--swarm-key', swarmKey])
   assert.equal(added.code, 0, added.stderr)
   assert.match(added.stdout, new RegExp(`writer added: ${writerKey} \\(indexer: true\\)`))
 
@@ -536,6 +537,37 @@ test('add-writer --swarm-key puts the swarm key on gov/writer, and a bad key is 
   } finally {
     await v.close()
   }
+})
+
+test('add-writer refuses, by name and before it appends, a writer that no record binds to a swarm key; a promotion keeps the bound key, and the invite binds the creator (D-060 F01)', async () => {
+  const base = await tmpDir('add-unbound')
+  const origin = join(base, 'origin')
+  const peer = join(base, 'peer')
+  const init = await cli(['init', origin])
+  const vaultKey = init.stdout.match(KEY_LINE)[1]
+  const joined = await cli(['join', peer, vaultKey, '--metadata', join(origin, 'okf-vault.json')])
+  assert.equal(joined.code, 0, joined.stderr)
+  const writerKey = joined.stdout.match(WRITER_LINE)[1]
+  const swarmKey = joined.stdout.match(SWARM_LINE)[1]
+
+  // Without --swarm-key, a remove-writer of this writer could not cut its
+  // swarm key, such as a key that the invite lists.
+  const before = await snapshotHash(origin)
+  const refused = await cli(['add-writer', origin, writerKey])
+  assert.equal(refused.code, 2, refused.stderr)
+  assert.match(refused.stderr, new RegExp(`add-writer needs --swarm-key <hex64>: no gov/writer record binds a swarm key to ${writerKey}`))
+  assert.equal(await snapshotHash(origin), before, 'a refused add-writer appends nothing')
+
+  // Once a record binds the key, a later add-writer keeps it and needs no flag.
+  assert.equal((await cli(['add-writer', origin, writerKey, '--swarm-key', swarmKey])).code, 0)
+  const promoted = await cli(['add-writer', origin, writerKey, '--indexer'])
+  assert.equal(promoted.code, 0, promoted.stderr)
+  assert.match(promoted.stdout, new RegExp(`writer added: ${writerKey} \\(indexer: true\\)`))
+  assert.match(promoted.stdout, new RegExp(`swarm key: {3}${swarmKey}`), 'the record keeps the bound key')
+
+  // The invite binds the creator's swarm key to genesisKey (swarm.genesis).
+  const creator = await cli(['add-writer', origin, vaultKey, '--indexer'])
+  assert.equal(creator.code, 0, creator.stderr)
 })
 
 test('watch --swarm refuses by name without --bootstrap or --public-dht, before it opens the vault (T25)', async () => {

@@ -174,7 +174,10 @@ function buildCli() {
       arg('<dir>', 'vault storage directory'),
       arg('<writer-key>', 'writer public key (64 hex chars)'),
       flag('--indexer', 'admit the writer as an indexer'),
-      flag('--swarm-key <hex64>', "the writer's swarm key; the swarm firewall of every peer then admits it"),
+      flag(
+        '--swarm-key <hex64>',
+        "the writer's swarm key, required unless a gov/writer record already binds one; the swarm firewall of every peer then admits it, and a remove-writer cuts it"
+      ),
       requiredArgs('<dir>', '<writer-key>')
     ),
     sub(
@@ -549,13 +552,36 @@ async function cmdJoin({ args, flags }) {
   }
 }
 
+/**
+ * D-060 F01: true when the view or the invite binds a swarm key to the
+ * writer: its gov/writer record carries one, or the writer is genesisKey
+ * and the pinned invite binds the creator's key (metadata.swarm.genesis).
+ * A folded remove-writer cuts only a bound key (store/lib/bundle.js
+ * _refreshAllowlistOnce).
+ */
+async function boundSwarmKey(vault, writerHex) {
+  const rec = await vault.val(K.govWriter(writerHex))
+  if (rec && typeof rec.swarmKey === 'string') return true
+  return writerHex === vault.metadata.genesisKey && vault.metadata.swarm.genesis !== null
+}
+
 async function cmdAddWriter({ args, flags }) {
   const key = hexKey(args.writerKey, 'writer key')
   const swarmKey = flags.swarmKey !== undefined ? hexKey(flags.swarmKey, '--swarm-key') : null
   return withVault(args.dir, {}, async (vault) => {
+    // D-060 F01: every writer that the CLI admits has a bound swarm key, so
+    // a later remove-writer cuts it on every peer, also when the invite or a
+    // local list names the key. The refusal comes before the append.
+    const writerHex = b4a.toString(key, 'hex')
+    if (swarmKey === null && !(await boundSwarmKey(vault, writerHex))) {
+      throw new UsageError(
+        `add-writer needs --swarm-key <hex64>: no gov/writer record binds a swarm key to ${writerHex}, ` +
+          "so a later remove-writer could not cut the writer's swarm connection"
+      )
+    }
     const { seq } = await vault.addWriter(key, { indexer: flags.indexer === true, swarmKey })
     await vault.update()
-    const rec = await vault.val(K.govWriter(b4a.toString(key, 'hex')))
+    const rec = await vault.val(K.govWriter(writerHex))
     // "Did not take effect" means okf membership: apply wrote no gov/writer
     // record. The substrate grant still happened, because core grants the
     // key of every AddWriter op that it folds (AD7, core/lib/apply.js:375).
@@ -569,7 +595,7 @@ async function cmdAddWriter({ args, flags }) {
       )
       return 1
     }
-    console.log(`writer added: ${b4a.toString(key, 'hex')} (indexer: ${rec.indexer === true})`)
+    console.log(`writer added: ${writerHex} (indexer: ${rec.indexer === true})`)
     if (rec.swarmKey) {
       console.log(`swarm key:   ${rec.swarmKey} (each peer's swarm firewall admits it once it folds this op)`)
     }
