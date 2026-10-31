@@ -112,6 +112,8 @@ quality (the partition schedule is the scenario's, not the link's).
 - **Revocation (S8)**: the I10 guarantee is convergence + a replay-stable
   applied/rejected partition, not "every partitioned op rejects". C's
   partitioned ops are *concurrent* with the removal; one that linearizes
-  before the removal has no `gov/removed` to check yet and lands (bounded by
-  the §8 `seqAtRemoval` window). What must hold is that every peer agrees and
-  C can author nothing once it has folded its own revocation.
+  before the removal has no `gov/removed` to check yet and lands. No
+  `seqAtRemoval` bound applies to it: the §8 revocation check runs only at
+  a position where `gov/removed/<key>` exists
+  (`okf/core/lib/apply.js:399-403`). What must hold is that every peer
+  agrees and C can author nothing once it has folded its own revocation.
