@@ -16,9 +16,9 @@ records and of the peer's local list. The public DHT needs
 at exactly 2.12.1 and corestore at exactly 7.16.1 (`store/package.json`,
 `test/store-deps.test.js`). A reopen wakes each writer with a
 `gov/writer` record. The ingest preflight measures the encoded op, and a
-file with an op that core rejects stays pending. Core rejects a writer
-key that is not 32 bytes, and an `AddWriter` that demotes the last live
-indexer. One import at a time holds its directory. The README opens with
+file with an op that core rejects stays pending. Core rejects an
+`AddWriter` whose writer key or swarm key is not 32 bytes, and one that
+demotes the last live indexer. One import at a time holds its directory. The README opens with
 the characterization that the owner approved. SECURITY_MODEL states the
 trust model: membership is total trust for one generation, and
 revocation stops cooperating clients only.
