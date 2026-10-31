@@ -768,7 +768,12 @@ export class IngestWatcher extends EventEmitter {
 
   // ---------- full scan ----------
 
-  /** Ingest every concept file on disk, then handle disappeared concepts. */
+  /**
+   * Ingest every concept file on disk, then handle disappeared concepts:
+   * each path that the manifest or the pending record lists and the disk
+   * no longer holds (D-061 R02). A pending file never reached the
+   * manifest, so the manifest alone misses its delete.
+   */
   async scan() {
     const rels = []
     await walkNotes(this.root, '', rels)
@@ -776,9 +781,10 @@ export class IngestWatcher extends EventEmitter {
     for (const rel of rels.sort(byteCmp)) {
       ops.push(...(await this.ingestFile(rel)))
     }
-    const manifest = await loadManifest(this.root)
+    const listed = new Set(Object.keys((await loadManifest(this.root)).files))
+    for (const rel of Object.keys((await this._loadPending()).files)) listed.add(rel)
     const onDisk = new Set(rels)
-    for (const rel of Object.keys(manifest.files).sort(byteCmp)) {
+    for (const rel of [...listed].sort(byteCmp)) {
       if (!rel.endsWith('.md') || onDisk.has(rel) || isReservedFile(rel)) continue
       ops.push(...(await this._maybeDelete(rel)))
     }

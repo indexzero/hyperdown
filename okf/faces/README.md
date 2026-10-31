@@ -131,8 +131,10 @@ against the head revision:
 - a file deleted on disk → `DeleteConcept`, behind a confirmation guard that
   is **on by default** (no confirmer ⇒ nothing is deleted). Core's verdict
   comes first: a `DeleteConcept` that core rejects emits `rejected`, and
-  ingest keeps the manifest entry and the pending record of the file. So a
-  later scan tries the delete of a file that the manifest lists again;
+  ingest keeps the manifest entry and the pending record of the file.
+  `scan()` tries the delete of each path that the manifest or the pending
+  record lists and the disk no longer holds, so it also finds a pending
+  file that never reached the manifest;
 - links go to apply's normative extractor; unresolved targets feed
   `wanted/`, never a flag (SPEC §9, I4); `index.md`/`log.md` edits are
   ignored (regenerated faces).

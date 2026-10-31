@@ -380,13 +380,13 @@ test('a confirmed delete that core rejects emits rejected, keeps the manifest en
   w.on('rejected', (e) => rejected.push(e))
   w.on('ops', (e) => ingested.push(e.path))
 
-  // The scan deletes each path that the manifest lists. The live watcher
-  // deletes a vanished path through _maybeDelete.
-  const deletes = async () => [...(await w.scan()), ...(await w._maybeDelete('other/new.md'))].map((o) => o.type)
+  // The scan deletes each path that the manifest or the pending record
+  // lists and the disk no longer holds (D-061 R02), in byte order.
+  const deletes = async () => (await w.scan()).map((o) => o.type)
   assert.deepEqual(await deletes(), ['delete-concept', 'delete-concept'])
   assert.deepEqual(rejected, [
-    { path: 'other/x.md', op: 'delete-concept', reason: 'policy-namespace' },
-    { path: 'other/new.md', op: 'delete-concept', reason: 'policy-namespace' }
+    { path: 'other/new.md', op: 'delete-concept', reason: 'policy-namespace' },
+    { path: 'other/x.md', op: 'delete-concept', reason: 'policy-namespace' }
   ])
   assert.deepEqual(ingested, [], "no 'ops' event for a rejected delete")
   assert.equal((await v.val(K.cMeta(id))).deleted ?? null, null, 'other/x stays live')
@@ -398,7 +398,7 @@ test('a confirmed delete that core rejects emits rejected, keeps the manifest en
   await v.update()
   assert.deepEqual(await deletes(), ['delete-concept', 'delete-concept'])
   assert.equal(rejected.length, 2, 'core takes the retries')
-  assert.deepEqual(ingested, ['other/x.md', 'other/new.md'])
+  assert.deepEqual(ingested, ['other/new.md', 'other/x.md'])
   assert.notEqual((await v.val(K.cMeta(id))).deleted ?? null, null, 'the retry deletes other/x')
   assert.ok(!Object.hasOwn((await manifestOf(dir)).files, 'other/x.md'), 'the manifest drops other/x.md')
   await assert.rejects(readFile(join(dir, '.okf-pending.json')), { code: 'ENOENT' }, 'no pending record is left')
@@ -483,6 +483,61 @@ test('a later ingest of a new file whose ingest failed after its create reuses t
   assert.equal((await v.val(K.cRev(id, await v.val(K.cBody(id))))).text, 'body')
   await assert.rejects(readFile(join(dir, '.okf-pending.json')), { code: 'ENOENT' }, 'no record is left')
 })
+
+test('scan() deletes a pending file that is gone, though the manifest never listed it: a new watcher, with confirmDelete (D-061 R02)', async (t) => {
+  // Core accepts the create-concept of a new note and rejects its set-body
+  // oversize-op. So the note stays pending: the pending record holds its
+  // concept, and the manifest does not list it. The human deletes the
+  // file while no watcher runs. Before the fix, scan() walked the manifest
+  // only, so it emitted no delete, and the next materialize restored the
+  // file from the concept.
+  const limit = 4096
+  const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
+  const dir = await tmpDir('bundle')
+  let w = await createIngestWatcher(v, dir, { watch: false })
+  t.after(async () => {
+    await w.close()
+    await v.close()
+  })
+  await materialize(v, dir)
+  const near = await nearLimitNote(v, limit)
+  await writeFile(join(dir, 'new.md'), near)
+  const rejected = []
+  w.on('rejected', (e) => rejected.push(e))
+  await w.ingestFile('new.md')
+  assert.deepEqual(rejected, [{ path: 'new.md', op: 'set-body', reason: 'oversize-op' }], 'setup: core rejects the body')
+  const id = await v.val(K.path('new'))
+  assert.ok(!Object.hasOwn((await manifestOf(dir)).files, 'new.md'), 'setup: the manifest does not list new.md')
+  await w.close()
+
+  await rm(join(dir, 'new.md'))
+  w = await createIngestWatcher(v, dir, { watch: false, confirmDelete: async () => true })
+  const ops = await w.scan()
+  assert.deepEqual(ops.map((o) => [o.type, o.payload.id]), [['delete-concept', id]])
+  assert.notEqual((await v.val(K.cMeta(id))).deleted ?? null, null, 'the concept is deleted')
+  await assert.rejects(readFile(join(dir, '.okf-pending.json')), { code: 'ENOENT' }, 'no pending record is left')
+  const report = await materialize(v, dir)
+  assert.ok(!report.written.includes('new.md'), 'materialize does not restore new.md')
+})
+
+/**
+ * A new note whose set-body op is 1 byte over `limit` when the store
+ * appends it as the next node of this writer: core accepts its
+ * create-concept and rejects its set-body oversize-op. It first appends 16
+ * seed concepts, so the minted tag and the clock entry have two hex
+ * digits of seq, and the op is over the preflight's lower bound.
+ */
+async function nearLimitNote(v, limit) {
+  for (let i = 0; i < 16; i++) await v.createConcept(`seed/${i}`, 'note')
+  const n = v.db.local.length
+  const self = v.localKey.toString('hex')
+  const opBytes = (len) =>
+    encodeOp('set-body', { id: makeTag(v.localKey, n), base: null, text: 'x'.repeat(len), clock: [[self, n + 1]], at: Date.now() }).byteLength
+  let len = limit
+  while (opBytes(len) > limit + 1) len--
+  assert.equal(opBytes(len), limit + 1, 'setup: the set-body op of the note is one byte over maxOpBytes')
+  return `---\ntype: note\n---\n${'x'.repeat(len)}\n`
+}
 
 /** The _id of every concept in a vault's view, sorted. */
 async function conceptIds(v) {
