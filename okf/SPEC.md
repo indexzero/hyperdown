@@ -533,7 +533,12 @@ saga is the cautionary tale). The rules are frozen:
   (`okf/core/lib/apply.js:554-567`). An accepted `AddWriter` stores its
   `swarmKey` on `gov/writer/<key>`, and the swarm firewall of every peer
   admits that key (`okf/store/README.md`, Replication). Genesis: the vault
-  creator's key is the first indexer, seeded deterministically.
+  creator's key is the first indexer, seeded deterministically. The seeded
+  record has no `swarmKey` (`okf/core/lib/apply.js:336-341`). The invite
+  binds the creator's swarm key to `genesisKey` instead
+  (`metadata.swarm.genesis`), so a folded `RemoveWriter` of the creator
+  takes that key out of the allowlist of every peer, as it takes out the
+  `swarmKey` of each removed writer (`okf/store/lib/bundle.js:1305-1336`).
 - **Revocation is causal, in-band, never positional** (vault-ld B1
   ancestry, harness-proven): apply records `gov/removed/<key>` = the
   RemoveWriter's clock; a subsequent op from that writer whose clock does
