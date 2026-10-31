@@ -47,7 +47,7 @@ how you shrink the log, rotate keys, and shed a writer.
 | Tags are an OR-set. Other fields are last-writer-wins, with a flag. Two body edits both persist until `resolve`. | Run a resolve step before `materialize`. `import` refuses an open path collision, and carries only the head of a body conflict. | SPEC §5 |
 | Correctness relies on undocumented behaviour of autobee 2.12.1, pinned exactly. | Install from the lockfile. | DEVIATIONS |
 | If every indexer directory is lost, nobody can admit a writer. | Back up an indexer directory, or admit two indexers. | SECURITY_MODEL |
-| A writer can make every peer open unbounded writer cores. | Expect cost, not a halt. | SECURITY_MODEL, G44 |
+| A writer can make every peer open unbounded writer cores. | Expect cost. Only 200 cores are tested. | SECURITY_MODEL, G44 |
 
 ## From code
 
