@@ -10,7 +10,9 @@ must revoke one without starting over, auto-okf is the wrong tool.
 
     auto-okf init <dir> [--encryption-key <hex64>]                 # generation 1
     auto-okf keys <dir>                                            # this peer's writer key and swarm key
+    auto-okf join <dir> <vault-key> --metadata <okf-vault.json>    # on each new peer, with the invite
     auto-okf add-writer <dir> <writer-key> --swarm-key <hex64>
+    auto-okf bootstrap --port <n> [--host <ipv4>]                  # the hub of your private DHT
     auto-okf watch <dir> <bundle-dir> --swarm --bootstrap <host:port>
     auto-okf materialize <dir> <bundle-dir>                        # the live view, as plaintext files
     auto-okf import <bundle-dir> <new-dir> [--encryption-key <hex64>]   # generation 2
@@ -42,7 +44,7 @@ how you shrink the log, rotate keys, and shed a writer.
 | Writers order concurrent writes by their own clocks. | Keep clocks in sync. A slow clock loses every race. Two hours ahead stalls the peer. | SPEC §8 |
 | A non-indexer writer has a budget of 1024 ops, refilled by accepted indexer ops. | Raise the ceiling, or admit the agents as indexers. | SPEC §8 |
 | `append` reports durable, not accepted. Ingest reports the verdict of its own fold, and a reorder can change it. | Read `flags rejected` in your write loop. | store README |
-| One process per vault directory. | Run commands from the replicating process, or give each process its own vault. | store README |
+| One process per vault directory. | Stop `watch` before another command, or give each process its own vault. | store README |
 | Within a generation the log only grows, and nothing written can be removed. | To redact, import into a new generation and destroy every old replica. | SPEC §10 |
 | One op, so one body, is at most 64 KiB. A path is at most 1,024 bytes and 64 segments. | Split large documents into linked concepts. | SPEC §3 |
 | Tags are an OR-set. Other fields are last-writer-wins, with a flag. Two body edits both persist until `resolve`. | Run a resolve step before `materialize`. `import` refuses an open path collision, and carries only the head of a body conflict. | SPEC §5 |
