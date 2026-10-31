@@ -26,11 +26,11 @@
 // This module imports no substrate (the rest of @auto-okf/faces does not
 // either). The @auto-okf/store `Bundle.init` is passed in as `initBundle`;
 // the CLI (okf/cli) wires the two together.
-import { mkdir, open, readdir, readFile, readlink, realpath, rm, rmdir } from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rm, rmdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { planBundle } from './materialize.js'
 import { createIngestWatcher } from './ingest.js'
-import { isReservedDotFile, isReservedFile } from './fsatomic.js'
+import { ENCRYPTED_FILE, isReservedDotFile, isReservedFile } from './fsatomic.js'
 import { compareNotes } from './verify.js'
 
 // §7: a conflicted copy is a note whose terminal name ends `.conflict-<hex>.md`.
@@ -73,8 +73,9 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  *   IMPORT_NO_INITBUNDLE           initBundle is not a function
  *   IMPORT_ENCRYPTION_KEY_INVALID  a key that is not 32 bytes (the message
  *                                  never holds it); no value is read as no key
- *   IMPORT_ENCRYPTION_KEY_REQUIRED opts.metadata says encrypted, and no key
- *                                  was given
+ *   IMPORT_ENCRYPTION_KEY_REQUIRED no key, and opts.metadata says encrypted,
+ *                                  or the face holds ENCRYPTED_FILE, the mark
+ *                                  that materialize writes for an encrypted vault
  *   IMPORT_PREDECESSOR_INVALID     a predecessorKey that is not a vault key
  *   IMPORT_DIR_NOT_EMPTY           `dir` is pinned (it holds okf-vault.json),
  *                                  is not empty, or is not a directory
@@ -119,17 +120,16 @@ export async function importFace(initBundle, faceDir, dir, opts = {}) {
   }
   const encryptionKey = keyOption(opts.encryptionKey)
   if (encryptionKey === undefined && opts.metadata != null && opts.metadata.encrypted === true) {
-    throw importError(
-      'IMPORT_ENCRYPTION_KEY_REQUIRED',
-      "the predecessor's metadata says encrypted, and a generation never makes an unencrypted copy of an " +
-        'encrypted vault (decision 8): give the new vault a key (opts.encryptionKey, auto-okf import ' +
-        '--encryption-key <hex64>). The face is the plaintext export'
-    )
+    throw keyRequiredError("the predecessor's metadata says encrypted")
   }
   const metadata = carriedMetadata(opts.metadata, predecessorOption(opts.predecessorKey))
+  const faceRoot = await realpath(resolve(faceDir))
+  if (encryptionKey === undefined && (await isMarkedEncrypted(faceRoot))) {
+    throw keyRequiredError(`the face ${faceRoot} holds ${ENCRYPTED_FILE}: materialize wrote it from an encrypted vault`)
+  }
   const vaultDir = resolve(dir)
   await refuseUsedDir(vaultDir)
-  const face = await readFace(resolve(faceDir))
+  const face = await readFace(faceRoot)
 
   const counts = { notes: face.notes.size, imported: 0 }
   const warnings = []
@@ -410,6 +410,30 @@ function fidelityError(faceRoot, differences) {
   )
   err.differences = differences
   return err
+}
+
+/**
+ * Does the face at `root` carry the mark of an encrypted vault
+ * (ENCRYPTED_FILE)? Any entry at that name marks it, also a directory or a
+ * symlink (lstat), so import fails closed (decision 8).
+ */
+async function isMarkedEncrypted(root) {
+  try {
+    await lstat(join(root, ENCRYPTED_FILE))
+    return true
+  } catch (err) {
+    if (err.code === 'ENOENT') return false
+    throw err
+  }
+}
+
+/** IMPORT_ENCRYPTION_KEY_REQUIRED: `why` says how import knows that the face holds an encrypted vault. */
+function keyRequiredError(why) {
+  return importError(
+    'IMPORT_ENCRYPTION_KEY_REQUIRED',
+    `${why}, and a generation never makes an unencrypted copy of an encrypted vault (decision 8): give the ` +
+      'new vault a key (opts.encryptionKey, auto-okf import --encryption-key <hex64>). The face is the plaintext export'
+  )
 }
 
 function byteCmp(a, b) {

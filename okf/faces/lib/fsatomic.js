@@ -31,6 +31,15 @@ import { canonical } from '@auto-okf/core'
 
 export const MANIFEST_FILE = '.okf-manifest.json'
 
+// Decision 8, D-060 F02: materialize of an encrypted vault writes this file
+// at the root of the face before its first plaintext write. Its presence
+// marks the face, and import refuses a marked face without a key. Its bytes
+// say why (ENCRYPTED_TEXT), and nothing reads them.
+export const ENCRYPTED_FILE = '.okf-encrypted'
+export const ENCRYPTED_TEXT =
+  'This face holds the contents of an encrypted vault as plaintext.\n' +
+  'auto-okf import of this face needs --encryption-key (decision 8).\n'
+
 const registries = new Map() // realRoot -> { locks: Map<rel, tailPromise> }
 let tmpCounter = 0
 

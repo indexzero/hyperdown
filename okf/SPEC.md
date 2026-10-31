@@ -893,6 +893,9 @@ generation is two commands:
    vault (live heads + `_id`/`_rev`; tombstoned concepts suppressed; a
    path-collision loser as a conflicted copy, §7). For an encrypted vault
    the face is the plaintext export, and materialize says so (decision 8).
+   It also marks that face: before its first plaintext write it writes the
+   file `.okf-encrypted` at the root of `<face-dir>`, and it never removes
+   it.
 2. The operator resolves in the face what must not cross. Each conflicted
    copy gets a path of its own, or is merged and removed. A note can be
    removed. The face shows only the head body of each concept, so an open
@@ -919,14 +922,17 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   pinned, not empty, or not a directory (a store there would take the
   import or the key). A face that holds a `.conflict-<hex>` note (a
   collision is still open), a note at a reserved `.okf-` name, or an entry
-  that is not a regular file or a directory, such as a symlink. With
-  `--metadata` of an encrypted predecessor, a missing `--encryption-key`:
-  a generation of an encrypted vault is never unencrypted (decision 8).
+  that is not a regular file or a directory, such as a symlink. A
+  missing `--encryption-key` for a face that holds `.okf-encrypted`, or
+  with `--metadata` of an encrypted predecessor
+  (`IMPORT_ENCRYPTION_KEY_REQUIRED`): a generation of an encrypted vault is
+  never unencrypted (decision 8). The mark is in the face, so the refusal
+  needs no `--metadata`, and no flag turns it off.
 - **One import holds `<new-dir>`.** Before it creates the vault, import
   creates the claim file `okf-import-claim` in `<new-dir>` with an
   exclusive open, and it removes the claim when it ends. A second import
   into the same `<new-dir>` refuses by name (`IMPORT_DIR_CLAIMED`) and
-  removes nothing (`okf/faces/lib/import.js:42`, `:90-93`; test
+  removes nothing (`okf/faces/lib/import.js:42`, `:91-94`; test
   "G3-P8 F01 (T24): a second import into the same <dir> refuses by name
   before its initBundle and deletes nothing; the vault, pin and files of
   the first import stay, for an absent and an existing empty <dir>").
@@ -974,7 +980,7 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   `IMPORT_NOT_ENCRYPTED`. On each, import closes the new vault. It removes
   what it created while it held the claim, and then the claim. A `<new-dir>` that
   import made is removed. An existing empty `<new-dir>` stays, empty
-  (`okf/faces/lib/import.js:95-103`; test "T13 (T24): a truncated note
+  (`okf/faces/lib/import.js:96-104`; test "T13 (T24): a truncated note
   fails the import by name with IMPORT_FIDELITY, and import removes the
   new directory").
 - **Encryption.** `--encryption-key` encrypts the new vault. import reads

@@ -33,7 +33,9 @@ import {
   pruneEmptyDirs,
   isReservedFile,
   walkNotes,
-  MANIFEST_FILE
+  MANIFEST_FILE,
+  ENCRYPTED_FILE,
+  ENCRYPTED_TEXT
 } from './fsatomic.js'
 
 const { sortValues, byteForm, canonicalArray, nfc } = canonical
@@ -241,6 +243,14 @@ export async function planBundle(vault, opts = {}) {
  *                to the directory. So a caller can announce the directory
  *                before any plaintext lands in it.
  *
+ * The face of an encrypted vault is marked (D-060 F02): after the warning
+ * and before its first plaintext write, materialize writes ENCRYPTED_FILE
+ * (`.okf-encrypted`) at the root of the directory. import refuses a marked
+ * face without a key (decision 8), so a generation never drops encryption,
+ * with or without the predecessor's metadata. materialize never removes the
+ * mark: a directory that once held an encrypted vault's plaintext stays
+ * marked.
+ *
  * Returns a report:
  *   { root, ok, written, unchanged, pendingIngest, removed, stale, unsafe,
  *     warnings, lossy }
@@ -287,14 +297,16 @@ export async function materialize(vault, dir, opts = {}) {
   const manifest = await withPathLock(registry, MANIFEST_FILE, () => loadManifest(realRoot))
   await refuseEscapes(realRoot, [...planned.keys(), ...Object.keys(manifest.files)])
 
-  // Decision 8: announce the plaintext directory before the first write, so
-  // a failure or a crash after a plaintext write finds the warning out.
+  // Decision 8: announce the plaintext directory, then mark it, before the
+  // first plaintext write. So a failure or a crash after a plaintext write
+  // finds the warning out, and an import of the face finds the mark.
   if (vault.metadata && vault.metadata.encrypted === true) {
     const warning = plaintextWarning(realRoot)
     report.warnings.push(warning)
     if (typeof opts.onPlaintext === 'function') await opts.onPlaintext(warning)
   }
   try {
+    if (report.warnings.length > 0) await markEncrypted(realRoot, registry)
     await reconcile(realRoot, registry, planned, manifest, report, forceMirror)
   } catch (err) {
     if (report.warnings.length > 0 && err !== null && typeof err === 'object' && err.warnings === undefined) {
@@ -328,6 +340,16 @@ async function refuseEscapes(realRoot, rels) {
     await containedParent(realRoot, rel)
     checked.add(parent)
   }
+}
+
+/** Write the mark of an encrypted vault's face (ENCRYPTED_FILE) at the root, unless it already holds those bytes. */
+async function markEncrypted(realRoot, registry) {
+  const bytes = Buffer.from(ENCRYPTED_TEXT, 'utf8')
+  await withPathLock(registry, ENCRYPTED_FILE, async () => {
+    if ((await hashFile(containedPath(realRoot, ENCRYPTED_FILE))) !== sha256(bytes)) {
+      await atomicWrite(realRoot, ENCRYPTED_FILE, bytes)
+    }
+  })
 }
 
 /** The warning that names a directory that now holds an encrypted vault's contents as plaintext. */

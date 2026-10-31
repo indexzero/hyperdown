@@ -215,8 +215,10 @@ never touched: archive or destroy it out-of-band.
 is pinned, not empty, or not a directory (`IMPORT_DIR_NOT_EMPTY`); a key
 that is not a 32-byte Buffer or Uint8Array (`IMPORT_ENCRYPTION_KEY_INVALID`,
 and no value is read as no key); metadata that says encrypted, without a
-key (`IMPORT_ENCRYPTION_KEY_REQUIRED`: a generation of an encrypted vault
-is never unencrypted); a `predecessorKey` that is not a vault key
+key, or a face that holds the mark of an encrypted vault without a key
+(`IMPORT_ENCRYPTION_KEY_REQUIRED`: a generation of an encrypted vault is
+never unencrypted, with or without `metadata`); a `predecessorKey` that is
+not a vault key
 (`IMPORT_PREDECESSOR_INVALID`); and a face that holds an entry that is not
 a regular file or a directory, such as a symlink (`IMPORT_FACE_ENTRY`), a
 `.conflict-<hex>` note (`IMPORT_CONFLICT_COPY`: resolve the collision in
@@ -261,7 +263,12 @@ writer cores under a per-generation namespace derived from
 `predecessorKey` (SPEC §10), which is why adopting the predecessor's
 mint-shaped ids never trips `mint-collision-risk`. The face of an
 encrypted vault holds its contents as plaintext: `materialize` announces
-it (`opts.onPlaintext`), and `importFace` writes no plaintext.
+it (`opts.onPlaintext`), and `importFace` writes no plaintext. Before its
+first plaintext write, `materialize` also marks that face: it writes
+`.okf-encrypted` at the root. `importFace` refuses a marked face without
+`encryptionKey` (`IMPORT_ENCRYPTION_KEY_REQUIRED`), so the face itself
+carries decision 8, and no option turns the refusal off. `materialize`
+never removes the mark.
 
 **materialize reports every value that the face cannot hold.** The face
 cannot hold some values that the view can: a scalar `null` is omitted, only
@@ -283,7 +290,7 @@ npm install @auto-okf/faces
 
 | export | what |
 | --- | --- |
-| `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; `opts.onPlaintext` is awaited with the plaintext warning before the first write of an encrypted vault; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root, warnings, lossy }`, `lossy` the values that the face cannot hold (above) |
+| `materialize(vault, dir, opts)` | emit the OKF bundle; `opts.forceMirror` mirrors unconditionally; `opts.onPlaintext` is awaited with the plaintext warning before the first write of an encrypted vault, and the face of an encrypted vault gets the mark `.okf-encrypted`; returns `{ ok, written, unchanged, pendingIngest, removed, stale, unsafe, root, warnings, lossy }`, `lossy` the values that the face cannot hold (above) |
 | `createIngestWatcher(vault, dir, opts)` | start the watcher; `opts`: `confirmDelete`, `debounce`, `settle`, `watch:false` (drive `ingestFile`/`scan` manually); events `ops`, `rejected`, `oversize` and the others above |
 | `importFace(initBundle, faceDir, dir, opts)` | SPEC §10 generation: a new vault in a new or empty `dir`, filled from the notes of the face; `initBundle` is the store factory (`Bundle.init`); `opts`: `encryptionKey`, `metadata` (carries `limits`, `rate`, `schemaVersion`, never `swarm`), `predecessorKey`; returns `{ vault, dir, generation, counts, warnings }`; errors carry an `IMPORT_*` code (above) |
 | `status(vault, dir)` | read-only per-file state rows `[{ path, state }]` (ADR-002) |

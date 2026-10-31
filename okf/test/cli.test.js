@@ -1581,3 +1581,37 @@ test('T24, decision 8: import refuses to make an unencrypted generation of an en
   assert.equal((await pinned(join(base, 'out'))).encrypted, true)
   assert.deepEqual(await plaintextFiles(join(base, 'out'), SECRET), [])
 })
+
+test('F02 (D-060): materialize marks the face of an encrypted vault, and import of that face without a key refuses by name before it writes, without --metadata too', async () => {
+  // Before the fix, the face carried no mark of the encryption. An import
+  // without --metadata and without a key made a plaintext vault, exit 0,
+  // with nothing on stderr. Decision 8: no unencrypted copy, no opt-out flag.
+  const base = await tmpDir('imp-mark')
+  await oldWithFace(base, seedSecret, { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
+  const face = join(base, 'face')
+  assert.ok((await readdir(face)).includes('.okf-encrypted'), 'materialize of an encrypted vault marks the face')
+  const before = await treeHash(face)
+
+  const refused = await cli(['import', face, join(base, 'out')])
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr)
+  assert.match(refused.stderr, /^auto-okf import: IMPORT_ENCRYPTION_KEY_REQUIRED: the face \S+ holds \.okf-encrypted: .*--encryption-key/m)
+  await assert.rejects(
+    () => importFace(Bundle.init, face, join(base, 'out')),
+    (err) => err.code === 'IMPORT_ENCRYPTION_KEY_REQUIRED' && err.message.includes('.okf-encrypted')
+  )
+  assert.deepEqual(await entries(base), ['face', 'old'], 'the refusal created something')
+  assert.equal(await treeHash(face), before, 'the refusal changed the face')
+
+  // With a key, the import goes on, and the new vault holds no plaintext.
+  const ok = await cli(['import', face, join(base, 'out'), '--encryption-key', NEW_KEY])
+  assert.equal(ok.code, 0, ok.stdout + ok.stderr)
+  assert.equal((await pinned(join(base, 'out'))).encrypted, true)
+  assert.deepEqual(await plaintextFiles(join(base, 'out'), SECRET), [])
+
+  // The face of an unencrypted vault holds no mark, and its import needs no key.
+  const plainBase = await tmpDir('imp-mark-plain')
+  await oldWithFace(plainBase, seedSecret)
+  assert.ok(!(await readdir(join(plainBase, 'face'))).includes('.okf-encrypted'))
+  const plain = await cli(['import', join(plainBase, 'face'), join(plainBase, 'out')])
+  assert.equal(plain.code, 0, plain.stdout + plain.stderr)
+})

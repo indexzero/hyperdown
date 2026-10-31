@@ -70,14 +70,14 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 | `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8). An `add-writer` that apply rejects still grants the key at the substrate (`okf/core/lib/apply.js:375`): the key becomes writable, and apply rejects each of its ops (see [Joining a vault](#joining-a-vault)). `--swarm-key` puts the writer's swarm key on its `gov/writer` record, and the swarm firewall of every peer admits it once it folds the op. `--swarm-key` is required unless the writer already has a bound swarm key: a `gov/writer` record that carries one, or, for the creator, the key that the invite binds (`metadata.swarm.genesis`). Without it, `add-writer` refuses by name (exit 2) and appends nothing, because a later `remove-writer` could not cut the writer's swarm connection. A promotion of a bound writer needs no flag: the record keeps its key |
 | `keys <dir>` | print the vault key, this peer's writer key and its swarm key. A `<dir>` without a vault prints the swarm key only: it already exists (the store derives it from the directory's corestore, which `keys` creates when it is new), so a pre-provisioned fleet can collect every key before `init --swarm-allow` |
 | `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8). It stops cooperating clients only: a revoked key with a modified client can keep writing until the next generation. Each peer that folds the op takes the writer's bound swarm key out of its allowlist: the key on its record, or the creator's key that the invite binds. The full eviction is a new generation (see [SECURITY_MODEL.md](../SECURITY_MODEL.md), the eviction ladder) |
-| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. A value that the face cannot hold (a scalar `null`, a second `type` value, a reference or an object) is a `warning:` line that names the note, the key and the `_id`, then an `error:` line, and exit 1: fix it in the vault before `import` (SPEC §10). For an encrypted vault the line holds no value. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
+| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. A value that the face cannot hold (a scalar `null`, a second `type` value, a reference or an object) is a `warning:` line that names the note, the key and the `_id`, then an `error:` line, and exit 1: fix it in the vault before `import` (SPEC §10). For an encrypted vault the line holds no value. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and it marks the face with the file `.okf-encrypted`, which `import` reads; the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
 | `ingest <dir> <bundle-dir> [paths…]` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9). Trailing bundle-relative paths restrict the scan to exactly those concept files (ADR-001 — concurrent-writer politeness; the shell expands globs): a named path that does not exist, escapes the bundle root, or is not a `.md` file exits 1 naming the path, with zero ops appended. Zero paths = full scan, unchanged. `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default). Each op that core rejects is an `error:` line on stderr that names the file, the op and core's reason, for example `error: notes/x.md: core rejected its set-body op (policy-namespace), and the file stays pending`, and the run exits 1. Ingest does not record such a file, so it stays pending, and `materialize` keeps it. A new file that stays pending keeps the concept that its ingest created: `<bundle-dir>/.okf-pending.json` records it, and a later ingest reuses it. A `DeleteConcept` that core rejects is such a line too, and it ends `and the delete stays pending`: ingest keeps the emission manifest entry of the deleted file, so the next `ingest --confirm-deletes` tries the delete again. Sibling files still ingest |
 | `watch <dir> <bundle-dir> [--swarm --bootstrap <host:port,...> \| --swarm --public-dht]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also replicates over a swarm whose firewall admits only the keys of the invite, the swarm keys of live writers and the local list of `join --swarm-allow` (see [Private swarm](#private-swarm)). `--swarm` needs exactly one DHT: `--bootstrap`, the nodes of a private DHT (`auto-okf bootstrap`), or `--public-dht`, the public DHT (the commons). Without either, `watch --swarm` refuses by name (exit 2) before it opens the vault. `--confirm-deletes`, `--debounce <ms>`. An op that core rejects prints the `error:` line of `ingest`, and `watch` keeps running. No daemon — stop with Ctrl-C |
 | `bootstrap --port <n> [--host <ipv4>]` | run a DHT bootstrap node (hyperdht `DHT.bootstrapper`) in the foreground until Ctrl-C: the hub of a private DHT. It binds `<host>` only, default `127.0.0.1`, so the default node takes no packet from another machine. Peers pass `--bootstrap <host>:<n>` |
 | `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
 | `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
 | `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
-| `import <face-dir> <dir>` | a generation's second step (§10): create a new vault at `<dir>` and fill it from the notes of a face, such as one that `materialize` wrote, with `_id` adoption. Live state and identity survive; history is shed. `<dir>` must be new or empty. `--metadata <okf-vault.json>` carries `limits`, `rate` and `schemaVersion` from the predecessor's metadata, and never the swarm allowlist; `--predecessor <vault-key>` records the predecessor; `--encryption-key <hex64>` encrypts the new vault. import refuses a face that holds a conflicted copy, and checks the new vault against the face (`IMPORT_FIDELITY`, exit 1). The face is never written. See [Generations](#generations-materialize-then-import) |
+| `import <face-dir> <dir>` | a generation's second step (§10): create a new vault at `<dir>` and fill it from the notes of a face, such as one that `materialize` wrote, with `_id` adoption. Live state and identity survive; history is shed. `<dir>` must be new or empty. `--metadata <okf-vault.json>` carries `limits`, `rate` and `schemaVersion` from the predecessor's metadata, and never the swarm allowlist; `--predecessor <vault-key>` records the predecessor; `--encryption-key <hex64>` encrypts the new vault, and the face of an encrypted vault (marked `.okf-encrypted`) needs it. import refuses a face that holds a conflicted copy, and checks the new vault against the face (`IMPORT_FIDELITY`, exit 1). The face is never written. See [Generations](#generations-materialize-then-import) |
 | `resolve <dir> <id> --keep <revHash> [--supersede <h>…] [--text <s>]` | resolve open body conflicts on `<id>`: pin the head to `--keep`, clearing the cited `flag/conflict` entries (§5). `--supersede` is repeatable |
 | `undelete <dir> <id>` | restore a tombstoned concept (writes the `flag/undelete` audit, §8) |
 
@@ -257,11 +257,14 @@ sure that its contents never become plaintext without a word:
 
 - **A generation never drops encryption.** The import of a generation of
   an encrypted vault needs `--encryption-key <hex64>` for the new vault.
-  With `--metadata` of an encrypted predecessor and no key, `import`
-  refuses with `IMPORT_ENCRYPTION_KEY_REQUIRED` and exits 1, before it
-  creates or writes anything. No flag makes an unencrypted copy. A key is
-  never carried over, so you name the key of the new generation: the same
-  key or a new one.
+  `materialize` marks the face of an encrypted vault: before its first
+  plaintext write, it writes the file `.okf-encrypted` at the root of
+  `<bundle-dir>`. `import` of a marked face without a key refuses with
+  `IMPORT_ENCRYPTION_KEY_REQUIRED` and exits 1, before it creates or
+  writes anything, also without `--metadata`. With `--metadata` of an
+  encrypted predecessor and no key, it refuses the same way. No flag makes
+  an unencrypted copy. A key is never carried over, so you name the key of
+  the new generation: the same key or a new one.
 - **A plaintext write is announced.** `materialize` is the plaintext export.
   For an encrypted vault it prints this line on stderr, where `<dir>` is the
   bundle directory. The exit code does not change.
@@ -291,6 +294,8 @@ auto-okf materialize ./vault ./face        # 1. the face of the live vault
 auto-okf import ./face ./vault-e1 \
   --metadata ./vault/okf-vault.json \
   --predecessor <vault key of ./vault>      # 3. the new vault
+#    (add --encryption-key <hex64> for the face of an encrypted vault:
+#    import refuses that face without a key)
 ```
 
 `import` refuses, by name and before it writes anything (exit 1):
@@ -302,7 +307,9 @@ auto-okf import ./face ./vault-e1 \
 - `IMPORT_RESERVED_NAME`: the face holds a note at a reserved `.okf-` name.
 - `IMPORT_FACE_ENTRY`: the face holds an entry that is not a regular file
   or a directory, such as a symlink.
-- `IMPORT_ENCRYPTION_KEY_REQUIRED`: see above.
+- `IMPORT_ENCRYPTION_KEY_REQUIRED`: the face holds `.okf-encrypted`, or
+  `--metadata` says encrypted, and no `--encryption-key` was given (see
+  [Encryption and plaintext](#encryption-and-plaintext)).
 - `IMPORT_DIR_CLAIMED`: another `import` holds `<dir>`. Before it creates
   the vault, `import` creates the claim file `okf-import-claim` in `<dir>`
   with an exclusive open, and it removes the claim when it ends. So two
@@ -420,7 +427,9 @@ nothing to the face, carries `--metadata` and records `--predecessor`;
 plaintext of the face, checked against an unencrypted control, and prints
 no warning; `import` refuses a pinned or non-empty `<dir>`, a vault-ld
 `<dir>`, a face with an open collision, a missing face, and an encrypted
-predecessor without a key, before it writes; its usage errors exit 2;
+predecessor without a key, before it writes; `materialize` marks the face
+of an encrypted vault, and `import` of that face without a key refuses,
+also without `--metadata`; its usage errors exit 2;
 `IMPORT_FIDELITY` names every difference; an unadmitted peer cannot issue
 `add-writer`; `undelete` restores a tombstone; `watch` ingests a foreground
 edit and exits cleanly on SIGINT;
