@@ -144,7 +144,7 @@ importers:
         specifier: 7.16.1
         version: 7.16.1(bare-url@2.4.5)
       hyperswarm:
-        specifier: ^4.17.0
+        specifier: 4.17.0
         version: 4.17.0(bare-url@2.4.5)
 
   vault-ld/cli:

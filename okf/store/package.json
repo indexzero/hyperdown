@@ -20,6 +20,6 @@
     "autobee": "2.12.1",
     "b4a": "^1.8.1",
     "corestore": "7.16.1",
-    "hyperswarm": "^4.17.0"
+    "hyperswarm": "4.17.0"
   }
 }

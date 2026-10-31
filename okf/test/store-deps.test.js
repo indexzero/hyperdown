@@ -1,5 +1,5 @@
-// Store scope (T21, T26): the store loads without pnpm's hidden hoist, and
-// it pins autobee and corestore exactly.
+// Store scope (T21, T26, D-060 F12): the store loads without pnpm's hidden
+// hoist, and it pins autobee, corestore and hyperswarm exactly.
 //
 // pnpm links only the dependencies that a package declares. Two packages
 // in the store's tree require a package that they do not declare:
@@ -76,16 +76,25 @@ for (const name of PUBLIC) {
 
 // The exact pins (T26). okf/DEVIATIONS.md records behaviour of autobee
 // 2.12.1 and corestore 7.16.1 that okf relies on, and the autobee README
-// does not document all of it. A later release, a patch release too, can
-// change that behaviour. So okf/store/package.json declares each version
-// with no range, and the store must resolve that version.
-const PINS = { autobee: '2.12.1', corestore: '7.16.1' }
-const WHY =
+// does not document all of it. The ban table of Bundle.swarm() reads
+// hyperswarm 4.17.0 state that the hyperswarm README does not document
+// (D-060 F12). A later release, a patch release too, can change that
+// behaviour. So okf/store/package.json declares each version with no
+// range, and the store must resolve that version.
+const SUBSTRATE =
   'okf/DEVIATIONS.md, section "Substrate behaviour that okf relies on (autobee@2.12.1)", ' +
   'paragraph "The pins, and the corestore floor", says why.'
+const SWARM =
+  'okf/store/README.md, section "Replication", item "A bounded ban table", says why: ' +
+  'the store reads hyperswarm state that the hyperswarm README does not document.'
+const PINS = {
+  autobee: { version: '2.12.1', why: SUBSTRATE },
+  corestore: { version: '7.16.1', why: SUBSTRATE },
+  hyperswarm: { version: '4.17.0', why: SWARM }
+}
 const storeManifest = JSON.parse(readFileSync(new URL('../store/package.json', import.meta.url), 'utf8'))
 
-for (const [name, version] of Object.entries(PINS)) {
+for (const [name, { version, why: WHY }] of Object.entries(PINS)) {
   const code = name.toUpperCase()
 
   test(`the store pins ${name} at exactly ${version}`, () => {
