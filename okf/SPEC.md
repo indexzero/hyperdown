@@ -161,9 +161,11 @@ paths.
     `db.view`, `db.writable` (`README.md:90-116`), `append(value)`
     (`README.md:122-124`), `update()`, `updated()`, `flush()`
     (`README.md:143-153`), `replicate(isInitiator | stream)`
-    (`README.md:155-163`, `index.js:454-458`), `ready()` and `close()`
-    from ready-resource (`index.js:35`, `:391-452`), and the `error`
-    event (`index.js:669-690`). okf reads no undocumented autobee
+    (`README.md:155-163`, `index.js:454-458`),
+    `db.wakeup({ key, length })` (`README.md:165-167`), which the store
+    calls at open for each key with a `gov/writer` record, `ready()` and
+    `close()` from ready-resource (`index.js:35`, `:391-452`), and the
+    `error` event (`index.js:669-690`). okf reads no undocumented autobee
     property.
 - hyperbee2@2.20.1 source (range iteration surface — verify, do not
   assume classic hyperbee's `createReadStream` signature): `get`
@@ -298,7 +300,7 @@ flag/conflict|clobber|staletag|pathcollision|writeafterdelete|undelete|rejected|
                                 (no `copydetect` family: no op writes one —
                                 copy-splits surface as an ingest event, §9)
 seen/<writerKey>                last folded position + 1 (bookkeeping, §3)
-gov/writer/<key>                { indexer, namespacePrefixes, rateCeiling }
+gov/writer/<key>                { indexer, namespacePrefixes, rateCeiling, swarmKey? }
 gov/removed/<key>               revocation clock + seqAtRemoval (§8)
 rate/<writerKey>                token-bucket state
 ```
@@ -1125,9 +1127,9 @@ okf/store      vault lifecycle on autobee, metadata pinning (incl. the
                swarm replication, backpressure option
 okf/faces      materialize (bundle + index.md + log.md), ingest watcher,
                wanted index, the import of a face into a new vault (§10)
-okf/cli        init, join, add-writer, remove-writer, materialize, ingest
-               (optionally path-scoped, ADR-001), watch, status (ADR-002),
-               wanted, flags, resolve, undelete, import
+okf/cli        init, join, keys, add-writer, remove-writer, materialize,
+               ingest (optionally path-scoped, ADR-001), watch, status
+               (ADR-002), wanted, flags, resolve, undelete, import, bootstrap
 okf/root       the `auto-okf` root placeholder package (published as
                auto-okf@0.0.1 alongside the scope — intent D7)
 okf/test       unit + invariant suite (I1..I11 each ≥ 1 test)
