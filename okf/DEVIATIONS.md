@@ -1,14 +1,15 @@
 ## okf (auto-okf) deviations — okf/SPEC.md v1.11
 
 **okf §5 `revHash` length prefix: copied code wins (u64 BE, not u32 LE).**
-okf SPEC §5 describes `len()` as "u32 LE", but the same sentence pins the
-resolution: "this normative text mirrors the copied code; on discrepancy
-the copied code wins and DEVIATIONS.md records it." The copied
-`vault-ld/core/lib/revhash.js` (provenance header in
+SPEC drafts before v1.3 described `len()` in §5 as "u32 LE", but the same
+sentence pins the resolution: "this normative text mirrors the copied
+code; on discrepancy the copied code wins and DEVIATIONS.md records it."
+The copied `vault-ld/core/lib/revhash.js` (provenance header in
 `okf/core/lib/revhash.js`) uses an 8-byte big-endian length prefix over the
 64-char lowercase-hex base string (empty for null). That formula is
 byte-identical between the two stacks, which is exactly what the copy rule
-exists to preserve; the u32-LE prose in §5 is the deviation being recorded.
+exists to preserve. SPEC v1.3 adopted the code's rule, so §5 now says u64
+BE, and this entry records why.
 
 **okf §10 generation namespace derivation (spec-silent detail).** §10
 requires writer cores namespaced per generation and "recorded in vault
@@ -39,8 +40,9 @@ in apply, so no live concept can hold a conflict path and only loser-vs-loser
 collisions are reachable.
 
 **okf §9 `flag/copydetect` audit record is not emitted by ingest (no core
-op writes it).** §9 says a copy-split records `flag/copydetect/<new-id>/
-<original-id>`. The view is written only by core's apply folding ops, and the
+op writes it).** SPEC drafts before v1.3 said in §9 that a copy-split
+records `flag/copydetect/<new-id>/<original-id>`. SPEC v1.3 adopted the
+resolution below (§4, §9). The view is written only by core's apply folding ops, and the
 12-op wire contract has no op that writes a `copydetect` flag (apply never
 references the family). Faces therefore surfaces copy detection as its
 observable effect — the copy is minted as a fresh `CreateConcept` (no `id`)
@@ -50,8 +52,9 @@ at its path, and a `'copy'` event is emitted on the watcher — but writes no
 gets a fresh `_id`, original keeps its path) is exactly as specified.
 
 **okf §9 minted `_id` write-back is deferred to the next materialize, not
-written into the human file by the watcher.** §9 says a file with a missing
-`_id` mints "and writes back into the file." Instead of the watcher rewriting
+written into the human file by the watcher.** SPEC drafts before v1.3
+said in §9 that a file with a missing `_id` mints "and writes back into
+the file." SPEC v1.3 adopted the resolution below (§9). Instead of the watcher rewriting
 the just-read file (an echo hazard mid-settle), ingest records the ingested
 bytes' hash in the emission manifest; the concept now exists in the view at
 that path, so the next `materialize` regenerates the file with the
