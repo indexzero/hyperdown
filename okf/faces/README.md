@@ -250,8 +250,14 @@ the face first) or a note at a reserved `.okf-` name
 `okf-import-claim` in it with an exclusive open. Only one open can create
 that file, so a second import into the same `dir` refuses by name
 (`IMPORT_DIR_CLAIMED`) before its `initBundle`, and removes nothing. The
-claim goes when the import ends. A claim that stays after a signal also
-refuses: when no import runs, remove `dir`.
+store's first open moves the claim into `dir/db/` (hypercore-storage
+moves each file that it does not know at the top of a new storage
+directory there). From then on the files of the new vault hold `dir`: a
+second import refuses it as not empty (`IMPORT_DIR_NOT_EMPTY`). A
+successful import removes the claim at both places. A signal before
+`initBundle` leaves only the claim, and a signal after it leaves a
+partial vault: either one refuses a rerun. When no import runs, remove
+`dir`.
 
 **Import-mode ingest** (`IngestWatcher.importNote`) ignores the emission
 manifest and the pending record (`.okf-pending.json`) of the face, treats

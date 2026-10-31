@@ -949,12 +949,19 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   needs no `--metadata`, and no flag turns it off.
 - **One import holds `<new-dir>`.** Before it creates the vault, import
   creates the claim file `okf-import-claim` in `<new-dir>` with an
-  exclusive open, and it removes the claim when it ends. A second import
-  into the same `<new-dir>` refuses by name (`IMPORT_DIR_CLAIMED`) and
-  removes nothing (`okf/faces/lib/import.js:42`, `:91-94`; test
+  exclusive open. A second import into the same `<new-dir>` refuses by
+  name (`IMPORT_DIR_CLAIMED`) and removes nothing. The store's first open
+  moves the claim into `<new-dir>/db/` (hypercore-storage moves each file
+  that it does not know at the top of a new storage directory there). From
+  then on the files of the new vault hold `<new-dir>`, and a second import
+  refuses it as not empty. A successful import removes the claim at both
+  places, and a failed one removes it with the rest of what it created
+  (`okf/faces/lib/import.js:42`, `:91-94`, `done()` in `claimDir`; tests
   "G3-P8 F01 (T24): a second import into the same <dir> refuses by name
   before its initBundle and deletes nothing; the vault, pin and files of
-  the first import stay, for an absent and an existing empty <dir>").
+  the first import stay, for an absent and an existing empty <dir>" and
+  "F05 (D-060): a successful import leaves no claim file, at the top of
+  <dir> or in <dir>/db/, where the store moves it at init").
 - **Import-mode ingest.** import reads every regular `.md` file of the
   face at any depth, dot segments included, except the regenerated faces
   `index.md` and `log.md`. It ignores the emission manifest of the face:

@@ -836,6 +836,7 @@ test('G3-P8 F01 (T24): a second import into the same <dir> refuses by name befor
     const files = await entries(dir)
     await a.vault.close()
     assert.deepEqual(files, ['CORESTORE', 'db', 'okf-vault.json'], `${name}: the files of the first import stay, and no claim is left`)
+    assert.ok(!(await entries(join(dir, 'db'))).includes('okf-import-claim'), `${name}: no claim is left in <dir>/db/ (D-060 F05)`)
     assert.ok(b.err, `${name}: the second import returned`)
     assert.equal(b.err.code, 'IMPORT_DIR_CLAIMED', `${name}: ${b.err.stack}`)
     assert.ok(b.err.message.includes(dir), b.err.message)
@@ -1023,4 +1024,21 @@ test("F21 (D-060): import mode reads no .okf-pending.json of the face: a stale r
     assert.deepEqual(err.differences, [{ path: 'b.md', kind: 'differs' }], name)
     assert.deepEqual(err.warnings.map((w) => [w.kind, w.path]), [['copy', 'b.md']], name)
   }
+})
+
+test('F05 (D-060): a successful import leaves no claim file, at the top of <dir> or in <dir>/db/, where the store moves it at init', async () => {
+  // The store's first open moves each file that it does not know at the top
+  // of a new storage directory into <dir>/db/ (hypercore-storage), the claim
+  // file too. Before the fix, done() removed <dir>/okf-import-claim only, so
+  // every imported vault kept the claim in its db/ directory.
+  const old = await Bundle.init(await tmpDir('imp-claim-vault'))
+  const { tag } = await old.createConcept('notes/a', 'note')
+  await old.setBody(tag, null, 'a')
+  const base = await tmpDir('imp-claim')
+  const res = await generation(old, base)
+  const dir = join(base, 'vault')
+  assert.deepEqual(await entries(dir), ['CORESTORE', 'db', 'okf-vault.json'])
+  assert.ok(!(await entries(join(dir, 'db'))).includes('okf-import-claim'), 'the claim stays in <dir>/db/')
+  await res.vault.close()
+  await old.close()
 })

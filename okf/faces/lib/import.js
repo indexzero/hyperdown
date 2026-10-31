@@ -20,8 +20,8 @@
 // written to disk.
 //
 // An import holds its directory with a claim file from before its
-// initBundle until it ends (claimDir), so a second import into the same
-// directory refuses by name and deletes nothing.
+// initBundle, then with the files of the new vault (claimDir). So a second
+// import into the same directory refuses by name and deletes nothing.
 //
 // This module imports no substrate (the rest of @auto-okf/faces does not
 // either). The @auto-okf/store `Bundle.init` is passed in as `initBundle`;
@@ -228,13 +228,6 @@ async function readFace(faceDir) {
   return { root, notes }
 }
 
-/** The notes of a materialize of `vault`, in memory: index.md and log.md left out. */
-async function renderedNotes(vault) {
-  const planned = await planBundle(vault)
-  for (const rel of [...planned.keys()]) if (isReservedFile(rel)) planned.delete(rel)
-  return planned
-}
-
 /**
  * G16: a `dir` that exists and is not an empty directory throws
  * IMPORT_DIR_NOT_EMPTY. A store in `dir` would take the import of the face,
@@ -287,11 +280,15 @@ function usedDirError(dir, names) {
  * deletes nothing. The holder then makes sure that `dir` holds nothing
  * else.
  *
- * While the claim holds, every other entry in `dir` is one that this import
- * created. release() removes those entries, then the claim. Then it removes
- * `dir` and each parent that mkdir created, with rmdir, which removes only
- * an empty directory. So release() never removes what another import
- * wrote. done() removes the claim after a successful import.
+ * The store's first open (initBundle) moves the claim into `<dir>/db/`:
+ * hypercore-storage moves each file that it does not know at the top of a
+ * new storage directory there. From then on the files of the new vault
+ * keep `dir` non-empty, so another import refuses it (IMPORT_DIR_NOT_EMPTY).
+ * Every entry in `dir` is still one that this import created. release()
+ * removes those entries, the claim with them, then `dir` and each parent
+ * that mkdir created, with rmdir, which removes only an empty directory.
+ * So release() never removes what another import wrote. done() removes
+ * the claim at both places after a successful import (D-060 F05).
  */
 async function claimDir(dir) {
   const claim = join(dir, CLAIM_FILE)
@@ -330,7 +327,10 @@ async function claimDir(dir) {
       await rm(claim, { force: true })
       await removeDirs(dir, created)
     },
-    done: () => rm(claim, { force: true })
+    async done() {
+      await rm(claim, { force: true })
+      await rm(join(dir, 'db', CLAIM_FILE), { force: true })
+    }
   }
 }
 
@@ -387,6 +387,13 @@ function carriedMetadata(metadata, predecessorKey) {
   }
   if (predecessorKey !== null) out.predecessorKey = predecessorKey
   return out
+}
+
+/** The notes of a materialize of `vault`, in memory: index.md and log.md left out. */
+async function renderedNotes(vault) {
+  const planned = await planBundle(vault)
+  for (const rel of [...planned.keys()]) if (isReservedFile(rel)) planned.delete(rel)
+  return planned
 }
 
 /** IMPORT_NOT_ENCRYPTED: import got a key, and the new vault's metadata does not say encrypted. */

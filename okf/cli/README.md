@@ -312,9 +312,11 @@ auto-okf import ./face ./vault-e1 \
   [Encryption and plaintext](#encryption-and-plaintext)).
 - `IMPORT_DIR_CLAIMED`: another `import` holds `<dir>`. Before it creates
   the vault, `import` creates the claim file `okf-import-claim` in `<dir>`
-  with an exclusive open, and it removes the claim when it ends. So two
-  imports into one `<dir>` never both run: the second refuses, and it
-  removes nothing that the first wrote.
+  with an exclusive open. When the store creates the vault, it moves the
+  claim into `<dir>/db/`, and from then on the files of the new vault
+  hold `<dir>` (`IMPORT_DIR_NOT_EMPTY`). A successful `import` removes the
+  claim at both places. So two imports into one `<dir>` never both run:
+  the second refuses, and it removes nothing that the first wrote.
 
 A bad key or predecessor key is a usage error (exit 2). `--metadata` must
 be an `okf-vault.json` of this release, else exit 1, by name.
@@ -347,10 +349,12 @@ vault with `add-writer <dir> <writer-key> --swarm-key <hex64>`, and leave
 out each key that you evict. Each joiner needs the new `okf-vault.json`
 as its `--metadata`.
 
-A signal such as Ctrl-C stops `import` before its cleanup, so `<dir>` can
-keep a partial vault and the claim. A rerun refuses that `<dir>` by name
-(`IMPORT_DIR_NOT_EMPTY`, or `IMPORT_DIR_CLAIMED` when only the claim
-stays): when no `import` runs, remove `<dir>` and run `import` again. The
+A signal such as Ctrl-C stops `import` before its cleanup. A signal
+before the store creates the vault leaves only the claim in `<dir>`. A
+signal after it leaves a partial vault, with the claim in `<dir>/db/`. A
+rerun refuses that `<dir>` by name (`IMPORT_DIR_CLAIMED` when only the
+claim stays, else `IMPORT_DIR_NOT_EMPTY`): when no `import` runs, remove
+`<dir>` and run `import` again. The
 face is never written, and with `--encryption-key` the partial vault is
 encrypted too.
 
