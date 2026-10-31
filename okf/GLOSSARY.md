@@ -171,12 +171,13 @@ never an error.
 Operator-only byte reclamation in two commands: `materialize` the live
 vault into a face, resolve in the face what must not cross, then
 `auto-okf import` the face into a fresh vault in a new directory, with `_id`
-adoption. The new vault's metadata records the predecessor's key, and
-import checks that the new vault's notes match the face. The new vault has
-new keys, and its only member is the peer that ran the import. The import
-carries `limits`, `rate` and `schemaVersion`, and never the swarm
-allowlist, so an indexer admits each writer again. A generation is the
-eviction point of a revoked key. The CouchDB homage.
+adoption. With `--predecessor`, the new vault's metadata records the
+predecessor's key. import checks that the new vault's notes match the
+face. The new vault has new keys, and its only member is the peer that
+ran the import. With `--metadata`, the import carries `limits`, `rate` and
+`schemaVersion`. It never carries the swarm allowlist, so an indexer
+admits each writer again. A generation is the eviction point of a revoked
+key. The CouchDB homage.
 **Not this:** not an op — no in-log operation reclaims bytes. Not lossless of
 history: old revisions and per-op attribution are shed by design.
 `materialize` reports every value that the face cannot hold, and the
