@@ -52,6 +52,17 @@ how you shrink the log, rotate keys, and shed a writer.
 | If every indexer directory is lost, nobody can admit a writer. | Back up an indexer directory, or admit two indexers. | SECURITY_MODEL |
 | A writer can make every peer open unbounded writer cores. | Expect cost. Only 200 cores are tested. | SECURITY_MODEL, G44 |
 
+## Known issues
+
+| Trigger | What to do |
+|---|---|
+| On a case-insensitive file system, you change a path only in case, such as the fix for a path that the fold report of `materialize` names, then materialize into the same face again. That run unlinks the note, and `import` drops its concept (`okf/faces/lib/materialize.js:465-484`). | Materialize each generation into a new, empty directory (`okf/test/i11-roundtrip.test.js:991-1000`). |
+| Two paths differ only in letters that APFS folds together and `toLowerCase` does not, such as ß and SS, or σ and ς. The fold report of `materialize` misses them, and `import` can rename or drop those concepts (`okf/core/lib/apply.js:132-134`, `okf/faces/lib/materialize.js:158`). | Run `materialize` and `import` on a case-sensitive file system. |
+| You import a subdirectory of the face of an encrypted vault, or a copy of that face that skipped dot-files. `import` looks for the `.okf-encrypted` mark only at the root of the face, so an import without a key makes an unencrypted vault (`okf/faces/lib/import.js:131-133`, `:445-453`). | Pass the old vault's `okf-vault.json` with `--metadata`. `import` then refuses to run without `--encryption-key` (`okf/faces/lib/import.js:126-128`). |
+| A file whose ingest did not complete stays pending in `.okf-pending.json`. If it has an NFD name, its record goes stale, it gets a case-only rename on APFS, a conflict copy of its concept ingests, or a rename and a copy of it ingest at once, ingest can attach an edit or a delete to the wrong concept (`okf/faces/lib/ingest.js:788-794`, `:856-916`). | Give note files NFC names. Fix each file that an `error:` line of `ingest` names until it ingests, before you rename, copy or delete it, or edit its conflict copy. Run `ingest` without `--confirm-deletes` while `.okf-pending.json` exists. |
+| A peer joins through the store API with the vault key alone, so it pins `swarm.genesis: null`. When an indexer removes the creator, that peer never cuts the creator's swarm key (`okf/store/lib/bundle.js:1322-1325`). | Pass the invite as `opts.metadata` to `Bundle.join`, as `auto-okf join --metadata` does. |
+| Some docs and help texts are imprecise. | Where a text and the code differ, trust the code and its tests. |
+
 ## From code
 
 ```js
