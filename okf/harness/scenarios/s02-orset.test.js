@@ -1,8 +1,5 @@
-// S2 (I5) — tag OR-set race (SU-set law). A removes an observed tag while B
-// concurrently re-adds the same value behind a partition; on heal the tag
-// MUST be present on every peer (concurrent add beats remove-of-unobserved).
-// A remove citing a never-observed token is ignored for effect and audited
-// once under flag/staletag.
+// S2: I5 under a partition, and a staletag flag for a fabricated token.
+// See SPEC §5 for the OR-set rule.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { setupVaultCluster, flagKeys, assertAllCoherent } from './helpers.js'
@@ -15,14 +12,13 @@ test('S2: concurrent add wins over remove-of-unobserved; tag present on every pe
     await a.call('addTag', id, 'k') // token t0, observed by both
     await ctl.quiesce(writers)
 
-    await ctl.disconnect(a, b) // partition
+    await ctl.disconnect(a, b)
     await a.call('remTag', id, 'k') // A cites the observed token t0
-    await b.call('addTag', id, 'k') // B mints a NEW token, unseen by A
-    // a remove citing a never-observed (fabricated) token — must not affect
-    // the live value and must audit exactly once to staletag
+    await b.call('addTag', id, 'k') // B mints a new token that A did not see
+    // a token that no writer minted
     const bogus = a.info.localKey + 'ff'
     await a.append('rem-tag', { id, value: 'k', tags: [bogus] })
-    await ctl.connect(a, b) // heal
+    await ctl.connect(a, b)
     await ctl.quiesce(writers)
 
     for (const w of writers) {

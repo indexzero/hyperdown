@@ -1,6 +1,5 @@
-// Shared unit-test harness for the @auto-okf/core invariant suite: builds
-// linearized node streams (with spec-correct clocks) and drives createApply
-// against MemView directly — no substrate, no I/O, fully deterministic.
+// Builds linearized node streams and drives createApply against MemView.
+// No substrate, no I/O.
 import { createHash } from 'node:crypto'
 import {
   createApply,
@@ -31,13 +30,10 @@ export function hostStub() {
 }
 
 /**
- * Node-stream builder. Each `op()` call appends one node for a writer,
- * assigning the writer's next seq and an auto-built vector clock (§3):
- * the clock includes the writer's own [key, seq] entry (the §8
- * forged-clock rule) plus, by default, every other writer's latest seq
- * built so far ("observed everything"). Pass `opts.clock` (array of
- * [writerHex, seq]) to model concurrency/partitions explicitly — the
- * self entry is appended automatically unless already present.
+ * Each `op()` appends one node for a writer, at the writer's next seq. The
+ * clock holds the writer's own [key, seq] entry and, by default, the latest
+ * seq of every other writer built so far. Pass `opts.clock` as [writerHex,
+ * seq] pairs to model a partition. The self entry is added unless present.
  */
 export class Env {
   constructor({ genesis = 'A', config = {} } = {}) {
@@ -56,7 +52,6 @@ export class Env {
     return this.key(w).toString('hex')
   }
 
-  /** The tag/mint-id a writer op got: makeTag(writer, seq). */
   tag(w, seq) {
     return makeTag(this.hex(w), seq)
   }
@@ -75,10 +70,10 @@ export class Env {
     const seq = this.seqs.get(W) ?? 0
     let clock
     if (opts.verbatimClock) {
-      clock = opts.clock // forged-clock tests: use exactly what was given
+      clock = opts.clock // forged-clock tests pass the exact clock
     } else {
       clock = (opts.clock ? [...opts.clock] : this.observedAll()).filter(([k]) => k !== W)
-      clock.push([W, seq]) // §8: self entry must equal the actual seq
+      clock.push([W, seq]) // the self entry must equal the seq (SPEC §8)
     }
     this.seqs.set(W, seq + 1)
     const at = payload.at ?? this.atCounter++
@@ -88,7 +83,7 @@ export class Env {
     return node
   }
 
-  /** Append a raw (garbage / oversize) node. */
+  /** Appends a node with raw bytes, for garbage and oversize cases. */
   raw(w, bytes) {
     const key = this.key(w)
     const W = key.toString('hex')
@@ -99,7 +94,7 @@ export class Env {
     return node
   }
 
-  /** Apply nodes (default: everything built) into a fresh MemView. */
+  /** Applies the nodes, by default every node built, into a fresh MemView. A `chunk` above 0 applies them in slices of that size. */
   async run(nodes = this.nodes, { view = new MemView(), host = null, chunk = 0 } = {}) {
     if (chunk > 0) {
       for (let i = 0; i < nodes.length; i += chunk) {
@@ -117,7 +112,7 @@ export function keysUnder(view, prefix) {
   return Object.keys(view.dump(prefix))
 }
 
-/** Convenience: the flag/rejected reasons keyed by writer/seq. */
+/** The flag/rejected reasons, keyed by writer/seq. */
 export function rejectedReasons(view) {
   const out = {}
   for (const [k, v] of Object.entries(view.dump('flag/rejected/'))) {

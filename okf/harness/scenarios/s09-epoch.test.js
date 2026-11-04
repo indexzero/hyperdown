@@ -1,10 +1,6 @@
-// S9 — a generation under concurrency (I11 under the harness, SPEC §10).
-// Converge a multi-writer bundle, run one generation (materialize the face,
-// then import it into a fresh vault with _id adoption), then have a fresh
-// peer join the NEW vault and converge. Assert the new peers converge to one
-// identical view hash and that every live concept's _id / type / path / tags
-// / head-body TEXT survived the generation byte-for-byte (modulo _rev/log.md,
-// which necessarily re-derive).
+// S9 (I11): one generation under the harness, then a fresh peer joins the
+// new vault. `_rev` and log.md re-derive, so the test compares `_id`, type,
+// path, tags and head text. See SPEC §10.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
@@ -37,7 +33,6 @@ test('S9: a generation (materialize, then import) preserves _id/type/path/tags/h
   const { ctl, writers } = await setupVaultCluster('s09-generation', 2)
   const [w0, w1] = writers
   try {
-    // build a non-trivial, conflict-free multi-writer bundle
     const { tag: home } = await w0.call('createConcept', 'wiki/home', 'page')
     await w0.call('setField', home, 'title', 'Home')
     await w0.call('addTag', home, 'root')
@@ -50,7 +45,7 @@ test('S9: a generation (materialize, then import) preserves _id/type/path/tags/h
     const before = liveState(await w0.dump(''))
     assert.ok(before.size >= 2)
 
-    // one generation on w0 (tears down its links first)
+    // w0 runs the generation alone, so its links go first
     await ctl.disconnect(w0, w1)
     await w1.shutdown()
     const gen = await w0.cmd('generation', {
@@ -59,7 +54,6 @@ test('S9: a generation (materialize, then import) preserves _id/type/path/tags/h
     })
     assert.equal(gen.predecessorKey, w0.info.keyHex, 'the new vault records the predecessor key')
 
-    // identity + state fidelity across the generation
     const after = liveState(await w0.dump(''))
     for (const [id, want] of before) {
       const got = after.get(id)
@@ -70,13 +64,12 @@ test('S9: a generation (materialize, then import) preserves _id/type/path/tags/h
       assert.deepEqual(got.tags, want.tags, `${id}: tags preserved`)
     }
 
-    // a fresh peer joins the NEW vault (its invite carries predecessorKey, from
-    // which the §10 namespace derives) and must converge to a byte-identical view
+    // The invite of the new vault must carry predecessorKey. See SPEC §10.
     const meta = { predecessorKey: gen.predecessorKey }
     const p = await ctl.spawn('e1')
     await p.join(gen.key, meta)
-    // the fresh joiner must INITIATE the link (side 0): autobee backfills a
-    // populated vault to a new peer only when the joiner pulls
+    // The joiner must initiate the link (side 0). autobee backfills a
+    // populated vault to a new peer only when the joiner pulls.
     await ctl.connect(p, w0)
     await w0.call('addWriter', p.info.localKey, { indexer: false })
     const ok = await until(async () => { await p.update(); return (await p.cmd('info')).writable }, 120000)

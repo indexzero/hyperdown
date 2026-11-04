@@ -1,8 +1,4 @@
-// S3 (wanted/) — demand lifecycle. A links to an as-yet-unwritten path X
-// during a partition (X lands in wanted/); B creates X during the same
-// partition. On heal — verified for BOTH heal orders via permutation replay
-// — there is no wanted/ entry for X: the link promoted to a backlink, and
-// the outcome is deterministic (I7/I8).
+// S3: wanted/ demand under a partition (I7, I8). See SPEC §4.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { setupVaultCluster, assertAllCoherent, replayHash } from './helpers.js'
@@ -14,10 +10,10 @@ test('S3: link + late create → wanted/ clears deterministically, both heal ord
     const { tag: src } = await a.call('createConcept', 'notes/src', 'note')
     await ctl.quiesce(writers)
 
-    await ctl.disconnect(a, b) // partition
+    await ctl.disconnect(a, b)
     await a.append('set-body', { id: src, base: null, text: 'need [x](/notes/target)' })
     const { tag: target } = await b.call('createConcept', 'notes/target', 'note')
-    await ctl.connect(a, b) // heal
+    await ctl.connect(a, b)
     const hash = await ctl.quiesce(writers)
 
     for (const w of writers) {
@@ -28,7 +24,6 @@ test('S3: link + late create → wanted/ clears deterministically, both heal ord
     }
     await assertAllCoherent(writers)
 
-    // permutation replay: the healed order does not change the outcome
     assert.equal(await replayHash(ctl, writers, 's03'), hash, 'demand resolution is order-independent')
   } finally {
     await ctl.stop()

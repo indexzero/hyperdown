@@ -1,13 +1,11 @@
-// I8 Index coherence (okf SPEC §11): path/, link/, bl/, wanted/,
-// wantedrank/ and revbybase/ are exactly derivable from c/ at every
-// quiescent point — path/ winner selection uses the ord recorded in
-// c/<id>/path, so derivability needs no information outside c/.
+// I8 (SPEC §11): path/, link/, bl/, wanted/, wantedrank/ and revbybase/
+// derive from c/ alone. The path/ winner is the lowest ord in c/<id>/path.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey } from './helpers.js'
 import { extractLinks, dirOf, keyspace as K } from '../core/index.js'
 
-/** Re-derive the §11 I8 families from the c/ family alone. */
+/** Derives the I8 families from the c/ family alone. */
 function deriveFromC(view) {
   const dump = view.dump()
   const concepts = new Map()
@@ -41,7 +39,7 @@ function deriveFromC(view) {
   }
   for (const [p, { id }] of claims) derived.path[K.path(p)] = id
 
-  // link/ + bl/ + wanted/(+rank): live concepts' head-text extraction
+  // link/, bl/, wanted/ and wantedrank/: the links in the head text of each live concept
   const wantedCounts = new Map()
   for (const [id, c] of concepts) {
     if (!c.meta || c.meta.deleted != null || !c.path || c.body === undefined) continue
@@ -88,7 +86,7 @@ test('I8: all six index families match a from-c/ derivation across a full lifecy
   env.op('B', 'set-path', { id: about, path: 'wiki/start' })
   assertCoherent(await env.run())
 
-  // deletion vacates path + edges; undelete restores
+  // deletion vacates the path and the edges, undelete restores them
   env.op('A', 'delete-concept', { id: home })
   assertCoherent(await env.run())
   env.op('A', 'undelete-concept', { id: home })

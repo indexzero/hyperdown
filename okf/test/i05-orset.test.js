@@ -1,6 +1,4 @@
-// I5 OR-set law for tags (okf SPEC §5, §11): concurrent add +
-// remove-of-unobserved → present (SU-set); already-removed citations are
-// silent no-ops; never-observed citations audit once to flag/staletag.
+// I5 (SPEC §5, §11): the OR-set law for tags.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey, keysUnder } from './helpers.js'
@@ -16,9 +14,9 @@ function setup() {
 test('I5: concurrent re-add wins over remove-of-unobserved', async () => {
   const { env, id } = setup()
   const t0 = makeTag(env.hex('A'), 2)
-  env.op('A', 'add-tag', { id, value: 'keep' }) // seq 2, token t0 — observed by B
+  env.op('A', 'add-tag', { id, value: 'keep' }) // seq 2, token t0, observed by B
   const base = env.observedAll()
-  // concurrent: A re-adds 'keep' (new token), B removes citing only t0
+  // concurrent: A re-adds 'keep' with a new token, B removes with t0 alone
   const reAdd = env.op('A', 'add-tag', { id, value: 'keep' }, { clock: base })
   const rem = env.op('B', 'rem-tag', { id, value: 'keep', tags: [t0] }, { clock: base })
   const view = await env.run()
@@ -28,7 +26,7 @@ test('I5: concurrent re-add wins over remove-of-unobserved', async () => {
   assert.ok(!(t0 in rec.els), 'the cited token is removed')
   assert.deepEqual(rec.removed.keep, [t0])
   assert.equal(keysUnder(view, 'flag/staletag/').length, 0, 'observed citation never flags')
-  // suppress unused-var lint noise
+  // for the unused-variable lint
   void reAdd
   void rem
 })

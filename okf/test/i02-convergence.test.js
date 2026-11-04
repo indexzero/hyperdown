@@ -1,9 +1,6 @@
-// I2 Convergence (okf SPEC §11): peers that exchanged all ops have
-// bit-identical views (full range-scan hash). The substrate guarantees one
-// linearization for converged peers; at unit level we assert (a) the same
-// linearization is bit-identical across independent applies, and (b) the
-// commutative state (OR-set tags) is bit-identical even across DIFFERENT
-// per-writer-order-preserving interleavings.
+// I2 (SPEC §11): one linearization gives bit-identical views, and the
+// OR-set state is bit-identical under either interleaving that keeps
+// per-writer order. The substrate provides the one linearization.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey } from './helpers.js'
@@ -37,7 +34,7 @@ test('I2/I5: concurrent tag adds converge to identical bytes under either interl
 
   const v1 = await env.run([...setup, a, b], { view: new MemView() })
   const v2 = await env.run([...setup, b, a], { view: new MemView() })
-  // the OR-set element map keys are opId tags — order-independent content
+  // the element map is keyed by tag, so its content does not depend on order
   const K = `c/${id}/f/tags`
   assert.deepEqual(v1.dump(K), v2.dump(K))
   assert.equal(Object.keys(v1.dump(K)[K].els).length, 2)

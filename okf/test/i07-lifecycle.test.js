@@ -1,7 +1,5 @@
-// I7 Conflict lifecycle (okf SPEC §5, §7, §11): same-non-null-base
-// siblings persist until ResolveConflict; wanted/ entries clear when their
-// path materializes; pathcollision flags clear when the loser gets a free
-// path (or the winner vacates).
+// I7 (SPEC §5, §7, §11): the lifecycle of conflicts, wanted/ entries and
+// pathcollision flags.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey, keysUnder, rejectedReasons } from './helpers.js'
@@ -20,7 +18,6 @@ test('I7: same-base siblings both persist under one conflict flag until resolved
   const rA = revHash(r0, 'edit A')
   const rB = revHash(r0, 'edit B')
   const view = await env.run()
-  // both retained, deterministic head (later linearized), exactly one flag
   assert.equal(Object.keys(view.dump(`c/${id}/rev/`)).length, 3)
   assert.equal(view.dump(`c/${id}/body`)[`c/${id}/body`], rB)
   const conflictKeys = keysUnder(view, `flag/conflict/${id}/`)
@@ -28,13 +25,12 @@ test('I7: same-base siblings both persist under one conflict flag until resolved
   const [a, b] = [rA, rB].sort()
   assert.ok(conflictKeys[0].endsWith(`/${a}/${b}`))
 
-  // ResolveConflict keeps one, clears the cited flag
   env.op('A', 'resolve-conflict', { id, keep: rA, supersede: [rB] })
   const view2 = await env.run()
   assert.equal(keysUnder(view2, `flag/conflict/${id}/`).length, 0)
   assert.equal(view2.dump(`c/${id}/body`)[`c/${id}/body`], rA)
 
-  // a replayed resolve over the now-cleared flags is rejected bad-resolve
+  // the flag is gone, so a second resolve has nothing to cite
   env.op('B', 'resolve-conflict', { id, keep: rB, supersede: [rA] })
   const view3 = await env.run()
   assert.ok(Object.values(rejectedReasons(view3)).includes('bad-resolve'))

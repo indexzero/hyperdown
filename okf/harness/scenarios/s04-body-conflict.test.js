@@ -1,7 +1,4 @@
-// S4 — body conflict. A and B SetBody the same base concurrently behind a
-// partition; on heal both revisions are retained, the head is deterministic,
-// and exactly one flag/conflict is open on every peer (I4/I7). A subsequent
-// ResolveConflict drains it on every peer.
+// S4: a body conflict under a partition (I4, I7). See SPEC §5.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { setupVaultCluster, flagKeys, assertAllCoherent } from './helpers.js'
@@ -13,12 +10,12 @@ test('S4: same-base siblings both survive under one conflict flag; resolve drain
     const { tag: id } = await a.call('createConcept', 'notes/doc', 'note')
     await a.append('set-body', { id, base: null, text: 'root' })
     await ctl.quiesce(writers)
-    const base = (await a.dump(`c/${id}/`))[`c/${id}/body`] // shared head r0
+    const base = (await a.dump(`c/${id}/`))[`c/${id}/body`] // the shared head
 
-    await ctl.disconnect(a, b) // partition
+    await ctl.disconnect(a, b)
     await a.append('set-body', { id, base, text: 'edit A' })
     await b.append('set-body', { id, base, text: 'edit B' })
-    await ctl.connect(a, b) // heal
+    await ctl.connect(a, b)
     await ctl.quiesce(writers)
 
     let head = null
@@ -32,7 +29,6 @@ test('S4: same-base siblings both survive under one conflict flag; resolve drain
     }
     await assertAllCoherent(writers)
 
-    // resolve on A: keep the deterministic head, supersede the sibling
     const dump = await a.dump('')
     const revs = Object.keys(dump).filter((k) => k.startsWith(`c/${id}/rev/`)).map((k) => k.split('/').pop())
     const root = revs.find((r) => dump[`c/${id}/rev/${r}`].base === null)

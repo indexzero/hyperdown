@@ -1,20 +1,8 @@
-// Validates the fault hub itself (no writer processes). The first socket of
-// a link waits in `pending` until its partner connects. The hub must keep
-// every byte that socket sends while it waits, and deliver the bytes in
-// order: the bytes glued to its header, then the bytes it sent while it
-// waited, then the live stream. A replication stream's initiator sends its
-// first Noise handshake message at once, so a hub that dropped those bytes
-// left the link paired and dead: no handshake, no replication, both ways.
-//
-// The later tests cover a header that is bad, late or too long, a link id
-// that registers again, and a graceful close (G45 to G48). They also cover
-// a pending socket that buffers too much or waits too long, and a FIN from
-// both sides of a link (D-045 F01, F02).
-//
-// No step depends on a fixed sleep. Each send waits until the hub has read
-// the bytes, each step waits until the hub has registered or paired the
-// socket, and each delivery check polls until a deadline. A stall of the
-// event loop at any point only makes a test slower.
+// The fault hub alone, without writer processes. The first socket of a
+// link waits in `pending` until its partner connects. The hub must keep
+// every byte sent while it waits, and deliver it in order. The initiator
+// of a replication stream sends its Noise handshake at once, so a hub that
+// drops those bytes leaves the link paired and dead.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
@@ -29,7 +17,9 @@ const DEADLINE_MS = 5000
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const header = (link, side) => JSON.stringify({ link, side }) + '\n'
 
-// Poll until cond() is true. Return false at the deadline.
+// Polls until cond() is true, or returns false at the deadline. No step in
+// this file depends on a fixed sleep, so a stall of the event loop only
+// makes a test slower.
 async function until(cond) {
   const deadline = Date.now() + DEADLINE_MS
   while (!cond()) {
@@ -43,8 +33,8 @@ async function waitFor(cond, what) {
   assert.ok(await until(cond), `timed out waiting for ${what}`)
 }
 
-// A hub, its log lines, and the hub's end of each connection it accepts,
-// so that a test can wait until the hub has read what a client sent.
+// `accepted` holds the hub's end of each connection, so a test can wait
+// until the hub reads what a client sent.
 async function openHub({ profile = CLEAN, ...opts } = {}) {
   const logs = []
   const hub = new FaultHub(new Rng(1), profile, (line) => logs.push(line), opts)
@@ -83,7 +73,6 @@ async function connect(fx) {
   return peer
 }
 
-// Connect side 0 and then side 1 of the link, and wait until they pair.
 async function pair(fx, link) {
   const epoch = (fx.hub.epochs.get(link) || 0) + 1
   const s0 = await connect(fx)
@@ -97,18 +86,16 @@ async function pair(fx, link) {
 
 const rejections = (fx) => fx.logs.filter((line) => line.includes(' rejected: '))
 
-// Write the bytes, then wait until the hub has read all of them. So no
-// later step can reach the hub before these bytes do.
+// Waits until the hub reads the bytes, so no later step reaches the hub
+// before these bytes do.
 async function send(peer, bytes) {
   peer.socket.write(bytes)
   peer.sent += Buffer.byteLength(bytes)
   await waitFor(() => peer.hubEnd.bytesRead >= peer.sent, `the hub to read ${JSON.stringify(bytes)}`)
 }
 
-// The first side of link L registers with 'A' glued to its header, then
-// sends 'B' and 'C' while it waits. The second side arrives with 'x' glued
-// to its header. After the link pairs, the first side sends 'D' and the
-// second side sends 'y'.
+// The first side sends in all three phases: glued to its header, while it
+// waits, and after the link pairs. The three must arrive as one stream.
 async function pairLate(firstSide) {
   const fx = await openHub()
   try {
@@ -140,8 +127,7 @@ test('side 1 first: the hub keeps the bytes it sends before its partner pairs', 
   await pairLate(1)
 })
 
-// A pending socket that sends bytes and then a FIN must leave `pending`
-// and close. Otherwise the hub keeps it, and the next socket for the link
+// If the ended socket stays in `pending`, the next socket for the link
 // pairs with a dead socket.
 test('a FIN before pairing: the pending socket leaves pending and closes', async () => {
   const fx = await openHub()
@@ -165,12 +151,9 @@ test('a FIN before pairing: the pending socket leaves pending and closes', async
   }
 })
 
-// D-045 F02. A pending socket buffers what it sends, up to a byte limit.
-// The bytes glued to its header count. A buffer of exactly the limit
-// waits. A socket that buffers more is destroyed at once, and the hub logs
-// it. Its pending entry goes, so a later socket for the link does not pair
-// with it. The hub does not pause the socket, because a paused socket
-// hides its FIN.
+// The bytes glued to the header count toward the limit, and a buffer of
+// exactly the limit waits. The hub destroys the socket over the limit
+// instead of pausing it, because a paused socket hides its FIN.
 test('pending limit: a pending socket that buffers more than the limit is destroyed and logged, and leaves pending', async () => {
   const fx = await openHub({ pendingMaxBytes: 64, pendingTimeoutMs: 60000 })
   try {
@@ -193,11 +176,8 @@ test('pending limit: a pending socket that buffers more than the limit is destro
   }
 })
 
-// D-045 F02. A pending socket waits for its partner until a deadline. A
-// socket with no partner by then is destroyed, and the hub logs it. Its
-// pending entry goes. The header deadline is longer than the wait, so the
-// header deadline cannot be what closes it. The log line shows that the
-// socket was pending.
+// The header deadline is longer than the wait, so the header deadline
+// cannot be what closes the socket. The log line proves which one did.
 test('pending deadline: a pending socket with no partner in time is destroyed and logged, and leaves pending', async () => {
   const fx = await openHub({ pendingTimeoutMs: 100, headerTimeoutMs: 60000 })
   try {
@@ -214,9 +194,8 @@ test('pending deadline: a pending socket with no partner in time is destroyed an
   }
 })
 
-// D-045 F02. Pairing stops the pending deadline. Each chunk waits 1 s in
-// the fault queue, which is longer than the deadline, so a delivery shows
-// that the deadline did not destroy the paired link.
+// Each chunk waits 1 s in the fault queue, longer than the pending
+// deadline, so a delivery proves that the deadline left the paired link.
 test('pending deadline: a socket that pairs in time outlives the deadline', async () => {
   const fx = await openHub({ profile: LATENCY, pendingTimeoutMs: 500 })
   try {
@@ -231,10 +210,9 @@ test('pending deadline: a socket that pairs in time outlives the deadline', asyn
   }
 })
 
-// G48. A header must be one JSON object with a string `link` and a `side`
-// of 0 or 1. A bad header destroys only its own socket, and the hub logs
-// it. It never throws out of a 'data' listener, so the hub and a link that
-// is already paired keep running.
+// A header must be one JSON object with a string `link` and a `side` of 0
+// or 1. A bad header must not throw out of a 'data' listener. A throw
+// there takes the hub down, and the paired link with it.
 test('bad headers: each destroys only its own socket, and the hub and its other links keep running', async () => {
   const fx = await openHub()
   try {
@@ -265,9 +243,8 @@ test('bad headers: each destroys only its own socket, and the hub and its other 
   }
 })
 
-// G47. A connection that sends no header line within the header deadline
-// is destroyed, and the hub logs it. That covers a silent client and a
-// client that stops in the middle of its header.
+// The two clients are a silent one and one that stops in the middle of
+// its header.
 test('header deadline: a client that sends no header line in time is destroyed and logged', async () => {
   const fx = await openHub({ headerTimeoutMs: 100 })
   try {
@@ -282,9 +259,9 @@ test('header deadline: a client that sends no header line in time is destroyed a
   }
 })
 
-// G47. A header line longer than the header limit is destroyed at once,
-// with or without its newline, so an endless header cannot grow the
-// hub's buffer. A header line of exactly the limit registers.
+// The two clients are a header with no newline and a complete header over
+// the limit. Both must go at once, so an endless header cannot grow the
+// hub's buffer.
 test('header limit: a header over the limit is destroyed and logged, and a header at the limit registers', async () => {
   const fx = await openHub({ headerMaxBytes: 64, headerTimeoutMs: 60000 })
   try {
@@ -306,10 +283,9 @@ test('header limit: a header over the limit is destroyed and logged, and a heade
   }
 })
 
-// G47. The hub tracks every connection from accept to close, so close()
-// finds a connection that has not sent its header line, destroys it, and
-// returns. The header deadline is longer than the wait, so the deadline
-// cannot be what closes these clients.
+// If the hub tracks a connection only from its header line, close() waits
+// for these clients for good. The header deadline is longer than the wait,
+// so the deadline cannot be what closes them.
 test('hub.close() returns while a connection has not sent its header line', async () => {
   const fx = await openHub({ headerTimeoutMs: 60000 })
   const silent = await connect(fx)
@@ -329,10 +305,9 @@ test('hub.close() returns while a connection has not sent its header line', asyn
   }
 })
 
-// A FIN before the header line closes the connection at once. The hub's
-// sockets are half-open, so the hub ends the socket itself. The header
-// deadline is longer than the wait, so the deadline cannot be what closes
-// this client.
+// The hub's sockets are half-open, so the hub must end the socket itself.
+// The header deadline is longer than the wait, so the deadline cannot be
+// what closes this client.
 test('a FIN before the header line: the hub closes the socket at once', async () => {
   const fx = await openHub({ headerTimeoutMs: 60000 })
   try {
@@ -347,9 +322,8 @@ test('a FIN before the header line: the hub closes the socket at once', async ()
   }
 })
 
-// G45. A link id that registers again while it is paired destroys its old
-// pair first. So after cut(), no byte from the first pair reaches the
-// other side. This is the probe scratch-E/hub-rereg.mjs as a test.
+// If the old pair outlives the new one, a byte from the old pair passes a
+// later cut().
 test('re-registration: a link id that registers again destroys its old pair first', async () => {
   const fx = await openHub()
   try {
@@ -369,9 +343,6 @@ test('re-registration: a link id that registers again destroys its old pair firs
   }
 })
 
-// G45. Two sockets that claim the same side of one link never pair. The
-// newer socket wins: the hub destroys the older one, and the newer one
-// waits for the other side.
 test('same side: two sockets that claim one side never pair, and the newer one wins', async () => {
   const fx = await openHub()
   try {
@@ -396,8 +367,8 @@ test('same side: two sockets that claim one side never pair, and the newer one w
   }
 })
 
-// G46. An end() from one side is a graceful close. The hub delivers the
-// bytes already in that direction's fault queue, then ends the other side.
+// The latency profile holds 'final' in the fault queue when the FIN
+// arrives. The hub must drain that queue before it ends side 1.
 test('graceful close: a latency-only link delivers its final payload after end()', async () => {
   const fx = await openHub({ profile: LATENCY })
   try {
@@ -414,11 +385,8 @@ test('graceful close: a latency-only link delivers its final payload after end()
   }
 })
 
-// G46, D-045 F01. Both sides send a final payload and then a FIN, while
-// each payload still waits in its fault queue. A FIN from one side ends
-// only the direction from that side. The hub keeps writing to that side
-// until the queue toward it drains, so each side gets the other's payload
-// before its end.
+// A FIN from one side ends only the direction from that side. The hub must
+// keep writing to that side until the queue toward it drains.
 test('graceful close: when both sides end with a payload in each fault queue, both payloads arrive', async () => {
   const fx = await openHub({ profile: LATENCY })
   try {
@@ -440,9 +408,6 @@ test('graceful close: when both sides end with a payload in each fault queue, bo
   }
 })
 
-// G46. A graceful end does not protect the queue from a hard fault. After
-// the end, a cut() still drops the queued bytes at once. A kill-mid-frame
-// still delivers only the bytes in its budget, and drops the rest.
 test('after end(), a hard cut and a kill-mid-frame still drop the queued bytes at once', async () => {
   const fx = await openHub({ profile: LATENCY })
   try {
@@ -469,16 +434,10 @@ test('after end(), a hard cut and a kill-mid-frame still drop the queued bytes a
   }
 })
 
-// G46. A graceful close must not keep a socket open for good. Side 1 does
-// not read, so the hub pauses side 0 until side 1 drains. Then side 1
-// sends a FIN and resets. A closed socket never drains, and a paused
-// socket with bytes in its read buffer hides its FIN. So the hub must
-// resume side 0 to see it close.
-// The 32 MiB wait in the fault queue, and then go to side 1 in a burst.
-// The test waits until the hub holds more than 16 MiB for side 1. That is
-// more than the kernel buffers of one loopback connection hold (8 MiB at
-// most on macOS), so side 1 cannot drain and resume side 0 by chance. The
-// next 1 MiB then wait in the read buffer of the paused side 0.
+// Side 1 does not read, so the hub pauses side 0 until side 1 drains. A
+// closed side 1 never drains, and a paused socket with bytes in its read
+// buffer hides its FIN. So the hub must resume side 0 when side 1 closes,
+// or side 0 stays open for good.
 test('graceful close: a source paused for backpressure still closes after its destination closes', async () => {
   const MiB = 1024 * 1024
   const fx = await openHub({ profile: LATENCY })
@@ -486,10 +445,13 @@ test('graceful close: a source paused for backpressure still closes after its de
     const [a, b] = await pair(fx, 'L')
     b.socket.pause()
     a.socket.write(Buffer.alloc(32 * MiB))
+    // 16 MiB is more than the kernel buffers of one loopback connection
+    // hold (8 MiB at most on macOS), so side 1 cannot drain by chance.
     await waitFor(
       () => b.hubEnd.writableLength > 16 * MiB && a.hubEnd.isPaused(),
       'the hub to hold 16 MiB for side 1 and to pause side 0'
     )
+    // The extra 1 MiB waits in the read buffer of the paused side 0.
     a.socket.write(Buffer.alloc(MiB))
     await waitFor(() => a.hubEnd.readableLength > 0, 'bytes to wait in the read buffer of side 0')
     b.socket.end()
@@ -502,9 +464,8 @@ test('graceful close: a source paused for backpressure still closes after its de
   }
 })
 
-// While side 1 does not read, many writes of the hub to side 1 return
-// false. The hub pauses side 0 once, and waits for one 'drain' to resume
-// it, not for one 'drain' per write.
+// While side 1 does not read, many writes to side 1 return false. One
+// 'drain' listener per write leaks listeners for the life of the link.
 test('backpressure: the hub waits for one drain per pause, not one per write', async () => {
   const MiB = 1024 * 1024
   const fx = await openHub({ profile: LATENCY })

@@ -1,19 +1,10 @@
-// T10 adversarial review — resource-leak soak for the @auto-okf stack.
-// Sustained multi-writer load under the lossy fault profile; samples RSS,
-// heap, open FDs and corestore directory growth per writer process every
-// 30s into <run>/soak.csv, with one partition/heal at the midpoint. Ends
-// with a heal + convergence check.
+// A resource-leak soak: three writers under the lossy fault profile, with
+// one partition and heal at the midpoint. Every 30 s it samples RSS, heap,
+// open FDs and corestore directory size per writer into <run>/soak.csv.
+// Exit 0 means the peers converged and no writer process died.
 //
 //   node okf/harness/soak/soak.js               # 22 minutes (default)
 //   SOAK_MINUTES=30 HARNESS_SEED=99 node okf/harness/soak/soak.js
-//
-// Unbounded revision RETENTION is a documented design choice (append-only,
-// §8); unbounded MEMORY under bounded-per-op workload is a bug. This soak
-// runs only O(1)-per-op workload (LWW setField + OR-set addTag capped at 50
-// distinct members) so RSS growth cannot be blamed on the known O(R^2)
-// SetBody rescan — it isolates the leak/backpressure question.
-//
-// Exit code 0 = converged at the end and no writer process died.
 import { appendFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -30,7 +21,7 @@ const OP_SLEEP = Number(process.env.SOAK_SLEEP || 400)
 const BACKPRESSURE = process.env.SOAK_BACKPRESSURE !== '0'
 const CHURN = process.env.SOAK_CHURN !== '0'
 
-// Flat subjects (no '/' so path/<p> needs no escaping when resolving ids).
+// No '/' in a subject, so path/<p> needs no escaping.
 const SUBJECTS = ['Home', 'NotesA', 'NotesB', 'Log', 'Topic']
 
 async function dirKb(dir) {
@@ -59,9 +50,8 @@ console.log(
 )
 console.log(`[soak] csv: ${csv}`)
 
-// w0 seeds the shared subjects; every writer then mutates them concurrently.
-// w0 mints them (no squat), so the op tag IS the concept id, and after
-// quiesce every peer's apply has folded the same ids.
+// w0 is genesis, so no squat is possible and the op tag is the concept id.
+// After the quiesce every peer folded the same ids.
 const ids = new Map()
 for (const s of SUBJECTS) {
   const res = await writers[0].call('createConcept', s, 'note')
@@ -75,6 +65,10 @@ const opCounts = writers.map(() => 0)
 let running = true
 let fatal = null
 
+// Unbounded revision retention is a design choice (append-only, SPEC §8).
+// Unbounded memory under a bounded-per-op load is a bug. So every op here
+// is O(1): setField, and addTag with at most 50 distinct members. The
+// O(R^2) SetBody rescan then cannot explain RSS growth.
 const loads = writers.map(async (w, wi) => {
   const opOpts = BACKPRESSURE ? { backpressure: true } : {}
   while (running && Date.now() < deadline) {

@@ -1,22 +1,8 @@
-// Regression (GitHub issue #30 — MAJOR, §9): a directory move through the
-// live ingest watcher could lose data or duplicate the bundle. Two failure
-// modes:
-//
-//   1. delete-guard-on + old-before-new event ordering: the old path's
-//      removal emitted DeleteConcept BEFORE the moved file's SetPath, which
-//      then landed on a tombstone (flagged writeafterdelete but suppressed
-//      from materialize) — the next materialize UNLINKED the moved file.
-//   2. macOS fs.watch delivers a subtree move as directory-rename events,
-//      never the nested new .md paths; the watcher dropped non-.md paths,
-//      so zero ops were emitted and the next materialize regenerated the
-//      old files while orphaning the moved ones.
-//
-// Fixes under test (okf/faces/lib/ingest.js): (a) a disk file bearing a
-// known-but-tombstoned _id is intent-to-keep — ingest emits
-// UndeleteConcept first; (b) vanished paths defer to a quiet-window drain
-// so present-file ingests land their SetPaths first (scan()'s
-// ingest-before-delete order, event-driven); (c) directory events schedule
-// a coalesced scan() instead of being dropped.
+// A directory move through the watcher must lose no concept. Two traps.
+// fs.watch can report the old path first. Then a DeleteConcept lands before
+// the SetPath of the moved file, and the next materialize unlinks it. macOS
+// fs.watch reports a subtree move as directory renames only, so a watcher
+// that drops non-.md paths emits no op. See okf/faces/lib/ingest.js.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
@@ -43,16 +29,15 @@ async function hasUndeleteFlag(v, id) {
 
 test('#30(1): delete-before-move ordering resurrects the moved concept (no data loss)', async () => {
   const { v, id, bdir } = await seededBundle('A')
-  // Human moves the subtree; file contents (incl. _id frontmatter) untouched.
+  // The moved file keeps its _id frontmatter.
   await rename(join(bdir, 'Recipes'), join(bdir, 'Cooking'))
 
   const w = await createIngestWatcher(v, bdir, { watch: false, confirmDelete: async () => true })
-  // Adversarial (and real) fs.watch interleaving: OLD-path removal first.
+  // the old path first, the order that fs.watch can deliver
   await w._maybeDelete('Recipes/Soup.md')
   await v.update()
   assert.ok((await v.val(K.cMeta(id))).deleted != null, 'precondition: the delete tombstoned the concept')
 
-  // THEN the moved file — previously SetPath+SetBody on a tombstone.
   await w.ingestFile('Cooking/Soup.md')
   await v.update()
 
@@ -87,7 +72,7 @@ test('#30(2): live event ordering — deferred delete never tombstones a moved c
       return true
     }
   })
-  // Per-file events in the hazardous order: the vanished old path first.
+  // the vanished old path first
   w._dirty('Recipes/Soup.md')
   w._dirty('Cooking/Soup.md')
 
@@ -98,7 +83,7 @@ test('#30(2): live event ordering — deferred delete never tombstones a moved c
     }),
     'the moved file ingested (SetPath landed)'
   )
-  // Let the deferred-delete drain run its quiet window.
+  // wait for the quiet window of the deferred delete
   assert.ok(
     await until(() => w._pendingDeletes.size === 0 && w._drainTimer === null && w._timers.size === 0),
     'delete queue drained'
@@ -116,9 +101,8 @@ test('#30(3): a directory event triggers a rescan that lands the move', async ()
   await rename(join(bdir, 'Recipes'), join(bdir, 'Cooking'))
 
   const w = await createIngestWatcher(v, bdir, { watch: false, debounce: 20, settle: 10 })
-  // What macOS fs.watch actually delivers for `mv Recipes Cooking`: rename
-  // events for the DIRECTORIES (old path now ENOENT, new path a dir) —
-  // previously dropped at the .md filter, emitting zero ops.
+  // What macOS fs.watch delivers for `mv Recipes Cooking`: a rename of
+  // each directory, and no .md path.
   w._dirty('Recipes')
   w._dirty('Cooking')
 
@@ -147,7 +131,7 @@ test('#30(4): restoring a deleted file on disk undeletes the concept', async () 
   const rep = await materialize(v, bdir)
   assert.ok(rep.removed.includes('Notes/Keep.md'), 'precondition: deletion unlinked the file')
 
-  // Human restores the file (e.g. from a backup), old _id and all.
+  // the restored file keeps its old _id
   await mkdir(join(bdir, 'Notes'), { recursive: true })
   await writeFile(join(bdir, 'Notes/Keep.md'), bytes)
 

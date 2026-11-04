@@ -1,8 +1,5 @@
-// Validates the S10 fuzz machinery itself (no processes): a schedule that
-// fails a synthetic predicate is shrunk to (near-)minimal and persisted as a
-// named regression fixture. This exercises generateSchedule / shrinkSchedule
-// / saveRegression end-to-end so the "shrunk fuzz repro committed as a
-// regression" pipeline is proven, decoupled from machine timing.
+// Tests the fuzz shrinker with no processes. A synthetic predicate replaces
+// a real failure, so the result does not depend on machine timing.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, rm } from 'node:fs/promises'
@@ -21,9 +18,8 @@ test('fuzz shrinker reduces a schedule to the minimal failing core', async () =>
   const before = countOps(schedule)
   assert.ok(before >= 20)
 
-  // synthetic failure predicate: "fails" iff a delete op is present (a single
-  // op is the true minimal cause). The shrinker must strip everything else
-  // while keeping at least one delete.
+  // The predicate fails on any delete op, so one delete is the true
+  // minimal cause.
   const hasDelete = (s) => s.rounds.some((r) => r.ops.some((o) => o.kind === 'delete'))
   assert.ok(hasDelete(schedule), 'seed 1 contains a delete to shrink toward')
 
@@ -38,5 +34,5 @@ test('fuzz shrinker reduces a schedule to the minimal failing core', async () =>
   const saved = JSON.parse(await readFile(path, 'utf8'))
   assert.equal(saved.schedule.seed, 1)
   assert.ok(hasDelete(saved.schedule))
-  await rm(path) // self-test fixture is not a real repro; do not keep it
+  await rm(path) // a self-test fixture, not a real repro
 })

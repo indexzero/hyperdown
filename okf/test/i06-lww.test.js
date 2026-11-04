@@ -1,6 +1,5 @@
-// I6 LWW law (okf SPEC §5, §11): register outcome depends only on the
-// linearized order — for every register (frontmatter fields, body head,
-// path) the later linearized op wins, whichever writer authored it.
+// I6 (SPEC §5, §11): for every LWW register, the later linearized op wins,
+// whichever writer wrote it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey } from './helpers.js'
@@ -24,7 +23,7 @@ test('I6: the later linearized set-field wins, in either order', async () => {
   const vBA = await env.run([...setup, b, a], { view: new MemView() })
   assert.deepEqual(vAB.dump(`c/${id}/f/k`)[`c/${id}/f/k`].values, ['from-b'])
   assert.deepEqual(vBA.dump(`c/${id}/f/k`)[`c/${id}/f/k`].values, ['from-a'])
-  // both orders flag the loser (I4) — outcome is order-dependent, loss never silent
+  // both orders flag the loser (I4)
   assert.equal(Object.keys(vAB.dump(`flag/clobber/${id}/k/`)).length, 1)
   assert.equal(Object.keys(vBA.dump(`flag/clobber/${id}/k/`)).length, 1)
 })

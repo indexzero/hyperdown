@@ -1,6 +1,5 @@
-// I4 No silent loss (okf SPEC §11): no op's effect disappears without a
-// flag (clobber / staletag / conflict / pathcollision / writeafterdelete /
-// rejected). wanted/ entries are demand, not loss.
+// I4 (SPEC §11): no op's effect disappears without a flag. wanted/ is
+// demand, not loss.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey, keysUnder, rejectedReasons } from './helpers.js'
@@ -17,7 +16,6 @@ test('I4: cross-writer LWW supersession flags clobber with the loser recorded', 
   const entries = Object.values(flags)
   assert.equal(entries.length, 1)
   assert.deepEqual(entries[0].superseded.values, ['open'])
-  // and the winner is the later linearized value
   assert.deepEqual(view.dump(`c/${id}/f/status`)[`c/${id}/f/status`].values, ['closed'])
 })
 
@@ -51,7 +49,7 @@ test('I4: writes landing on a tombstoned concept flag writeafterdelete', async (
   env.op('A', 'set-field', { id, key: 'x', value: [1] })
   const view = await env.run()
   assert.equal(keysUnder(view, `flag/writeafterdelete/${id}/`).length, 1)
-  // the write still landed (§8: lands and flags)
+  // the write lands and flags (SPEC §8)
   assert.deepEqual(view.dump(`c/${id}/f/x`)[`c/${id}/f/x`].values, [1])
 })
 
@@ -64,7 +62,7 @@ test('I4: undecodable and oversize ops are rejected with a recorded reason', asy
   const reasons = Object.values(rejectedReasons(view)).sort()
   assert.ok(reasons.length === 2)
   assert.ok(reasons.includes('oversize-op'))
-  // the garbage byte op decodes as unknown-msgid or undecodable — both fixed reasons
+  // either reason is fixed, depending on how the bytes decode
   assert.ok(reasons.some((r) => r === 'undecodable' || r === 'unknown-msgid'))
   assert.equal(keysUnder(view, 'c/').length > 0, true)
 })

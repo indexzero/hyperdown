@@ -1,13 +1,12 @@
-// Adversarial cases the spec reviews surfaced (okf SPEC changelog): N1
-// squat-proof minting (incl. a future or unadmitted writer), M4 reserved field
-// keys, M5 fabricated-base SetBody, casefold path collision, keyspace
-// injection/escaping, empty-type, reserved paths.
+// Adversarial inputs that apply must reject or contain: squat mints,
+// reserved field keys, fabricated bases, casefold collisions, keyspace
+// injection, empty types and reserved paths. See SPEC §4 to §7.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey, keysUnder, rejectedReasons } from './helpers.js'
 import { keyspace as K, makeTag } from '../core/index.js'
 
-// ---------- §6 / N1: squat-proof minting ----------
+// ---------- §6: squat-proof minting ----------
 
 test('N1: adopting an id shaped like a KNOWN writer’s future mint is rejected', async () => {
   const env = new Env({ genesis: 'A' })
@@ -79,7 +78,7 @@ test('§6: malformed adopted ids are rejected', async () => {
   assert.deepEqual(Object.values(rejectedReasons(view)), ['bad-id', 'bad-id', 'bad-id'])
 })
 
-// ---------- §5 / M4: reserved field keys ----------
+// ---------- §5: reserved field keys ----------
 
 test('M4: SetField on tags/_id/_rev is rejected reserved-key', async () => {
   const env = new Env({ genesis: 'A' })
@@ -109,7 +108,7 @@ test('N4: empty type is unreachable — create and set-field both reject', async
   assert.deepEqual(view.dump(`c/${id}/f/type`)[`c/${id}/f/type`].values, ['note'])
 })
 
-// ---------- §5 / M5: fabricated-base SetBody ----------
+// ---------- §5: fabricated-base SetBody ----------
 
 test('M5: a fabricated base is stored + flagged against the head and never becomes head', async () => {
   const env = new Env({ genesis: 'A' })
@@ -167,7 +166,6 @@ test('§7: casefold collision — loser flagged on every platform, keeps its exa
   assert.equal(flagKeys.length, 1)
   assert.ok(flagKeys[0].includes(loser))
   assert.equal(Object.values(view.dump(flagKeys[0]))[0].against, winner)
-  // casefold loser retains path/<its exact path> (NFC form)
   assert.equal(view.dump('path/notes%2Fréunion')['path/notes%2Fréunion'], loser)
   assert.equal(view.dump('path/Notes%2FRéunion')['path/Notes%2FRéunion'], winner)
 })
@@ -232,13 +230,10 @@ test('§4: hostile strings cannot escape their key family', async () => {
       `unexpected family for ${key}`
     )
   }
-  // the field key round-trips through escaping
   const fieldKeys = keysUnder(view, `c/${id}/f/`)
   assert.ok(fieldKeys.includes(`c/${id}/f/a%2Fb%2F..%2Fc`))
   assert.deepEqual(K.parseKey(`c/${id}/f/a%2Fb%2F..%2Fc`), ['c', id, 'f', 'a/b/../c'])
-  // gov/ was never touched by the hostile path
   assert.equal(keysUnder(view, 'gov/').length, 1, 'only the genesis writer record')
-  // staletag flag key embeds the hostile value, escaped
   const stale = keysUnder(view, `flag/staletag/${id}/`)
   assert.equal(stale.length, 1)
   assert.equal(K.parseKey(stale[0])[3], 'x/y')

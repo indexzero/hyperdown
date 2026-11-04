@@ -1,6 +1,5 @@
-// I3 Rebuild equivalence (okf SPEC §11): a from-scratch rebuild of the
-// view equals the incrementally-maintained view — apply carried no state
-// between calls beyond the view itself.
+// I3 (SPEC §11): a rebuild from scratch equals the incremental view. apply
+// must carry no state between calls beyond the view.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey } from './helpers.js'
@@ -18,7 +17,7 @@ function scenario() {
   env.op('B', 'set-path', { id: next, path: 'wiki/renamed' })
   env.op('A', 'delete-concept', { id: next })
   env.op('B', 'undelete-concept', { id: next })
-  env.raw('A', Buffer.alloc(70000)) // oversize → rejected, still counted
+  env.raw('A', Buffer.alloc(70000)) // oversize, rejected but counted in seen/
   env.op('A', 'set-field', { id: home, key: 'status', value: ['live'] })
   return env
 }

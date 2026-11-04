@@ -1,8 +1,4 @@
-// S6 — rename + rename. A and B SetPath the SAME concept to two different
-// paths concurrently behind a partition; on heal the linearization winner
-// holds the path, the loser is recorded under flag/clobber/<id>/path/<tag>,
-// and every peer converges. Permutation replay confirms the winner is a pure
-// function of the linearized log.
+// S6: two renames of one concept under a partition (I6, I4). See SPEC §7.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { setupVaultCluster, flagKeys, assertAllCoherent, replayHash } from './helpers.js'
@@ -14,10 +10,10 @@ test('S6: concurrent rename → linearization winner holds path, loser flag/clob
     const { tag: id } = await a.call('createConcept', 'notes/base', 'note')
     await ctl.quiesce(writers)
 
-    await ctl.disconnect(a, b) // partition
+    await ctl.disconnect(a, b)
     await a.call('setPath', id, 'notes/a')
     await b.call('setPath', id, 'notes/b')
-    await ctl.connect(a, b) // heal
+    await ctl.connect(a, b)
     const hash = await ctl.quiesce(writers)
 
     for (const w of writers) {
@@ -25,7 +21,6 @@ test('S6: concurrent rename → linearization winner holds path, loser flag/clob
       const winner = dump[`c/${id}/path`].path
       assert.ok(['notes/a', 'notes/b'].includes(winner), `${w.name}: one path wins`)
       assert.equal(dump[`path/${winner === 'notes/a' ? 'notes%2Fa' : 'notes%2Fb'}`], id)
-      // exactly one path-clobber audit for the losing rename
       assert.equal(flagKeys(dump, `clobber/${id}/path`).length, 1, `${w.name}: one path clobber`)
     }
     await assertAllCoherent(writers)

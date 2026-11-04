@@ -1,5 +1,4 @@
-// Op wire contract (okf SPEC §3): 12 ops, hyperschema + hyperdispatch,
-// append-only command ids, decode-never-throws, clock+at on every op.
+// The op wire contract (SPEC §3).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'

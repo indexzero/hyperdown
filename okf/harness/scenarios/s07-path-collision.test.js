@@ -1,8 +1,5 @@
-// S7 — path collision. A and B SetPath two DIFFERENT concepts onto the SAME
-// path concurrently behind a partition; on heal the first claim (lower ord)
-// holds path/, the loser lands at its deterministic conflict-copy path under
-// flag/pathcollision, every peer converges, and the materialized bundles are
-// byte-identical across peers (I9).
+// S7: a path collision under a partition, then I9 over the conflicted copy.
+// See SPEC §7.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -40,10 +37,10 @@ test('S7: two concepts, one path → deterministic conflict copy + byte-identica
     await b.append('set-body', { id: id2, base: null, text: 'second' })
     await ctl.quiesce(writers)
 
-    await ctl.disconnect(a, b) // partition
+    await ctl.disconnect(a, b)
     await a.call('setPath', id1, 'notes/shared')
     await b.call('setPath', id2, 'notes/shared')
-    await ctl.connect(a, b) // heal
+    await ctl.connect(a, b)
     await ctl.quiesce(writers)
 
     for (const w of writers) {
@@ -57,8 +54,7 @@ test('S7: two concepts, one path → deterministic conflict copy + byte-identica
     }
     await assertAllCoherent(writers)
 
-    // I9: converged peers materialize byte-identical bundles (incl. the
-    // deterministic conflict copy)
+    // The hash covers the name of the conflicted copy too (I9).
     const dirA = join(ctl.baseDir, 'face-w0')
     const dirB = join(ctl.baseDir, 'face-w1')
     await a.cmd('materialize', { dir: dirA })

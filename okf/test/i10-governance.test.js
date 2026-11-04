@@ -1,6 +1,4 @@
-// I10 Governance (okf SPEC §8, §11): ops from a writer with no gov/writer
-// record, revoked-writer ops after the causal revocation point,
-// unauthorized governance ops, and policy-violating ops never mutate c/;
+// I10 (SPEC §8, §11): an op that governance rejects never changes c/, and
 // the applied/rejected partition is replay-stable.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -15,8 +13,8 @@ test('I10: governance requires an indexer issuer; an unauthorized AddWriter stil
   const view = await env.run(env.nodes, { host })
   assert.deepEqual(rejectedReasons(view), { [`${env.hex('B')}/000000000000`]: 'policy-governance' })
   assert.equal((await view.get('gov/writer/' + env.hex('E'))), null, 'E never admitted')
-  // §8 (AD7): an autobee grant follows every AddWriter op, accepted or
-  // rejected, at an explicit weight 0. okf membership comes only from gov/.
+  // The grant rule, SPEC §8: a grant for every AddWriter, accepted or
+  // rejected. Membership comes from gov/ alone.
   assert.deepEqual(
     host.calls.filter(([m]) => m === 'addWriter'),
     [
@@ -47,7 +45,7 @@ test('I10: the AddWriter grant comes before every check that can reject the op, 
   // policy-rate: F spends its one token on a rejected op, so its bucket is empty
   env.op('F', 'set-writer-policy', { key: writerKey('nobody'), namespacePrefixes: [], rateCeiling: 1 })
   env.op('F', 'add-writer', { key: writerKey('E5'), indexer: false })
-  // bad-writer-key: a key that is not 32 bytes, and no grant (D-047 F18)
+  // bad-writer-key: a key that is not 32 bytes, and no grant
   env.op('A', 'add-writer', { key: Buffer.alloc(31, 7), indexer: false })
   const host = hostStub()
   const view = await env.run(env.nodes, { host })
@@ -65,8 +63,8 @@ test('I10: the AddWriter grant comes before every check that can reject the op, 
   for (const e of ['E1', 'E2', 'E3', 'E4', 'E5']) {
     assert.equal(await view.get('gov/writer/' + env.hex(e)), null, `${e} never admitted`)
   }
-  // §8 (AD7): one grant per decoded AddWriter op with a 32-byte key, in
-  // linearized order, whatever the op's disposition.
+  // One grant per AddWriter with a 32-byte key, in linearized order,
+  // whatever the outcome of the op (SPEC §8).
   assert.deepEqual(
     host.calls.filter(([m]) => m === 'addWriter'),
     ['B', 'C', 'F', 'E1', 'E2', 'E3', 'E4', 'E5'].map((w) => ['addWriter', env.hex(w), { weight: 0 }])
@@ -111,7 +109,7 @@ test('I10: an AddWriter whose swarm key is not 32 bytes is rejected bad-swarm-ke
   for (const e of ['E1', 'E2']) {
     assert.equal(await view.get('gov/writer/' + env.hex(e)), null, `${e} never admitted`)
   }
-  // §8 (AD7): the grant reads the op bytes alone, before every check.
+  // The grant comes before every check (SPEC §8).
   assert.deepEqual(
     host.calls.filter(([m]) => m === 'addWriter'),
     ['E1', 'E2'].map((w) => ['addWriter', env.hex(w), { weight: 0 }])
@@ -120,8 +118,8 @@ test('I10: an AddWriter whose swarm key is not 32 bytes is rejected bad-swarm-ke
 
 test('I10: an AddWriter whose key is not 32 bytes is rejected bad-writer-key, writes no gov/ key, gets no grant, and never counts as an indexer (D-047 F18)', async () => {
   // A z-base-32 id passed where a hex key belongs decodes to no bytes
-  // (b4a.from(id, 'hex')). Before the fix, apply wrote gov/writer/ for it,
-  // and that phantom indexer let the only real indexer remove itself.
+  // (b4a.from(id, 'hex')). A gov/writer record for it is a phantom indexer,
+  // and that phantom lets the only real indexer remove itself.
   const env = new Env({ genesis: 'A' })
   const A = env.hex('A')
   env.op('A', 'add-writer', { key: Buffer.alloc(31, 7), indexer: true })
@@ -142,10 +140,9 @@ test('I10: an AddWriter whose key is not 32 bytes is rejected bad-writer-key, wr
 })
 
 test('I10: apply does not return before host.addWriter settles', async () => {
-  // autobee@2's host.addWriter reads the system before it records the
-  // grant (lib/system.js addWriter), and the system flush runs as soon as
-  // apply returns (index.js _applyBatch), so a grant apply did not await
-  // can miss the flush and be lost.
+  // autobee flushes its system as soon as apply returns, so a grant that
+  // apply does not await can miss the flush. See DEVIATIONS.md, "Substrate
+  // behaviour that okf relies on".
   const env = new Env({ genesis: 'A' })
   env.op('A', 'add-writer', { key: writerKey('B'), indexer: false })
   env.op('A', 'add-writer', { key: writerKey('C'), indexer: true })
@@ -167,9 +164,9 @@ test('I10: causal revocation — in-flight ops with strictly-preceding clocks la
   const id = env.tag('A', 1)
   env.op('C', 'add-tag', { id, value: 'seen-by-a' }) // C seq 0, observed by A
   const preRemoval = env.observedAll()
-  // A removes C having observed C through seq 0
+  // A observed C through seq 0, so seqAtRemoval is 0
   const removal = env.op('A', 'remove-writer', { key: writerKey('C') })
-  // in-flight: C's op at seq 1 > seqAtRemoval(0) → rejected regardless of clock
+  // seq 1 is past seqAtRemoval, so the clock cannot save the op
   const late = env.op('C', 'add-tag', { id, value: 'too-late' }, { clock: preRemoval })
   const view = await env.run()
   const reasons = rejectedReasons(view)
@@ -188,10 +185,10 @@ test('I10: revocation race — an in-flight op (seq ≤ seqAtRemoval, preceding 
   const [aw, cr] = env.nodes
   const c0 = env.op('C', 'add-tag', { id, value: 'c0' }) // C seq 0
   const c1 = env.op('C', 'add-tag', { id, value: 'c1-in-flight' }) // C seq 1
-  // A observed C through seq 1 when it issued the removal…
+  // A observed C through seq 1, so seqAtRemoval is 1
   const removal = env.op('A', 'remove-writer', { key: writerKey('C') })
-  // …but on this peer c1 linearizes AFTER the removal (partition heal);
-  // per-writer order (c0 before c1) is preserved.
+  // On this peer c1 linearizes after the removal, as after a partition
+  // heal. Per-writer order holds: c0 before c1.
   const view = await env.run([aw, cr, c0, removal, c1])
   const tags = Object.values(view.dump(`c/${id}/f/tags`)[`c/${id}/f/tags`].els).sort()
   assert.deepEqual(tags, ['c0', 'c1-in-flight'], 'the §8 bounded window admits the in-flight op')
@@ -205,9 +202,8 @@ test('I10: seq cross-check — a backdated clock cannot smuggle an op past seqAt
   const id = env.tag('A', 1)
   env.op('C', 'add-tag', { id, value: 't0' }) // seq 0
   env.op('A', 'remove-writer', { key: writerKey('C') }) // seqAtRemoval = 0
-  // C forges an op claiming a pre-removal view of the world, but its
-  // actual position is seq 1 — the §8 unforgeable-position rule rejects it
-  // even though the claimed clock strictly precedes the revocation clock.
+  // The clock claims a view before the removal, but the position of the
+  // node is seq 1. The position decides (SPEC §8).
   env.op('C', 'add-tag', { id, value: 'forged' }, {
     clock: [[env.hex('C'), 1]],
     verbatimClock: true
@@ -247,14 +243,14 @@ test('I10: a RemoveWriter that would leave zero indexers is rejected', async () 
 })
 
 test('I10: an AddWriter that would demote the last live indexer is rejected policy-governance (D-047 F19)', async () => {
-  // Bundle.addWriter defaults to indexer: false, so writers.add(ownKey)
-  // from the only indexer demoted it. Before the fix, only RemoveWriter
-  // kept one live indexer, and the vault could become ungovernable.
+  // Bundle.addWriter defaults to indexer: false, so `writers.add` of its
+  // own key by the only indexer is a demotion. Without this rule the vault
+  // has no indexer left and no governance.
   const env = new Env({ genesis: 'A' })
   const [A, B] = [env.hex('A'), env.hex('B')]
   env.op('A', 'add-writer', { key: writerKey('A'), indexer: false }) // A/0: the only indexer demotes itself
   env.op('A', 'add-writer', { key: writerKey('B'), indexer: true }) // A/1: A is still an indexer
-  env.op('A', 'add-writer', { key: writerKey('A'), indexer: false }) // A/2: B stays, so A may step down
+  env.op('A', 'add-writer', { key: writerKey('A'), indexer: false }) // A/2: B stays, so A can step down
   env.op('B', 'add-writer', { key: writerKey('C'), indexer: true }) // B/0
   env.op('B', 'remove-writer', { key: writerKey('C') }) // B/1: C is revoked, so it is no live indexer
   env.op('B', 'add-writer', { key: writerKey('B'), indexer: false }) // B/2: B is the last live indexer
@@ -311,8 +307,7 @@ test('I10: an op from a writer with no gov/writer record is rejected not-a-write
   env.op('A', 'set-body', { id, base: null, text: 'body from A' })
   const before = await env.run()
 
-  // D has no gov/writer record: a mint, then each mutation op on A's
-  // concept (all nine content ops)
+  // D has no gov/writer record. One of each of the nine content ops.
   const D = env.hex('D')
   env.op('D', 'create-concept', { path: 'nw/from-d', type: 'note' })
   env.op('D', 'set-field', { id, key: 'status', value: ['d'] })
@@ -323,7 +318,7 @@ test('I10: an op from a writer with no gov/writer record is rejected not-a-write
   env.op('D', 'delete-concept', { id })
   env.op('D', 'undelete-concept', { id })
   env.op('D', 'resolve-conflict', { id, keep: 'ab'.repeat(32), supersede: [] })
-  // a governance op from D meets the indexer-issuer rule first (§8)
+  // a governance op from D meets the indexer-issuer rule first (SPEC §8)
   env.op('D', 'add-writer', { key: writerKey('E'), indexer: true })
   const view = await env.run()
 
@@ -333,11 +328,10 @@ test('I10: an op from a writer with no gov/writer record is rejected not-a-write
   }
   assert.equal(reasons[`${D}/000000000009`], 'policy-governance')
   assert.equal(Object.keys(reasons).length, 10, 'only D is rejected')
-  // the content pipeline never ran: no c/ key and no index key changed
   for (const prefix of ['c/', 'path/', 'pcl/', 'link/', 'bl/', 'wanted/', 'revbybase/', 'log/']) {
     assert.deepEqual(view.dump(prefix), before.dump(prefix), `no ${prefix} key changed`)
   }
-  // §3: seen/ counts every node; a rejected non-writer takes no rate token
+  // seen/ counts every node (SPEC §3). A rejected non-writer takes no rate token.
   assert.equal(view.dump('seen/' + D)['seen/' + D], 10)
   assert.equal(keysUnder(view, 'rate/' + D).length, 0, 'no rate/ record for D')
   assert.equal(keysUnder(view, 'gov/writer/' + env.hex('E')).length, 0, 'E never admitted')
@@ -346,7 +340,6 @@ test('I10: an op from a writer with no gov/writer record is rejected not-a-write
 test('I10: admission is not retroactive: ops before the AddWriter stay rejected, ops after it take effect', async () => {
   const env = new Env({ genesis: 'A' })
   const D = env.hex('D')
-  // D is unadmitted: its ops are rejected and never touch c/
   env.op('D', 'create-concept', { path: 'adm/early', type: 'note' })
   const early = env.tag('D', 0)
   env.op('D', 'set-body', { id: early, base: null, text: 'early body' })
@@ -354,7 +347,6 @@ test('I10: admission is not retroactive: ops before the AddWriter stay rejected,
   const mid = await env.run(env.nodes, { host })
   assert.equal(keysUnder(mid, 'c/').length, 0, 'ops of a non-writer never mutate c/')
 
-  // the indexer's AddWriter admits D at its linearized position
   env.op('A', 'add-writer', { key: writerKey('D'), indexer: false })
   env.op('D', 'create-concept', { path: 'adm/late', type: 'note' })
   const late = env.tag('D', 2)
@@ -366,7 +358,7 @@ test('I10: admission is not retroactive: ops before the AddWriter stay rejected,
   assert.equal(view.dump(`c/${early}/meta`)[`c/${early}/meta`], undefined, 'the AddWriter revives no earlier op')
   assert.equal(view.dump(`c/${late}/meta`)[`c/${late}/meta`].type, 'note', 'an op after the admission takes effect')
   assert.equal(view.dump('path/adm%2Flate')['path/adm%2Flate'], late)
-  // the substrate grant is host.addWriter; no separate substrate ack
+  // The grant is host.addWriter alone. There is no ackWriter.
   assert.ok(host.calls.some(([m, k]) => m === 'addWriter' && k === D))
   assert.ok(!host.calls.some(([m]) => m === 'ackWriter'))
 })

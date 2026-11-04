@@ -1,7 +1,6 @@
-// I1 Determinism (okf SPEC §11): apply is a pure function of the
-// linearized op sequence — same sequence, bit-identical views; and the
-// source carries no wall clock / randomness / peer-local reads (enforced
-// by a source scan, per the assignment).
+// I1 (SPEC §11): apply is a pure function of the linearized op sequence. A
+// source scan makes sure that apply reads no clock, randomness or
+// peer-local state.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
@@ -63,7 +62,7 @@ test('I1: `at` is informational only — different timestamps, same semantic sta
   }
   const v1 = await build(1700000000000).run()
   const v2 = await build(999).run()
-  // timestamps differ where recorded, but every merge-relevant row agrees
+  // strip `at`, the one field that differs
   const strip = (v) => {
     const d = v.dump()
     for (const k of Object.keys(d)) {

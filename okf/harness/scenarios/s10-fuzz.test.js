@@ -1,13 +1,8 @@
-// S10 — seeded fuzz. A seeded generator produces random op schedules
-// (including malformed ops, oversized paths, unknown op types, garbage bases,
-// and adversarial _id mint attempts) across 3-7 real writer processes with
-// random partition schedules. After EVERY heal: the convergence hash across
-// peers, plus an INDEPENDENT index-coherence check (path/, link/, bl/,
-// wanted/, wantedrank/, revbybase/ derivable from c/ — the checker never
-// calls the code under test). On failure the schedule is shrunk to a minimal
-// repro and committed to okf/test/regressions/.
-//
-// Iterations via HARNESS_FUZZ_ITERS (default 3); base seed via HARNESS_SEED.
+// S10: seeded fuzz over 3 to 7 real writer processes with random
+// partitions. After every heal, the convergence hash and a coherence check
+// that never calls the code under test. A failure shrinks to a minimal
+// repro in okf/test/regressions/. HARNESS_FUZZ_ITERS sets the iterations,
+// default 3, and HARNESS_SEED the base seed.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveProfile } from '../lib/profiles.js'
