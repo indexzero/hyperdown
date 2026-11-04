@@ -1,14 +1,6 @@
-// I11 Roundtrip (okf SPEC §10 generations, §11 I11, §14 acceptance):
-// materialize, then import the face into a FRESH vault (a generation),
-// preserves every live concept's _id, type, fields, tags, path and head body
-// byte-for-byte, while HISTORY (old revisions, per-op attribution) is shed
-// by design. T24 (decision 10) made a generation materialize, then import:
-// these tests port the fidelity criteria of T13 to T18 to importFace.
-//
-// These run on REAL @auto-okf/store vaults (autobee + corestore on disk, no
-// stubs). Scratch lives under sslop/033/tmp/, unique per run; handles are
-// closed but files are NEVER deleted (post-mortem), and nothing under sslop/
-// (or /tmp) is removed by the test.
+// I11: a generation (materialize, then import into a fresh vault) keeps the
+// _id, type, fields, tags, path and head body of every live concept. It sheds
+// history by design. See SPEC §10 and §11. Scratch stays on disk after a run.
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
@@ -24,7 +16,6 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const RUN = `run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 let seq = 0
 
-/** Unique on-disk scratch dir under sslop/033/tmp/ (never cleaned up). */
 async function tmpDir(name) {
   const dir = join(ROOT, 'sslop', '033', 'tmp', RUN, `${name}-${seq++}`)
   await mkdir(dir, { recursive: true })
@@ -58,11 +49,8 @@ async function listFiles(root) {
     .sort()
 }
 
-// §14: byte-fidelity is judged "modulo the _rev frontmatter lines and the
-// regenerated log.md" (both necessarily re-derive in the new generation — a head
-// that was an EDIT re-roots at base:null, changing its revHash). Everything
-// else — _id, type, all fields, tags, path (the filename), body — must be
-// byte-identical.
+// SPEC §14 judges fidelity without the _rev lines and log.md. Both re-derive
+// in the new vault: an edited head re-roots at base null, so its revHash changes.
 function normalizeBundle(m) {
   const out = new Map()
   for (const [k, v] of m) {
@@ -103,37 +91,33 @@ async function liveConcepts(vault) {
 }
 
 /**
- * Build a NON-TRIVIAL bundle in one vault (single writer, deterministic):
- * multiple concepts at nested paths, OR-set tags, a rename, a body revision
- * (edit), arbitrary "unmapped"/host frontmatter keys, a RESOLVED conflict
- * (so flag/conflict is drained), and a tombstoned concept (suppressed).
- * Returns the concept ids.
+ * Seed one writer with nested paths, tags, a rename, an edit, unmapped keys,
+ * a resolved conflict and a tombstone. Returns the ids.
  */
 async function buildNonTrivial(v) {
-  // A: nested path, edited body (2 revisions), tags, unmapped + host keys.
+  // A: two revisions, tags, unmapped keys.
   const { tag: a } = await v.createConcept('datasets/finance/revenue', 'Dataset')
   await v.setField(a, 'title', 'Revenue')
   await v.setField(a, 'description', 'Quarterly revenue tables.')
-  await v.setField(a, 'owner', 'analytics-team') // unmapped producer key
-  await v.setField(a, 'host', 'bq://prod-project') // "host" key
-  await v.setField(a, 'regions', ['us', 'eu']) // array-valued unmapped key
+  await v.setField(a, 'owner', 'analytics-team')
+  await v.setField(a, 'host', 'bq://prod-project')
+  await v.setField(a, 'regions', ['us', 'eu'])
   await v.addTag(a, 'q3')
   await v.addTag(a, 'core')
   await v.setBody(a, null, 'Revenue overview. See [orders](/tables/orders-v2.md).')
   await v.update()
   const aHead1 = await v.val(K.cBody(a))
-  await v.setBody(a, aHead1, 'Revenue overview, revised. See [orders](/tables/orders-v2.md).') // body revision (edit)
+  await v.setBody(a, aHead1, 'Revenue overview, revised. See [orders](/tables/orders-v2.md).')
 
-  // B: created then RENAMED (LWW path); tag.
+  // B: renamed.
   const { tag: b } = await v.createConcept('tables/orders', 'Table')
   await v.setField(b, 'title', 'Orders')
   await v.addTag(b, 'core')
   await v.setBody(b, null, 'One row per order.')
   await v.update()
-  await v.setPath(b, 'tables/orders-v2') // rename
+  await v.setPath(b, 'tables/orders-v2')
 
-  // C: a RESOLVED conflict — two siblings citing the same non-null base,
-  // then ResolveConflict drains flag/conflict.
+  // C: a conflict, then resolved.
   const { tag: c } = await v.createConcept('guides/intro', 'Guide')
   await v.setField(c, 'title', 'Introduction')
   await v.setBody(c, null, 'r1')
@@ -141,7 +125,7 @@ async function buildNonTrivial(v) {
   const c1 = await v.val(K.cBody(c))
   await v.setBody(c, c1, 'r2a')
   await v.update()
-  await v.setBody(c, c1, 'r2b') // sibling of r2a -> flag/conflict
+  await v.setBody(c, c1, 'r2b') // cites c1 too: a conflict
   await v.update()
   const cHead = await v.val(K.cBody(c))
   const cRevs = []
@@ -150,7 +134,7 @@ async function buildNonTrivial(v) {
   await v.resolveConflict(c, cHead, { supersede: [loser] })
   await v.update()
 
-  // D: created then DELETED (tombstone) — must be suppressed post-cycle.
+  // D: a tombstone. The face must not hold it.
   const { tag: d } = await v.createConcept('notes/scratch', 'Note')
   await v.setBody(d, null, 'temporary scratch')
   await v.update()
@@ -194,11 +178,8 @@ async function treeHash(root) {
 }
 
 test("T15: the ordinary ingest preflight checks a body against the vault's own maxOpBytes (G26)", async () => {
-  // The preflight refuses a body before apply does (ADR-005), so it uses
-  // the limit that apply uses: the vault's pinned maxOpBytes. It measures
-  // the encoded set-body op, as apply does (D-048 F02), and its event names
-  // the body bytes and the op bytes. The import of a face checks each op:
-  // the D-048 F02 tests below.
+  // The preflight must use the maxOpBytes that the vault pins, not
+  // DEFAULT_LIMITS, and measure the encoded op as apply does.
   const ingestOne = async (name, maxOpBytes, bodyBytes) => {
     const dir = await tmpDir(`pre-${name}`)
     await writeTree(dir, new Map([[`${name}.md`, `---\ntype: note\n---\n\n${'x'.repeat(bodyBytes)}\n`]]))
@@ -218,14 +199,13 @@ test("T15: the ordinary ingest preflight checks a body against the vault's own m
     const body = headText === undefined ? 'none' : headText === 'x'.repeat(bodyBytes) ? 'whole' : 'changed'
     return { oversize, ops: ops.map((o) => o.type), body }
   }
-  // A vault that pins 400000 takes a 100 KB body. DEFAULT_LIMITS (65536) refused it.
+  // With DEFAULT_LIMITS (65536) the preflight refuses this body.
   assert.deepEqual(await ingestOne('wide', 400000, 100000), {
     oversize: [],
     ops: ['create-concept', 'set-body'],
     body: 'whole'
   })
-  // A vault that pins 2000 refuses a 3000-byte body by name, with its own
-  // limit, and appends no op. DEFAULT_LIMITS let it through to apply.
+  // With DEFAULT_LIMITS the preflight lets this body through to apply.
   assert.deepEqual(await ingestOne('tight', 2000, 3000), {
     oversize: [{ path: 'tight.md', bytes: 3000, limit: 2000 }],
     ops: [],
@@ -233,7 +213,7 @@ test("T15: the ordinary ingest preflight checks a body against the vault's own m
   })
 })
 
-// ---------- T15: body bytes survive ingest and materialize ----------
+// ---------- body bytes survive ingest and materialize ----------
 
 test('T15: parseNote inverts renderNote for every body, trailing newlines included (G25)', () => {
   const pairs = [['type', 'note']]
@@ -241,9 +221,8 @@ test('T15: parseNote inverts renderNote for every body, trailing newlines includ
   for (const body of bodies) {
     assert.deepEqual(parseNote(renderNote(pairs, body)), { fm: { type: 'note' }, body, warnings: [] }, JSON.stringify(body))
   }
-  // The layout: the frontmatter block, one blank separator line, the body,
-  // and one file newline. A body without a trailing newline keeps the bytes
-  // it had before T15. An empty body writes the frontmatter block only.
+  // The layout: the frontmatter block, one blank line, the body, one file
+  // newline. An empty body writes the frontmatter block only.
   assert.equal(renderNote(pairs, 'text'), '---\ntype: note\n---\n\ntext\n')
   assert.equal(renderNote(pairs, 'text\n'), '---\ntype: note\n---\n\ntext\n\n')
   assert.equal(renderNote(pairs, 'text\n\n'), '---\ntype: note\n---\n\ntext\n\n\n')
@@ -251,10 +230,7 @@ test('T15: parseNote inverts renderNote for every body, trailing newlines includ
 })
 
 test('T15: a hand-written note with one trailing newline parses and ingests as before', async () => {
-  // parseNote does not change in T15. It removes the blank separator line
-  // and one file newline, so the body of this note is 'body text'. The
-  // ordinary ingest stores that body, and materialize writes the note back
-  // with the same bytes, plus the _id and _rev lines.
+  // parseNote removes the blank line and one file newline, so the body is 'body text'.
   const text = '---\ntype: note\n---\n\nbody text\n'
   assert.deepEqual(parseNote(text), { fm: { type: 'note' }, body: 'body text', warnings: [] })
   const dir = await tmpDir('hand-one')
@@ -277,10 +253,7 @@ test('T15: a hand-written note with one trailing newline parses and ingests as b
 })
 
 test('T15: a hand-written body that ends in a newline keeps it through ingest and materialize (G25)', async () => {
-  // The file ends in two newlines: one is the file newline, and one is the
-  // body's. The ingest stores 'body text\n'. materialize writes the file
-  // newline after it, so the note comes back with the same bytes, and a
-  // second ingest of those bytes changes nothing.
+  // Of the two final newlines, one is the file newline and one belongs to the body.
   const text = '---\ntype: note\n---\n\nbody text\n\n'
   assert.equal(parseNote(text).body, 'body text\n')
   const dir = await tmpDir('hand-two')
@@ -299,15 +272,12 @@ test('T15: a hand-written body that ends in a newline keeps it through ingest an
   await v.close()
 })
 
-// ---------- G3-P5 F05: face reconciliation stays in the face ----------
+// ---------- face reconciliation stays in the face ----------
 
 test('F05: a symlink in the face that leads out of it fails materialize by name before any change, and the files outside stay', async () => {
-  // D-029 F05: the face's notes/ directory is a symlink to a directory
-  // outside the face. The concept moved, so reconciliation removed its old
-  // notes, and atomicUnlink checked only lexical containment. It deleted
-  // both files outside the face through the symlink. materialize now checks
-  // the real parent of every path that it can create, overwrite or delete
-  // before it changes anything.
+  // notes/ in the face is a symlink to a directory outside it, and the
+  // concept moved. If materialize checks lexical containment only, it deletes
+  // the files outside through the symlink.
   const base = await tmpDir('face-escape')
   const old = await Bundle.init(join(base, 'vault'))
   const { tag } = await old.createConcept('notes/a', 'note')
@@ -341,9 +311,8 @@ test('F05: a symlink in the face that leads out of it fails materialize by name 
   assert.deepEqual(await entries(base), ['face', 'outside', 'vault'])
   await old.close()
 
-  // A write through a symlink: <face>/new leads to an empty directory
-  // outside the face. The mkdir of a planned note's parent created a
-  // directory there before the real-path check of atomicWrite refused it.
+  // A write through a symlink: <face>/new leads outside the face. The mkdir
+  // of a parent must not run before the real-path check.
   const base2 = await tmpDir('face-escape-write')
   const v = await Bundle.init(join(base2, 'vault'))
   await v.createConcept('new/sub/a', 'note')
@@ -367,7 +336,7 @@ test('F05: a symlink in the face that leads out of it fails materialize by name 
   await v.close()
 })
 
-// ---------- T24: materialize, then import (decision 10) ----------
+// ---------- materialize, then import ----------
 
 const hexOf = (key) => Buffer.from(key).toString('hex')
 
@@ -428,30 +397,26 @@ test('I11 (T24): materialize, then import, round-trips a non-trivial bundle with
 
   const res = await importFace(Bundle.init, face, join(base, 'vault'), { metadata: old.metadata, predecessorKey: old.keyHex })
   const nu = res.vault
-  // A, B and C are live. D is tombstoned, so the face does not hold it.
+  // D is tombstoned, so the face holds A, B and C only.
   assert.deepEqual(res.counts, { notes: 3, imported: 3 })
   assert.ok(!('warnings' in res), 'a successful import has no warning (D-060 F06)')
   assert.equal(res.dir, join(base, 'vault'))
-  // The face is inert source: import writes nothing to it.
   assert.equal(await treeHash(face), faceBytes, 'import changed the face')
 
-  // §10: the chain is predecessorKey alone, and the writer key pair is fresh.
+  // SPEC §10: the chain is predecessorKey alone, and the key pair is fresh.
   assert.equal(nu.metadata.predecessorKey, old.keyHex)
   assert.equal(res.generation, nu.generation)
   assert.notEqual(nu.generation, 'root')
   assert.notEqual(hexOf(nu.localKey), hexOf(old.localKey), 'a writer key pair must not recur across generations')
   assert.notEqual(nu.keyHex, old.keyHex)
 
-  // The new directory holds only what the store writes: no note, no copy of
-  // the face and no generation log.
+  // Import leaves no note and no log in the new directory.
   assert.deepEqual((await listFiles(join(base, 'vault'))).filter((f) => f.endsWith('.md') || f.startsWith('log/')), [])
 
-  // Byte fidelity: the new vault materializes the face, modulo _rev and log.md (§14).
   const newDir = join(base, 'new-face')
   assert.equal((await materialize(nu, newDir)).ok, true)
   assert.equal(bundleDiff(normalizeBundle(await readBundle(newDir)), normalizeBundle(await readBundle(face))), null)
 
-  // Identity and state per live concept.
   const oldLive = await liveConcepts(old)
   const newLive = await liveConcepts(nu)
   assert.deepEqual([...newLive.keys()].sort(), [...oldLive.keys()].sort(), 'the live _id set changed')
@@ -464,7 +429,7 @@ test('I11 (T24): materialize, then import, round-trips a non-trivial bundle with
   }
   assert.equal(newLive.get(ids.b).path, 'tables/orders-v2')
 
-  // History is shed: one base:null revision per concept, and a log of creations only.
+  // History is shed: one revision per concept, and a log of creations only.
   assert.equal(await revCount(old, ids.a), 2, 'setup: A should have 2 revisions')
   assert.equal(await revCount(old, ids.c), 3, 'setup: C should have 3 revisions')
   assert.equal(await revCount(nu, ids.a), 1)
@@ -486,7 +451,6 @@ test('I11 (T24): a second generation round-trips, and keeps even _rev', async ()
   const e2 = r2.vault
   const b2 = await readNotes((await materialize(e2, await tmpDir('imp-chain-2-out'))).root)
 
-  // root <- generation 1 <- generation 2
   assert.equal(e1.metadata.predecessorKey, gen.keyHex)
   assert.equal(e2.metadata.predecessorKey, e1.keyHex)
   assert.notEqual(e2.generation, e1.generation)
@@ -516,7 +480,7 @@ test('T14 (T24): concepts at dot-segment paths survive the import, and the ordin
   await old.close()
   await res.vault.close()
 
-  // The ordinary watcher: ingestFile and scan() ignore every dot path (§9).
+  // The ordinary ingest ignores every dot path (SPEC §9).
   const plainDir = await tmpDir('imp-dot-plain')
   await writeTree(plainDir, new Map([
     ['.drafts/idea.md', '---\ntype: note\n---\n\ndot dir body\n'],
@@ -534,12 +498,11 @@ test('T14 (T24): concepts at dot-segment paths survive the import, and the ordin
 })
 
 test('T24: import refuses a face that holds a .conflict- copy, a reserved .okf- note or a symlink, by name, before it writes', async () => {
-  // A path collision: Y claims shared/note after X, so materialize writes
-  // Y as the conflicted copy shared/note.conflict-<h8>.md (§7).
+  // Y claims shared/note after X, so materialize writes Y as a conflicted copy (SPEC §7).
   const old = await Bundle.init(await tmpDir('imp-refuse-vault'))
   const { tag: x } = await old.createConcept('shared/note', 'note')
   const { tag: y } = await old.createConcept('shared/note', 'note')
-  await old.createConcept('notes/.okf-state', 'note') // core accepts it; the faces reserve the name
+  await old.createConcept('notes/.okf-state', 'note') // core accepts the name, the faces reserve it
   await old.update()
   assert.equal(await old.val(K.path('shared/note')), x, 'setup: X must hold shared/note')
   const base = await tmpDir('imp-refuse')
@@ -553,7 +516,6 @@ test('T24: import refuses a face that holds a .conflict- copy, a reserved .okf- 
   assert.deepEqual(conflict.paths, [copy])
   assert.ok(conflict.message.includes(copy), conflict.message)
 
-  // Resolved in the face (the copy removed), the reserved name is next.
   await rm(join(face, copy))
   const reserved = await expectRefusal(run, 'IMPORT_RESERVED_NAME', base, [face])
   assert.deepEqual(reserved.paths, ['notes/.okf-state.md'])
@@ -569,9 +531,8 @@ test('T24: import refuses a face that holds a .conflict- copy, a reserved .okf- 
 })
 
 test('T16 (T24): a collision resolved in the face imports, and each _id keeps its note (G28)', async () => {
-  // Open collisions are resolved in the face first. Here the operator gives
-  // the conflicted copy a path of its own. The index.md files of the face
-  // still list the copy: they are regenerated faces, which import does not read.
+  // The operator gives the copy a path of its own. index.md still lists the
+  // copy, but import does not read index files.
   const old = await Bundle.init(await tmpDir('imp-resolved-vault'))
   const { tag: x } = await old.createConcept('shared/note', 'note')
   await old.setBody(x, null, 'X body')
@@ -612,8 +573,7 @@ test('T15 (T24): a body of "text\\n\\n" round-trips byte for byte (G25)', async 
 })
 
 test('T15 (T24): the new vault carries limits, rate and schemaVersion, so a 100 KB body and a deep path survive (G26, D-047 F16)', async () => {
-  // scratch-D/s7.mjs: maxOpBytes 400000 and a 100 KB body. The default is
-  // 65536, and maxPathDepth 64 rejects a path at depth 70.
+  // The defaults refuse both: maxOpBytes 65536 and maxPathDepth 64.
   const pinned = {
     limits: { maxOpBytes: 400000, maxPathBytes: 2048, maxPathDepth: 100 },
     rate: { defaultCeiling: 8 },
@@ -637,9 +597,8 @@ test('T15 (T24): the new vault carries limits, rate and schemaVersion, so a 100 
   assert.equal(live.get(small.tag).headText, 'ok')
   await res.vault.close()
 
-  // Without the carried metadata the new vault takes the defaults. The
-  // import fails by name: the preflight refuses the body, and core rejects
-  // the deep path. Each failure removes the new directory.
+  // Without the carried metadata the new vault takes the defaults: the
+  // preflight refuses the body, and core rejects the deep path.
   const base = await tmpDir('imp-lim-default')
   await materialize(old, join(base, 'face'))
   const run = () => importFace(Bundle.init, join(base, 'face'), join(base, 'vault'))
@@ -674,8 +633,8 @@ async function expectFailure(run, code, base) {
 }
 
 test('D-048 F02 (T24): import checks each op against maxOpBytes as encoded, before it appends', async () => {
-  // A body below the limit whose encoded set-body op is above it: the op
-  // also holds the id, the base, the clock and the time.
+  // The body is below the limit, but the encoded op, with the id, the base,
+  // the clock and `at`, is above it.
   const limit = 4000
   const face = (bodyBytes) => new Map([['notes/edge.md', `---\n_id: ${'ab'.repeat(32)}\ntype: note\n---\n\n${'y'.repeat(bodyBytes)}\n`]])
   /** A Bundle.init that records each op type that the import appends. */
@@ -698,7 +657,6 @@ test('D-048 F02 (T24): import checks each op against maxOpBytes as encoded, befo
   assert.ok(err.bytes > limit, String(err.bytes))
   assert.deepEqual(appended, ['createConcept'], 'the oversize set-body was appended')
 
-  // A body well inside the limit imports.
   const ok = await tmpDir('imp-pre-ok')
   await writeTree(join(ok, 'face'), face(limit - 400))
   const res = await importFace(recording([]), join(ok, 'face'), join(ok, 'vault'))
@@ -707,8 +665,8 @@ test('D-048 F02 (T24): import checks each op against maxOpBytes as encoded, befo
 })
 
 test('D-048 F02 (T24): an op that core rejects fails the import by name, and import removes the new directory', async () => {
-  // 1. A vault whose metadata shows a larger maxOpBytes than the one it
-  //    pins: the preflight reads the shown limit, and core rejects the op.
+  // 1. The metadata shows a larger maxOpBytes than the vault pins, so the
+  //    preflight passes the op and core rejects it.
   const base = await tmpDir('imp-rej')
   await writeTree(join(base, 'face'), new Map([['notes/big.md', `---\n_id: ${'ab'.repeat(32)}\ntype: note\n---\n\n${'z'.repeat(3000)}\n`]]))
   const lying = async (dir, opts) => {
@@ -747,7 +705,6 @@ test('T13 (T24): a truncated note fails the import by name with IMPORT_FIDELITY,
   assert.deepEqual(err.counts, { notes: 2, imported: 1 })
   assert.ok(err.warnings.some((w) => w.path === 'notes/a.md' && /type/.test(w.message)), JSON.stringify(err.warnings))
 
-  // A <dir> that existed empty stays, empty.
   await mkdir(join(base, 'vault'))
   await assert.rejects(() => importFace(Bundle.init, face, join(base, 'vault')), (e) => e.code === 'IMPORT_FIDELITY')
   assert.deepEqual(await entries(join(base, 'vault')), [], 'the failure left files in an existing <dir>')
@@ -785,7 +742,7 @@ test('T18 (T24): import refuses a pinned, non-empty or non-directory <dir> by na
 })
 
 /**
- * The schedule of G3-P8 F01, through the injected initBundle: import A
+ * Two imports into one `dir`, through the injected initBundle: import A
  * pauses in its initBundle, after its claim on `dir`. Import B starts on
  * the same `dir`. Then A goes on and returns its vault, and then B goes on,
  * if it reached its initBundle. Returns { a, b, bInitialized }: `b` holds
@@ -817,9 +774,9 @@ async function concurrentImports(face, dir) {
 }
 
 test('G3-P8 F01 (T24): a second import into the same <dir> refuses by name before its initBundle and deletes nothing; the vault, pin and files of the first import stay, for an absent and an existing empty <dir>', async () => {
-  // Before the fix, both imports claimed <dir>: mkdir succeeds on an
-  // existing directory too. B failed in Bundle.init on the corestore lock,
-  // and its cleanup removed the vault that A had returned.
+  // mkdir succeeds on an existing directory, so it is no claim. If both
+  // imports claim <dir>, B fails on the corestore lock, and its cleanup
+  // removes the vault of A.
   const old = await Bundle.init(await tmpDir('imp-race-vault'))
   const { tag } = await old.createConcept('notes/a', 'note')
   await old.setBody(tag, null, 'kept')
@@ -853,9 +810,8 @@ test('G3-P8 F01 (T24): a second import into the same <dir> refuses by name befor
 })
 
 test('T24: the face holds each head only, so a body conflict open in the predecessor crosses as its head', async () => {
-  // The face shows no body conflict (§9 materializes the head). So the
-  // operator resolves open conflicts before the materialize (`auto-okf
-  // flags`), or the losing sibling stays behind in the predecessor.
+  // The face holds the head only (SPEC §9). A losing sibling stays behind in
+  // the predecessor unless the operator resolves the conflict first.
   const v = await Bundle.init(await tmpDir('imp-conf-vault'))
   const { tag: id } = await v.createConcept('c', 'note')
   await v.setBody(id, null, 'r1')
@@ -883,8 +839,8 @@ test('T24: the face holds each head only, so a body conflict open in the predece
 test('T24: compareNotes reports every difference by path, without _rev lines', () => {
   const note = (rev, body) => Buffer.from(`---\n_id: 0123abcd\n_rev: ${rev}\ntype: note\n---\n\n${body}\n`)
   const face = new Map([
-    ['a.md', note('1'.repeat(64), 'same body')], // equal modulo _rev
-    ['.drafts/idea.md', note('2'.repeat(64), 'dot path')], // only in the face
+    ['a.md', note('1'.repeat(64), 'same body')],
+    ['.drafts/idea.md', note('2'.repeat(64), 'dot path')],
     ['body.md', Buffer.from('---\ntype: note\n---\n\n_rev: one\n')] // a body line is never stripped
   ])
   const vault = new Map([
@@ -901,12 +857,9 @@ test('T24: compareNotes reports every difference by path, without _rev lines', (
 })
 
 test('T24: materialize reports every value that the face cannot hold, by _id and key; fixed in the vault, the generation round-trips', async () => {
-  // The face is a lossy projection: a scalar null is omitted, only the
-  // first type value is written, and a reference or an object is written as
-  // a string. materialize parses each note back and reports each field
-  // value that differs from the view (report.lossy), so an operator fixes
-  // it before import. The probe values of D-050 (sslop/D-050/probes):
-  // four that the face cannot hold, and plain values that it can.
+  // The face cannot hold a null, a second type value, a reference or an
+  // object. materialize reads each note back and reports each value that
+  // differs from the view (report.lossy). See SPEC §10.
   const old = await Bundle.init(await tmpDir('lossy-vault'))
   const cases = [
     ['nullable', null],
@@ -933,8 +886,6 @@ test('T24: materialize reports every value that the face cannot hold, by _id and
     { id: ids.type, path: 'notes/type.md', key: 'type', before: ['note', 'other'], after: ['note'] }
   ])
 
-  // The operator fixes each value in the vault. The next materialize
-  // reports nothing, and the generation keeps every value.
   await old.setField(ids.nullable, 'nullable', 'none')
   await old.setField(ids.reference, 'reference', 'target')
   await old.setField(ids.object, 'object', '{"hello":"world"}')
@@ -952,19 +903,18 @@ test('T24: materialize reports every value that the face cannot hold, by _id and
   await res.vault.close()
 })
 
-/** Is the file system of `dir` case-insensitive? It writes `Case-Probe` in `dir`, then reads `case-probe`. */
+/** Is the file system of `dir` case-insensitive? Writes a probe file in `dir`. */
 async function caseInsensitive(dir) {
   await writeFile(join(dir, 'Case-Probe'), '')
   return readFile(join(dir, 'case-probe')).then(() => true, () => false)
 }
 
 test('F03 (D-060): materialize reports each path whose spelling folds together with another one as lossy (key path), on every file system; fixed in the vault, the generation keeps every path', async () => {
-  // Core sees no collision: the full paths differ when casefolded. But the
-  // directories Notes/ and notes/ fold together, and so do Notes/sub/ and
-  // notes/Sub/. A case-insensitive file system (APFS by default) holds each
-  // pair in one directory, the one written first. materialize writes in
-  // byte order, so notes/b.md lands in Notes/, and the import gives the
-  // concept the path Notes/b. Before the fix, report.lossy was empty.
+  // Core sees no collision, because the full paths differ casefolded. But
+  // Notes/ and notes/ fold together as directories. A case-insensitive file
+  // system holds both in the directory written first, and materialize writes
+  // in byte order, so notes/b.md lands in Notes/. Without the report, the
+  // import renames the concept.
   const old = await Bundle.init(await tmpDir('fold-vault'))
   const ids = {}
   for (const path of ['Notes/a', 'notes/b', 'notes/Sub/c', 'Notes/sub/d']) {
@@ -988,8 +938,6 @@ test('F03 (D-060): materialize reports each path whose spelling folds together w
     await res.vault.close()
   }
 
-  // The operator gives each concept one spelling. The next materialize
-  // reports nothing, and the generation keeps every path.
   await old.setPath(ids['notes/b'], 'Notes/b')
   await old.setPath(ids['notes/Sub/c'], 'Notes/sub/c')
   await old.update()
@@ -1003,19 +951,17 @@ test('F03 (D-060): materialize reports each path whose spelling folds together w
 })
 
 test("F21 (D-060): import mode reads no .okf-pending.json of the face: a stale record attaches no note, and a record that does not parse is not read", async () => {
-  // The pending record is ingest state of a live bundle directory. Before
-  // the fix, import mode read the face's record for a copy: a record that
-  // named the _id of an earlier note moved that concept to the copy's path
-  // (the fidelity error then named both notes), and a record that does not
-  // parse threw a bare SyntaxError.
+  // The pending record is ingest state of a live bundle directory, not of a
+  // face. If import reads it, a stale record moves a concept to the path of
+  // the copy, and a bad record throws a bare SyntaxError.
   const X = 'ab'.repeat(32)
   const b = `---\n_id: ${X}\ntype: note\n---\n\nnote b, a copy of a\n`
   const notes = [
     ['a.md', `---\n_id: ${X}\ntype: note\n---\n\nnote a\n`],
     ['b.md', b]
   ]
-  // A record in the format of ingest (D-060 F04) that names X for b.md,
-  // with the bytes of b.md, while X is at the path a.
+  // A record in the format of ingest: X at b.md, with the bytes of b.md,
+  // while X is at the path a.
   const stale = { concepts: { [X]: { at: 'a', path: 'b.md', sha256: createHash('sha256').update(b).digest('hex') } } }
   for (const [name, record] of [
     ['stale', JSON.stringify(stale) + '\n'],
@@ -1031,10 +977,9 @@ test("F21 (D-060): import mode reads no .okf-pending.json of the face: a stale r
 })
 
 test('F05 (D-060): a successful import leaves no claim file, at the top of <dir> or in <dir>/db/, where the store moves it at init', async () => {
-  // The store's first open moves each file that it does not know at the top
-  // of a new storage directory into <dir>/db/ (hypercore-storage), the claim
-  // file too. Before the fix, done() removed <dir>/okf-import-claim only, so
-  // every imported vault kept the claim in its db/ directory.
+  // The first open of the store moves each unknown file at the top of a new
+  // storage directory into <dir>/db/, the claim file too. Import must remove
+  // the claim from both places.
   const old = await Bundle.init(await tmpDir('imp-claim-vault'))
   const { tag } = await old.createConcept('notes/a', 'note')
   await old.setBody(tag, null, 'a')
@@ -1048,10 +993,7 @@ test('F05 (D-060): a successful import leaves no claim file, at the top of <dir>
 })
 
 test('F06 (D-060): import refuses a note whose frontmatter holds no _id, by name, before it writes; a note that does not import fails the import with its warning; a successful import returns no warnings', async () => {
-  // Before the fix, a note without _id got a minted _id, and the import
-  // failed IMPORT_FIDELITY ('differs') with no warning. And importFace
-  // documented warnings on success, which no successful import can carry:
-  // a note that warns does not round-trip.
+  // A note that warns does not round-trip, so a successful import carries no warnings.
   const base = await tmpDir('imp-noid')
   const face = join(base, 'face')
   await writeTree(face, new Map([
@@ -1064,15 +1006,13 @@ test('F06 (D-060): import refuses a note whose frontmatter holds no _id, by name
   assert.deepEqual(err.paths, ['notes/fresh.md', 'notes/untitled.md'])
   assert.ok(err.message.includes('notes/fresh.md, notes/untitled.md'), err.message)
 
-  // A note with an _id and no type establishes no concept: the import
-  // fails IMPORT_FIDELITY, and the warning says why.
+  // A note with an _id and no type creates no concept.
   await rm(join(face, 'notes', 'fresh.md'))
   await writeFile(join(face, 'notes', 'untitled.md'), `---\n_id: ${'ef'.repeat(32)}\ntitle: x\n---\n\nno type\n`)
   const fid = await expectFailure(run, 'IMPORT_FIDELITY', base)
   assert.deepEqual(fid.differences, [{ path: 'notes/untitled.md', kind: 'missing' }])
   assert.deepEqual(fid.warnings.map((w) => [w.kind, w.path]), [['ingest', 'notes/untitled.md']])
 
-  // A successful import returns no warnings: it has none.
   await rm(join(face, 'notes', 'untitled.md'))
   const res = await run()
   assert.deepEqual(Object.keys(res).sort(), ['counts', 'dir', 'generation', 'vault'])
@@ -1081,9 +1021,8 @@ test('F06 (D-060): import refuses a note whose frontmatter holds no _id, by name
 
 test('F07 (D-060): materialize reports a field value that holds a lone UTF-16 surrogate: the note gets U+FFFD in its place', async () => {
   // A set-field value travels as JSON, so the view keeps a lone surrogate.
-  // The note is UTF-8, which cannot hold one: the file gets U+FFFD.
-  // Before the fix, lossyFields parsed the JavaScript string, not the
-  // bytes written, so report.lossy was empty and the import changed the value.
+  // UTF-8 cannot hold one, so the file gets U+FFFD. The report must compare
+  // the bytes written, not the JavaScript string.
   const old = await Bundle.init(await tmpDir('lossy-surrogate-vault'))
   const { tag } = await old.createConcept('notes/s', 'note')
   await old.setField(tag, 'label', 'a\uD800b')
@@ -1094,9 +1033,9 @@ test('F07 (D-060): materialize reports a field value that holds a lone UTF-16 su
 })
 
 test('F08 (D-060): import refuses a note under a directory with a reserved .okf- name, in any case, by name, before it writes', async () => {
-  // Before the fix, the check read the last path segment only. A face with
-  // .okf-manifest.json/n.md imported, and each materialize and ingest of
-  // the new vault then failed EISDIR on the directory.
+  // If the check reads the last segment only, a face with
+  // .okf-manifest.json/n.md imports, and each materialize of the new vault
+  // then fails EISDIR.
   const base = await tmpDir('imp-okf-dir')
   const face = join(base, 'face')
   const note = (id) => `---\n_id: ${id}\ntype: note\n---\n\nbody\n`

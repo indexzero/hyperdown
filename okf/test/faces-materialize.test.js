@@ -1,6 +1,3 @@
-// @auto-okf/faces materialize on REAL @auto-okf/store vaults (autobee):
-// byte-determinism (I9), OKF v0.1 conformance, frontmatter/index/log
-// structure, and wanted/ ranking.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -15,7 +12,7 @@ import {
   converged
 } from './faces-helpers.js'
 
-/** Seed a small, non-trivial bundle into a fresh vault. Returns ids. */
+/** Seed three concepts that link to each other. Returns their ids. */
 async function seed(v) {
   const { tag: sales } = await v.createConcept('datasets/sales', 'BigQuery Dataset')
   await v.setField(sales, 'title', 'Sales')
@@ -77,7 +74,7 @@ test('materialize is byte-identical on a from-scratch rebuilt view (I3/I9)', asy
   const before = await readBundle(dir1)
   await a.close()
 
-  // Reopen from disk (a full incremental re-fold from the persisted log).
+  // Reopen from disk, so the view is refolded from the persisted log.
   const b = await Bundle.open(dir)
   await b.update()
   const dir2 = await tmpDir('bundle')
@@ -95,7 +92,7 @@ test('emitted bundle passes the independent OKF v0.1 conformance check', async (
   await materialize(v, dir)
   const res = await checkOkfConformance(dir)
   assert.ok(res.ok, 'conformance violations: ' + JSON.stringify(res.violations, null, 2))
-  // Sanity: the checker actually saw concept files, index.md and log.md.
+  // Make sure that the checker saw concept files, index.md and log.md, so the pass is not vacuous.
   assert.ok(res.files.includes('index.md'))
   assert.ok(res.files.includes('log.md'))
   assert.ok(res.files.includes('datasets/sales.md'))
@@ -114,10 +111,8 @@ test('frontmatter emission order is _id, _rev, type, then sorted keys (§6)', as
   assert.equal(keys[0], '_id')
   assert.equal(keys[1], '_rev')
   assert.equal(keys[2], 'type')
-  // remaining keys canonically (byte) sorted
   const rest = keys.slice(3)
   assert.deepEqual(rest, [...rest].sort())
-  // tags OR-set emitted as a sorted flow list
   assert.match(text, /tags: \[revenue, sales\]/)
   assert.ok(orders)
   await v.close()
@@ -131,11 +126,9 @@ test('root index.md carries okf_version and lists concepts then subdirs (OKF §6
   const bundle = await readBundle(dir)
   const idx = bundle.get('index.md')
   assert.match(idx, /^---\nokf_version: "0.1"\n---\n\n# Contents\n/)
-  // 'overview.md' concept bullet appears before subdirectory bullets
   const overviewPos = idx.indexOf('(overview.md)')
   const datasetsPos = idx.indexOf('(datasets/)')
   assert.ok(overviewPos > -1 && datasetsPos > -1 && overviewPos < datasetsPos)
-  // non-root index has NO frontmatter
   assert.ok(!bundle.get('datasets/index.md').startsWith('---'))
   await v.close()
 })
@@ -149,15 +142,12 @@ test('log.md is # Update Log with ISO date headings newest-first (OKF §7)', asy
   assert.match(log, /^# Update Log\n/)
   const dates = [...log.matchAll(/^## (.+)$/gm)].map((m) => m[1])
   for (const d of dates) assert.match(d, /^\d{4}-\d{2}-\d{2}$/)
-  // newest-first: descending
   assert.deepEqual(dates, [...dates].sort().reverse())
   await v.close()
 })
 
 test('wanted() ranks unwritten concepts by referrer count (§4/§9)', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
-  // two concepts both link to the same unwritten target; one also links a
-  // less-referenced target.
   const { tag: a } = await v.createConcept('a', 'Note')
   await v.setBody(a, null, 'See [hot](/hot.md) and [cold](/cold.md).')
   const { tag: b } = await v.createConcept('b', 'Note')
@@ -167,7 +157,6 @@ test('wanted() ranks unwritten concepts by referrer count (§4/§9)', async () =
   assert.equal(list[0].path, 'hot')
   assert.equal(list[0].count, 2)
   assert.ok(list.some((w) => w.path === 'cold' && w.count === 1))
-  // most-wanted first
   assert.ok(list[0].count >= list[list.length - 1].count)
   await v.close()
 })

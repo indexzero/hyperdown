@@ -1,10 +1,6 @@
-// The flagship example is executable documentation AND an I9 fixture: this
-// test RUNS okf/examples/agent-session end to end (four real vault peers on
-// disk, partitioned then healed) into a fresh scratch dir and asserts the
-// freshly generated bundle is byte-identical to the committed out/ tree, and
-// that it passes the independent OKF v0.1 conformance check.
-// If this fails after an intentional semantic change, regenerate with
-// `node okf/examples/agent-session/session.js` and commit out/ — never hand-edit it.
+// The committed out/ of okf/examples/agent-session is an I9 fixture. If this
+// test fails after an intended change, regenerate out/ with
+// `node okf/examples/agent-session/session.js` and commit it. Do not edit it by hand.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
@@ -26,14 +22,13 @@ test('agent-session regenerates the committed out/ byte-identically (I9) and is 
   })
   assert.equal(code, 0, `example failed:\n${stdout}\n${stderr}`)
 
-  // the narrative hits the semantics it claims to demonstrate
+  // The output of the example is documentation: each claim it makes must appear.
   assert.match(stdout, /tags UNIONED across writers: \[reviewed, urgent\]/, 'I5 OR-set union')
   assert.match(stdout, /1 flag\/clobber record\(s\)/, '§5 LWW supersession surfaced')
   assert.match(stdout, /1 flag\/conflict record\(s\)/, '§5 body conflict kept')
   assert.match(stdout, /flag\/conflict drained by the ResolveConflict op: 0 left/, '§5 resolution')
   assert.match(stdout, /WANTS unwritten concepts: determinations\/sharding \(1 ref\)/, '§9 wanted/ demand')
 
-  // byte-identical regeneration of the committed tree (I9)
   const fresh = await treeHashes(outDir)
   const committed = await treeHashes(join(EXAMPLE, 'out'))
   assert.ok(committed.size > 0, 'committed out/ exists (run `node okf/examples/agent-session/session.js`)')
@@ -43,7 +38,6 @@ test('agent-session regenerates the committed out/ byte-identically (I9) and is 
     'fresh run differs from committed out/ — regenerate and commit'
   )
 
-  // the emitted bundle is an independently-checked OKF v0.1 bundle
   const conf = await checkOkfConformance(outDir)
   assert.ok(conf.ok, 'OKF conformance violations: ' + JSON.stringify(conf.violations, null, 2))
 })

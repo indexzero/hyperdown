@@ -1,6 +1,3 @@
-// @auto-okf/faces ingest watcher on REAL @auto-okf/store vaults: minimal-op
-// emission, the full materialize -> edit -> ingest -> materialize roundtrip,
-// rename+concurrent-edit merge across a roundtrip, and the guarded delete.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, rename, rm, writeFile } from 'node:fs/promises'
@@ -86,14 +83,11 @@ test('full roundtrip: materialize -> edit -> ingest -> materialize is stable', a
   await materialize(v, dir)
   const snapshot = await readBundle(dir)
 
-  // A second ingest pass sees the system's own canonical bytes => no ops.
   const ops2 = await w.scan()
   assert.equal(ops2.length, 0, 'stable bundle must not re-emit ops: ' + JSON.stringify(ops2))
-  // A second materialize is byte-identical (stable fixpoint).
   const r = await materialize(v, dir)
   assert.equal(r.written.length, 0, 'stable materialize wrote: ' + JSON.stringify(r.written))
   assert.equal(bundleDiff(snapshot, await readBundle(dir)), null)
-  // The edit landed in the view.
   const text = (await readBundle(dir)).get('guides/intro.md')
   assert.match(text, /title: Introduction/)
   await w.close()
@@ -111,14 +105,13 @@ test('rename + concurrent edit merge survives the roundtrip', async () => {
   assert.ok(await converged([a, b]), 'initial converge failed')
   await a.writers.add(b.localKey)
   assert.ok(await converged([a, b]), 'writer-add converge failed')
-  const base = await b.val(K.cBody(id)) // both peers observe v0's head
+  const base = await b.val(K.cBody(id)) // the base that B cites after the partition
 
-  // Partition, then concurrent rename (A) + body edit (B).
   unpair()
   await a.setPath(id, 'notes/final')
   await b.setBody(id, base, 'version one')
 
-  // Heal and converge; the edit follows the _id across the rename (merge).
+  // The edit follows the _id across the rename.
   unpair = pair(a, b)
   assert.ok(await converged([a, b]), 'post-partition converge failed')
 
@@ -129,7 +122,6 @@ test('rename + concurrent edit merge survives the roundtrip', async () => {
   assert.ok(!bundle.has('notes/draft.md'), 'old path should be gone')
   assert.match(bundle.get('notes/final.md'), /version one/, 'concurrent edit lost')
 
-  // Roundtrip stability: ingest sees only canonical bytes, emits nothing.
   const w = await createIngestWatcher(a, dir, { watch: false })
   const ops = await w.scan()
   assert.equal(ops.length, 0, 'merged bundle re-emitted ops: ' + JSON.stringify(ops))
@@ -145,7 +137,6 @@ test('deleting a file emits DeleteConcept only when the guard confirms', async (
   const dir = await tmpDir('bundle')
   await materialize(v, dir)
 
-  // Guard default (no confirmer): the delete is skipped, never emitted.
   const wSkip = await createIngestWatcher(v, dir, { watch: false })
   const skipped = []
   wSkip.on('delete-skipped', (e) => skipped.push(e))
@@ -155,7 +146,6 @@ test('deleting a file emits DeleteConcept only when the guard confirms', async (
   assert.equal(await v.val(K.cMeta(id)).then((m) => m.deleted ?? null), null, 'concept must survive an unconfirmed delete')
   await wSkip.close()
 
-  // With a confirmer: DeleteConcept is emitted and the concept tombstones.
   const wDo = await createIngestWatcher(v, dir, { watch: false, confirmDelete: async () => true })
   const opsDo = await wDo._maybeDelete('guides/intro.md')
   assert.equal(opsDo.length, 1)
@@ -170,9 +160,8 @@ test('deleting a file emits DeleteConcept only when the guard confirms', async (
 test('adopting an unknown _id creates the concept (generation-cycle contract)', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const dir = await tmpDir('bundle')
-  await materialize(v, dir) // establish the manifest + reserved faces
+  await materialize(v, dir) // the bundle exists first: manifest, index.md, log.md
 
-  // A human authors a brand-new file carrying an _id the vault has never seen.
   const adoptedId = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef01'
   await writeFile(
     join(dir, 'imported.md'),
@@ -192,11 +181,9 @@ test('adopting an unknown _id creates the concept (generation-cycle contract)', 
 test('oversize body preflight: named refusal, zero ops, siblings unaffected (ADR-005)', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const dir = await tmpDir('bundle')
-  await materialize(v, dir) // establish the manifest + reserved faces
+  await materialize(v, dir) // the bundle exists first: manifest, index.md, log.md
 
-  // One byte over the limit, plus a comfortably-under sibling. The preflight
-  // encodes the set-body op, so the op of the big body is over the limit by
-  // the body's extra byte and the op's other fields (D-048 F02).
+  // big.md is one byte over as a body, and more as an encoded op.
   const limit = 65536
   await writeFile(join(dir, 'big.md'), `---\ntype: note\n---\n${'x'.repeat(limit + 1)}\n`)
   await writeFile(join(dir, 'small.md'), `---\ntype: note\n---\n${'y'.repeat(60000)}\n`)
@@ -218,15 +205,13 @@ test('oversize body preflight: named refusal, zero ops, siblings unaffected (ADR
   await v.close()
 })
 
-// ---------- D-048 F02: the preflight checks the encoded op ----------
+// ---------- the preflight checks the encoded op ----------
 
 test('the oversize preflight encodes the set-body op: a body just below maxOpBytes whose op is over it appends nothing and stays pending (D-048 F02)', async (t) => {
-  // apply measures the encoded op (core apply.js `raw.length > maxOpBytes`),
-  // and the set-body op adds the id, the base, the clock and `at` to the
-  // body. A body under the limit can encode to an op over it. Before the
-  // fix, ingest appended such a file, core rejected its set-body
-  // oversize-op, ingest recorded the file as ingested, and the next
-  // materialize overwrote it with the empty concept.
+  // apply measures the encoded op, which adds the id, the base, the clock and
+  // `at` to the body. If the preflight measures the body instead, core rejects
+  // the op of over.md as oversize-op, and the next materialize overwrites the
+  // file with the empty concept.
   const limit = 4096
   const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
   const dir = await tmpDir('bundle')
@@ -237,9 +222,8 @@ test('the oversize preflight encodes the set-body op: a body just below maxOpByt
   })
   await materialize(v, dir)
   const self = v.localKey.toString('hex')
-  // The set-body op of a new note, as the store appends it in this vault:
-  // a minted id of seq 0 or 2 (65 hex characters), no base, and a clock
-  // that holds only self, at seq 1 or 3.
+  // The set-body op as the store appends it here: the id minted at the seq
+  // before, no base, and a clock of self only.
   const opBytes = (n, seq) =>
     encodeOp('set-body', { id: makeTag(v.localKey, seq - 1), base: null, text: 'x'.repeat(n), clock: [[self, seq]], at: Date.now() }).byteLength
   let edge = limit
@@ -270,16 +254,11 @@ test('the oversize preflight encodes the set-body op: a body just below maxOpByt
 })
 
 test('the oversize preflight counts the UTF-8 bytes of an _id, as the codec does: an _id of 32 code units and 96 bytes is not the shorter id (G3-P8 F03)', async (t) => {
-  // The preflight takes the file's _id or the shortest tag (65 ASCII
-  // bytes), whichever gives the shorter op. The codec writes the UTF-8
-  // bytes of an id. Before the fix, the preflight compared UTF-16 code
-  // units, took this _id (32 code units, 96 bytes) as the shorter id, and
-  // refused the file as oversize: an `error:` line that names a body
-  // shorter than maxOpBytes.
-  //
-  // Core takes only an _id that matches ^[0-9a-f]{2,128}$ (SPEC §6), so no
-  // concept holds this _id, and no copy of it can exist. The ingest adopts
-  // it, and core names the cause: bad-id. The file stays pending.
+  // The preflight encodes the op with the shorter of the file's _id and a
+  // 65-byte tag, in UTF-8 bytes. If it counts code units, this 32-character
+  // _id of 96 bytes looks shorter, and the preflight refuses a body that is
+  // below maxOpBytes.
+  // Core adopts only lowercase hex (SPEC §6), so the file stays pending.
   const limit = 400
   const unicodeId = '界'.repeat(32)
   const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
@@ -314,10 +293,9 @@ test('the oversize preflight counts the UTF-8 bytes of an _id, as the codec does
 })
 
 test('a body that core rejects on an established concept is not recorded as ingested: it stays pending, materialize keeps it, and ingest names the rejection (D-048 F02)', async (t) => {
-  // The writer may write under team/ only, so core rejects its set-body on
-  // other/x policy-namespace. Before the fix, ingest recorded the file as
-  // ingested before core's verdict, so the next materialize overwrote the
-  // human edit with the head that the vault still holds.
+  // The policy lets the writer write under team/ only, so core rejects the
+  // set-body of other/x. If ingest records the file as ingested before the
+  // verdict of core, the next materialize overwrites the human edit.
   const v = await Bundle.init(await tmpDir('vault'))
   const dir = await tmpDir('bundle')
   const w = await createIngestWatcher(v, dir, { watch: false })
@@ -349,11 +327,9 @@ test('a body that core rejects on an established concept is not recorded as inge
 })
 
 test('a confirmed delete that core rejects emits rejected, keeps the manifest entry and the pending record, and a later scan retries it (G3-P8 F02)', async (t) => {
-  // The writer may write under team/ only, so core rejects its
-  // delete-concept of each concept under other/ policy-namespace. Before
-  // the fix, ingest emitted 'ops' for the delete, dropped the manifest
-  // entry and the pending record without core's verdict, and no later scan
-  // retried the delete.
+  // The policy lets the writer write under team/ only, so core rejects each
+  // delete under other/. If ingest drops the manifest entry and the pending
+  // record before the verdict of core, no later scan retries the delete.
   const v = await Bundle.init(await tmpDir('vault'))
   const dir = await tmpDir('bundle')
   const w = await createIngestWatcher(v, dir, { watch: false, confirmDelete: async () => true })
@@ -364,8 +340,8 @@ test('a confirmed delete that core rejects emits rejected, keeps the manifest en
   const { tag: id } = await v.createConcept('other/x', 'note')
   await v.setBody(id, null, 'keep')
   await materialize(v, dir)
-  // other/new.md is a new file whose ingest threw after its create, so the
-  // pending record holds its concept (D-055 Q2).
+  // The ingest of other/new.md throws after its create-concept, so the
+  // pending record holds its concept.
   await writeFile(join(dir, 'other/new.md'), '---\ntype: note\ncount:\n  value: abc\n  datatype: http://www.w3.org/2001/XMLSchema#integer\n---\nbody\n')
   await assert.rejects(w.ingestFile('other/new.md'))
   await v.update()
@@ -380,8 +356,8 @@ test('a confirmed delete that core rejects emits rejected, keeps the manifest en
   w.on('rejected', (e) => rejected.push(e))
   w.on('ops', (e) => ingested.push(e.path))
 
-  // The scan deletes each path that the manifest or the pending record
-  // lists and the disk no longer holds (D-061 R02), in byte order.
+  // scan() deletes each path that the manifest or the pending record lists
+  // and the disk no longer holds, in byte order.
   const deletes = async () => (await w.scan()).map((o) => o.type)
   assert.deepEqual(await deletes(), ['delete-concept', 'delete-concept'])
   assert.deepEqual(rejected, [
@@ -393,7 +369,7 @@ test('a confirmed delete that core rejects emits rejected, keeps the manifest en
   assert.ok(Object.hasOwn((await manifestOf(dir)).files, 'other/x.md'), 'the manifest keeps other/x.md')
   assert.deepEqual(await pendingOf(dir), { 'other/new.md': { id: newId, gone: true } }, 'the pending record stays, marked gone')
 
-  // The writer may write anywhere again: the next scan retries the delete.
+  // With the policy lifted, the next scan retries the delete.
   await v.writers.setPolicy(v.localKey, { namespacePrefixes: [] })
   await v.update()
   assert.deepEqual(await deletes(), ['delete-concept', 'delete-concept'])
@@ -405,13 +381,11 @@ test('a confirmed delete that core rejects emits rejected, keeps the manifest en
 })
 
 test('a later ingest of a pending new file reuses the concept that its first ingest created, also in a new watcher: core rejected a later op (D-055 Q2)', async (t) => {
-  // A new file has no _id until materialize stamps it (DEVIATIONS: the
-  // deferred write-back). Core accepts its create-concept here and rejects
-  // its set-body oversize-op, so the file stays pending (D-048 F02). Before
-  // the fix, each later ingest of the same bytes minted another concept.
-  // The writer holds 16 nodes first, so the next minted tag has two hex
-  // digits of seq, and the clock of the set-body a two-digit self entry:
-  // the op is 2 bytes over the preflight's lower bound.
+  // A new file has no _id until materialize stamps it. Core rejects the
+  // set-body as oversize-op, so the file stays pending. Without the pending
+  // record, each later ingest mints another concept.
+  // The 16 seeds give the tag and the clock entry two-digit seqs, so the op
+  // passes the lower bound of the preflight.
   const limit = 4096
   const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
   const dir = await tmpDir('bundle')
@@ -452,9 +426,9 @@ test('a later ingest of a pending new file reuses the concept that its first ing
 })
 
 test('a later ingest of a new file whose ingest failed after its create reuses that concept (D-055 Q2)', async (t) => {
-  // A typed literal with a bad lexical form makes ingest throw in the
-  // field diff, after it appended the create-concept. Before the fix, each
-  // later ingest minted another concept.
+  // A typed literal with a bad lexical form makes ingest throw in the field
+  // diff, after the create-concept. Without the pending record, each later
+  // ingest mints another concept.
   const v = await Bundle.init(await tmpDir('vault'))
   const dir = await tmpDir('bundle')
   const w = await createIngestWatcher(v, dir, { watch: false })
@@ -474,8 +448,6 @@ test('a later ingest of a new file whose ingest failed after its create reuses t
   assert.deepEqual(await conceptIds(v), [id], 'the second ingest created no second concept')
   assert.deepEqual(await pendingOf(dir), { 'bad.md': { id, gone: false } })
 
-  // The human drops the bad field. That ingest completes on the same
-  // concept, and the record goes.
   await writeFile(join(dir, 'bad.md'), '---\ntype: note\n---\nbody\n')
   const ops = await w.ingestFile('bad.md')
   assert.deepEqual(ops.map((o) => o.type), ['set-body'])
@@ -485,12 +457,10 @@ test('a later ingest of a new file whose ingest failed after its create reuses t
 })
 
 test('scan() deletes a pending file that is gone, though the manifest never listed it: a new watcher, with confirmDelete (D-061 R02)', async (t) => {
-  // Core accepts the create-concept of a new note and rejects its set-body
-  // oversize-op. So the note stays pending: the pending record holds its
-  // concept, and the manifest does not list it. The human deletes the
-  // file while no watcher runs. Before the fix, scan() walked the manifest
-  // only, so it emitted no delete, and the next materialize restored the
-  // file from the concept.
+  // The note is pending: the pending record holds its concept, and the
+  // manifest does not list it. The file goes while no watcher runs. If scan()
+  // walks the manifest only, it emits no delete, and the next materialize
+  // restores the file.
   const limit = 4096
   const v = await Bundle.init(await tmpDir('vault'), { metadata: { limits: { maxOpBytes: limit } } })
   const dir = await tmpDir('bundle')
@@ -520,12 +490,12 @@ test('scan() deletes a pending file that is gone, though the manifest never list
   assert.ok(!report.written.includes('new.md'), 'materialize does not restore new.md')
 })
 
-// ---------- D-060 F04: the pending record attaches a file only on evidence ----------
+// ---------- the pending record attaches a file only on evidence ----------
 
 /**
  * A vault whose maxOpBytes is 4096, its bundle directory, a watcher, and a
- * pending new note at a.md: core accepted its create-concept and rejected
- * its set-body (nearLimitNote). Returns { v, dir, w, id, near, seeds }.
+ * pending new note at a.md: core accepts its create-concept and rejects its
+ * set-body (nearLimitNote). Returns { v, dir, w, id, near, seeds }.
  */
 async function pendingNote(t, opts = {}) {
   const limit = 4096
@@ -552,9 +522,8 @@ async function newConcepts(v, known) {
 }
 
 test('a renamed pending file keeps its concept: scan() moves the concept with it and attaches no second one (D-060 F04)', async (t) => {
-  // Before the fix, the record was keyed by path, so b.md minted a second
-  // concept, and the first one stayed at a with no file: materialize wrote
-  // it back as a.md.
+  // If the record is keyed by path, b.md mints a second concept, and
+  // materialize writes the first one back as a.md.
   const { v, dir, w, id, seeds } = await pendingNote(t)
   await rename(join(dir, 'a.md'), join(dir, 'b.md'))
   await w.scan()
@@ -571,10 +540,9 @@ test('a renamed pending file keeps its concept: scan() moves the concept with it
 })
 
 test('a stale pending record attaches no file: its concept moved with a note that carries its _id, or another writer moved it (D-060 F04)', async (t) => {
-  // 1. The human keeps the text as x.md, with the concept's _id, and
-  //    removes a.md. Then an unrelated new note appears at a.md. Before the
-  //    fix, the record of a.md stayed, and the new note took the concept
-  //    over: a set-path back to a, and its body.
+  // 1. x.md carries the _id of the pending concept, and a.md goes. If the
+  //    stale record of a.md stays, an unrelated new note at a.md takes the
+  //    concept over.
   const one = await pendingNote(t)
   await writeFile(join(one.dir, 'x.md'), `---\n_id: ${one.id}\ntype: note\n---\nkept\n`)
   await rm(join(one.dir, 'a.md'))
@@ -587,9 +555,8 @@ test('a stale pending record attaches no file: its concept moved with a note tha
   assert.equal((await one.v.val(K.cPath(one.id))).path, 'x', 'the concept stays at x')
   assert.equal(await headTextOf(one.v, one.id), 'kept')
 
-  // 2. Another writer moves the concept away while a.md is pending. The
-  //    record no longer names the concept of a.md, so the next ingest of
-  //    a.md does not move the concept back.
+  // 2. Another writer moves the concept while a.md is pending. The next
+  //    ingest of a.md must not move it back.
   const two = await pendingNote(t)
   await two.v.setPath(two.id, 'moved')
   await two.v.update()
@@ -601,9 +568,8 @@ test('a stale pending record attaches no file: its concept moved with a note tha
 })
 
 test('a pending record whose file a scan found gone attaches only the same bytes back, never a new note (D-060 F04)', async (t) => {
-  // No confirmDelete: the scan skips the delete, and the record stays for a
-  // later confirmed delete. Before the fix, an unrelated new note at a.md
-  // took the concept over.
+  // Without confirmDelete the scan skips the delete, and the record stays.
+  // An unrelated new note at a.md must not take the concept over.
   const { v, dir, w, id, near, seeds } = await pendingNote(t)
   const skipped = []
   w.on('delete-skipped', (e) => skipped.push(e.path))
@@ -611,12 +577,10 @@ test('a pending record whose file a scan found gone attaches only the same bytes
   await w.scan()
   assert.deepEqual(skipped, ['a.md'])
 
-  // The same bytes come back: the same file, so the same concept.
   await writeFile(join(dir, 'a.md'), near)
   await w.scan()
   assert.deepEqual(await newConcepts(v, seeds), [id], 'the same bytes reattach the concept')
 
-  // Gone again, then an unrelated new note at a.md: a concept of its own.
   await rm(join(dir, 'a.md'))
   await w.scan()
   await writeFile(join(dir, 'a.md'), '---\ntype: note\n---\nan unrelated new note\n')
@@ -635,11 +599,10 @@ async function headTextOf(v, id) {
 }
 
 /**
- * A new note whose set-body op is 1 byte over `limit` when the store
- * appends it as the next node of this writer: core accepts its
- * create-concept and rejects its set-body oversize-op. It first appends 16
- * seed concepts, so the minted tag and the clock entry have two hex
- * digits of seq, and the op is over the preflight's lower bound.
+ * A new note whose set-body op is 1 byte over `limit` as the next node of
+ * this writer: core accepts its create-concept and rejects its set-body as
+ * oversize-op. The 16 seeds give the minted tag and the clock entry two hex
+ * digits of seq, so the op is over the lower bound of the preflight.
  */
 async function nearLimitNote(v, limit) {
   for (let i = 0; i < 16; i++) await v.createConcept(`seed/${i}`, 'note')
@@ -673,7 +636,7 @@ async function manifestOf(dir) {
   return JSON.parse(await readFile(join(dir, '.okf-manifest.json'), 'utf8'))
 }
 
-/** The pending record of a bundle directory (D-055 Q2, D-060 F04), by file: { <path>: { id, gone } }. */
+/** The pending record of a bundle directory, by file: { <path>: { id, gone } }. */
 async function pendingOf(dir) {
   const { concepts } = JSON.parse(await readFile(join(dir, '.okf-pending.json'), 'utf8'))
   const out = {}

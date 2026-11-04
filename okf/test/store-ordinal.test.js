@@ -1,27 +1,8 @@
-// AD4, the per-writer ordinal is the node's position (okf SPEC §3, §8).
-// T9 adopts spike T8 (D-027). The ports of ab2-review/scratch-A
-// s4-race.mjs (G9a), s5-clock-units.mjs (G8) and s6-strand.mjs (G10),
-// adapted to admit before writing, plus the core rules that the ordinal
-// changes and the G13 ack check.
-//
-// The actual seq of an op is its node's position in its writer's core,
-// node.length - 1 (autobee README, Apply: "node.length — position in the
-// writer's core"). seen/<W> is the last position plus one. A node that never
-// reaches apply, such as an empty block (autobee index.js:1444), takes a
-// position, so the positions of a writer's ops can have gaps. The Bundle
-// reads the next position from the documented db.local before it encodes an
-// op.
-//
-// The tests append an empty block through the documented db.append. The
-// G10 test simulates a crash: it rewrites the boot record of the local core
-// and clears one replicated block, through the documented hypercore API of
-// a closed store. Nothing here changes autobee behaviour.
-//
-// T12 bounds the clock (G33). An op's clock carries self and each writer
-// with a gov/writer record, a revoked writer too, and no other key. The G33
-// test is the port of ab2-review/scratch-B/s7-clock-size.mjs, adapted to
-// admit before writing: 1,000 keys that a member approves write one op
-// each, as an attacker's client does (outsiderAppend, decision 5).
+// The seq of an op is its position in the core of its writer (SPEC §3).
+// An empty block takes a position and never reaches apply (autobee's
+// `_applyBatch` passes only a node with a value), so positions can have
+// gaps. The crash test rewrites the boot record and clears one block of a
+// closed store.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
@@ -65,7 +46,7 @@ test('core: flag/rejected keys a rejected op by its position', async () => {
   const env = new Env()
   const n0 = env.op('A', 'create-concept', { path: 'notes/a', type: 'note' })
   gap(env, 'A')
-  // position 2, but the self entry claims 1 (the old seen-count)
+  // position 2, but the self entry claims 1
   const n2 = env.op('A', 'set-field', { id: env.tag('A', 0), key: 'title', value: ['x'] }, {
     verbatimClock: true,
     clock: [[env.hex('A'), 1]]
@@ -125,13 +106,11 @@ test('core: mint-collision-risk compares an adopted suffix with the last positio
 })
 
 test('core: a revoked writer stays in the clock, because the §8 window compares every entry (I10)', async () => {
-  // The store clocks each writer with a gov/writer record (T12). J has none,
-  // so no clock below cites it, and core accepts every such clock. Z is
-  // revoked after C cites it and before A revokes C. C's in-flight op c1
-  // sorts after the removal of C, as in the I10 revocation race. c1 is in
-  // the window (seq <= seqAtRemoval), so it lands only if its clock strictly
-  // precedes the revocation clock. That needs every writer that c1 cites in
-  // the revocation clock, the revoked Z too.
+  // No clock below cites J, which has no gov/writer record. Z is revoked
+  // after C cites it and before A revokes C. The op c1 of C sorts after the
+  // removal of C, inside the window (seq <= seqAtRemoval). It lands only if
+  // its clock strictly precedes the revocation clock, and that compare
+  // needs Z in the revocation clock.
   const run = async (removalCitesZ) => {
     const env = new Env({ genesis: 'A' })
     const [A, C, J, Z] = ['A', 'C', 'J', 'Z'].map((w) => env.hex(w))
@@ -146,7 +125,7 @@ test('core: a revoked writer stays in the clock, because the §8 window compares
     const c1 = env.op('C', 'add-tag', { id, value: 'c1' }, clocked()) // cites A:2, Z:0
     env.op('A', 'remove-writer', { key: writerKey('Z') }, clocked()) // A3
     // A has folded C through c1, so seqAtRemoval is 1. Without Z, A's clock
-    // is what a store that drops revoked writers would send.
+    // is the clock of a store that drops revoked writers.
     const clock = [[A, 4], [C, 1], ...(removalCitesZ ? [[Z, 0]] : [])]
     env.op('A', 'remove-writer', { key: writerKey('C') }, { clock, verbatimClock: true }) // A4
     const view = await env.run([...env.nodes.filter((n) => n !== c1), c1])
@@ -185,7 +164,7 @@ test('store: the seq of an op is its node\'s position in the local core, also af
   const self = hex(a.localKey)
   const c0 = await a.createConcept('notes/pos', 'note')
   assert.equal(c0.seq, 0)
-  await a.db.append(Buffer.alloc(0)) // position 1: never reaches apply (index.js:1444)
+  await a.db.append(Buffer.alloc(0)) // position 1: never reaches apply
   await a.update()
   assert.equal(a.db.local.length, 2)
   const r = await a.setField(c0.tag, 'title', ['after the empty block'])
@@ -304,9 +283,9 @@ test('G10 (s6): after a crash that loses the boot record, each next op takes its
   b2 = await Bundle.open(bdir)
   assert.equal(b2.db.local.length, 2, 'the local core holds b0 and S')
   assert.equal(await b2.val(K.seen(bHex)), 1, 'the reopen folded b0 only: S waits for R')
-  // T10: an append resolves only once its node is in the local core. The
-  // nodes of T and U wait in memory behind S, so T and U resolve only after
-  // a serves R.
+  // An append resolves only once its node is in the local core. The nodes
+  // of T and U wait in memory behind S, so they resolve only after a
+  // serves R.
   const TU = Promise.all([
     b2.setField(id, 'title', ['T']).then((r) => ({ ...r, length: b2.db.local.length })),
     b2.setField(id, 'title', ['U']).then((r) => ({ ...r, length: b2.db.local.length }))
@@ -382,12 +361,9 @@ test('G9a (s4): after the governance race, the race writer\'s next op claims its
     await until(() => all(async (v) => (await v.val(K.govRemoved(aHex))) !== undefined && ((await v.val(K.seen(aHex))) ?? 0) >= add.seq + 1), 30000),
     'every peer folds the revocation and the AddWriter'
   )
-  // N10: with AD7, every node of c reaches apply, so the count of c's ops
-  // that apply saw equals each position, and a count-based seq passed this
-  // test (D-047 mutation M5). An empty block (documented db.append) takes
-  // position 1 and reaches no apply (index.js:1444). So Z takes position 2
-  // while apply has seen one op of c, and only the position ordinal claims
-  // Z's seq.
+  // An empty block takes position 1 and reaches no apply. So Z takes
+  // position 2 while apply saw one op of c, and a count of the folded ops
+  // of c claims seq 1 for Z.
   await c.db.append(Buffer.alloc(0))
   const Z = await c.setField(a1.tag, 'status', ['z'])
   assert.equal(Z.seq, 2, 'Z takes position 2 in c\'s core, after the empty block')
@@ -403,7 +379,7 @@ test('G9a (s4): after the governance race, the race writer\'s next op claims its
   assert.ok(hs.every((h) => h === hs[0]), `equal view hashes: ${hs.map((h) => h.slice(0, 16))}`)
 })
 
-// ---------- T12: the clock carries self and the writers with a gov/writer record ----------
+// ---------- the clock carries self and the writers with a gov/writer record ----------
 
 test('T12: the clock carries self and each writer with a gov/writer record, a revoked one too, and no other key', { timeout: 60000 }, async (t) => {
   const a = await Bundle.init(await tmpDir('t12-a')) // the genesis indexer
@@ -421,7 +397,7 @@ test('T12: the clock carries self and each writer with a gov/writer record, a re
   assert.ok(await until(async () => (await b.update(), await m.update(), b.writable && m.writable)), 'b and m are admitted before they write')
   await b.createConcept('t12/b', 'note')
   // m is no indexer, so core rejects its AddWriter op policy-governance,
-  // and grants s at weight 0 all the same (AD7).
+  // and grants s at weight 0 all the same.
   await m.writers.add(s.localKey)
   assert.ok(await until(async () => (await s.update(), s.writable)), 's is an autobee writer (positive control)')
   const sOp = await s.createConcept('t12/s', 'note')
@@ -474,8 +450,8 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
 
   // The junk store gets the first node of a and nothing more. autobee
   // flushes no optimistic local node while its system is at genesis
-  // (lib/writers.js:608-611, :644-645). So each junk writer folds one node
-  // and not the vault, and N writers cost O(N).
+  // (`_next` in lib/writers.js). So each junk writer folds one node and
+  // not the vault, and N writers cost O(N).
   unAJ = pair(a, junk)
   const boot = junk.get({ key: a.key })
   await boot.ready()
@@ -483,11 +459,11 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
   await boot.close()
   unAJ()
 
-  // The junk writers share one corestore, and autobee keeps a joiner's
-  // local key in the user data of the bootstrap core (lib/boot.js:30, :94,
-  // :153-160). So each one passes its own key pair, through the documented
-  // keyPair option. The local key is the hash of the core's manifest, so
-  // each junk writer opens once to tell its key.
+  // The junk writers share one corestore, and autobee keeps the local key
+  // of a joiner in the user data of the bootstrap core (`getLocalKey` in
+  // lib/boot.js). So each one passes its own key pair. The local key is
+  // the hash of the manifest of the core, so each junk writer opens once
+  // to tell its key.
   const junkWriter = async (i) =>
     Bundle.join(junk.namespace(`junk/${i}`), a.key, { keyPair: await junk.createKeyPair(`junk/${i}`) })
   const keys = []
@@ -498,9 +474,9 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
   }
   assert.equal(new Set(keys).size, N, 'N distinct junk keys')
 
-  // m's AddWriter op makes each junk key an autobee writer at weight 0
-  // (AD7). All grants come first: a junk op that sorts before a grant
-  // would make peer a undo and apply again every grant after it.
+  // The AddWriter op of m makes each junk key an autobee writer at weight
+  // 0. All grants come first: a junk op that sorts before a grant makes
+  // peer a undo and apply again every grant after it.
   for (const k of keys) await m.writers.add(k)
   const mLength = m.db.local.length
   assert.ok(await until(async () => (await a.update(), (await a.val(K.seen(mHex))) === mLength)), 'a folds every grant of m')
@@ -515,22 +491,18 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
     await j.close()
   }
 
-  // The attacker's client keeps each junk core open, so that it can serve
-  // the op until a has it. Without a session, the junk store opens a core
-  // only for a peer's request, and corestore closes it again after an idle
-  // check, within about 6 s (corestore index.js:487-506, :151-171). Under
-  // load, a asked for some ops after their cores had closed. No peer served
-  // those ops again, so a never folded them (D-059). The sessions are
-  // passive (active: false), so a still asks for each core itself, through
-  // the wakeup below. junk.close() closes them.
+  // The attacker's client keeps each junk core open. Without a session,
+  // the junk store opens a core only for a request and closes it again when
+  // it is idle (corestore `_attachMaybe` and `gc`). Under load, some cores
+  // closed before a asked, and nothing served those ops. The sessions are
+  // passive (active: false), so a still asks for each core itself.
   await Promise.all(keys.map((k) => junk.get({ key: Buffer.from(k, 'hex'), active: false }).ready()))
 
-  // A junk writer's own client would announce its core over the wakeup
-  // protocol. The junk store has no such client, so a learns of each core
-  // through the documented db.wakeup (autobee README). Without the hint,
-  // autobee closes an idle writer core that holds no node at its next reset
-  // (lib/writers.js:445-459), and nothing opens it again. A hinted length
-  // keeps it open and active (lib/writers.js:67-88, :410-415).
+  // A junk writer with its own client announces its core over the
+  // wakeup protocol. The junk store has none, so a learns of each core
+  // through the documented db.wakeup. Without the hint, autobee closes an
+  // idle writer core with no node at its next `reset` (lib/writers.js),
+  // and nothing opens it again. A hinted length keeps it active (`hint`).
   await Promise.all(keys.map((k) => a.db.wakeup({ key: Buffer.from(k, 'hex'), length: 1 })))
   unAJ = pair(a, junk)
   const foldedAll = async () => {
@@ -538,11 +510,10 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
     for (const k of keys) if ((await a.val(K.seen(k))) !== 1) return false
     return true
   }
-  // D-059 measured the cost. The fold took at most 25 s, also with four
-  // suites on the machine at once, and the steps before it took at most
-  // 110 s. The fold deadline is about five times the fold. The test timeout
-  // leaves room for the steps before it, so a fold that stops fails here,
-  // on the positive control, and not on the test timeout.
+  // The fold took at most 25 s under load, and the steps before it at most
+  // 110 s. The fold deadline is about five times the fold, and the test
+  // timeout leaves room for the steps before it. So a fold that stops
+  // fails here, on the positive control, and not on the test timeout.
   assert.ok(await until(foldedAll, 120000, 250), 'a folds the op of every junk key (positive control)')
   for (const k of keys) {
     assert.deepEqual(await a.val(K.flagRejected(k, 0)), { reason: 'not-a-writer' })
@@ -560,13 +531,12 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
 })
 
 test('G13: with autobee\'s default ackThreshold, a writer that falls 40 flushes behind appends no empty block', { timeout: 60000 }, async (t) => {
-  // An ack is an empty node in the local core (autobee index.js:1297-1314).
-  // A threshold ack needs a head that the local writer does not trust
-  // (index.js:1305, :1316-1330). okf passes no isTrusted and no
-  // mostRecentTrusted hook, so every key is trusted (lib/trusted.js:30-32).
-  // Each append of a is one batch, and each batch is one system flush on b
-  // (index.js:1447-1462, lib/system.js:447). So b falls 40 flushes behind,
-  // above the default threshold of 32 (index.js:30, :134).
+  // An ack is an empty node in the local core (`_appendAck`). A threshold
+  // ack needs a head that the local writer does not trust
+  // (`_allHeadsTrusted`). okf passes no isTrusted and no mostRecentTrusted
+  // hook, so every key is trusted (lib/trusted.js). Each append of a is one
+  // system flush on b, so b falls 40 flushes behind, above
+  // DEFAULT_ACK_THRESHOLD, 32.
   const a = await Bundle.init(await tmpDir('g13-a'))
   const b = await Bundle.join(await tmpDir('g13-b'), a.key)
   const un = pair(a, b)
@@ -605,9 +575,8 @@ async function filesUnder(dir, rel = '') {
   return out
 }
 
-// The instance API of an Autobee that autobee's README documents
-// (README.md:90-183), and the ReadyResource and EventEmitter methods of
-// every Autobee.
+// The instance API of an Autobee that autobee's README documents, and the
+// ReadyResource and EventEmitter methods of every Autobee.
 const AUTOBEE_DOCUMENTED = new Set([
   'key', 'discoveryKey', 'id', 'local', 'view', 'bee', 'writable', 'isIndexer',
   'append', 'update', 'updated', 'flush', 'replicate', 'wakeup', 'setLocal',
@@ -620,9 +589,6 @@ function undocumentedReads(line) {
 }
 
 test('the store, core, faces and cli read no undocumented autobee property (RAILS 22a)', async () => {
-  // D-047 N07: the check matched db.system, db.writers and db._ only, and
-  // the claim is wider. It now flags each db.<name> outside the documented
-  // API, such as db.encryptionKey and db.system.heads.
   for (const line of ['void this.db.encryptionKey', 'const heads = this.db.system.heads', 'db.writers.active', 'db._wakeup']) {
     assert.notDeepEqual(undocumentedReads(line), [], `the check flags: ${line}`)
   }

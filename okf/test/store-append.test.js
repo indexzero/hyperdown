@@ -1,30 +1,8 @@
-// T10, G11 (the close race): an append returns { seq, tag } only for a node
-// that is in the local core. close() closes autobee first, and then it waits
-// for every append to settle (G3-P3 F01).
-//
-// autobee's close sets _interrupting (index.js:392). The drain then stops
-// (index.js:797), and _flushLocal pulls in no more local nodes
-// (index.js:1580). A db.append in flight resolves with its node only in
-// memory, and the node never reaches the local core. Before T10,
-// Bundle.close() did not wait for its appends, so an append could return a
-// tag for a node that a reopen does not hold.
-//
-// A plain db.append also resolves with its node only in memory when the node
-// waits behind an earlier local node that links a missing block
-// (lib/writers.js:624-631). The append then waits for the node to reach the
-// local core. A close() before that fails it VAULT_CLOSED_BEFORE_DURABLE: the
-// node lives only in autobee's memory (lib/writers.js:732-755), so it never
-// lands after a reopen.
-//
-// close() does not wait for an append before it closes autobee. A db.append
-// can wait for a drain that only autobee's close ends: a reorder that reads a
-// block that the peer does not hold (G3-P3 F01). So an append that has not
-// handed autobee its node when close() begins fails
-// VAULT_CLOSED_BEFORE_DURABLE, and its op is not written.
-//
-// The first test is the port of ab2-review/scratch-A/s9-close-race.mjs. It
-// is adapted to admit before writing: the creator is the genesis writer, so
-// it is writable at init, and the test asserts that before the first write.
+// An append returns { seq, tag } only for a node that is in the local
+// core. close() closes autobee first, and then it waits for every append
+// to settle. An append whose node is not in the local core when autobee
+// closes fails VAULT_CLOSED_BEFORE_DURABLE, and its op is not written.
+// Bundle.close() in okf/store/lib/bundle.js says why.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Corestore from '../store/node_modules/corestore/index.js'
@@ -33,10 +11,8 @@ import { Bundle, K, tmpDir, sleep, pair, until } from './store-helpers.js'
 const hex = (k) => k.toString('hex')
 
 test('G11 (s9): a close during an append returns no tag for a node that is missing after a reopen, and an append that it rejects wrote nothing, in 50 of 50 runs', { timeout: 300000 }, async (t) => {
-  // D-047 F09: the error says "the op is not written", and a retry depends
-  // on it. So for each rejected append, the reopened local core holds x/0
-  // only. The D-047 mutation M14, which rejects every append that decides
-  // at the close, wrote 1 to 4 rejected nodes in 50 runs.
+  // The error says that the op is not written, and a retry depends on it.
+  // So for each rejected append, the reopened local core holds x/0 only.
   const RUNS = 50
   const lost = []
   const written = []
@@ -82,8 +58,6 @@ test('G11 (s9): a close during an append returns no tag for a node that is missi
 })
 
 test('close() cuts each append that waits in the append chain VAULT_CLOSED_BEFORE_DURABLE, and each append that returned is in the core after a reopen', { timeout: 60000 }, async (t) => {
-  // D-047 F10: this test passed without step 2 of close(), so it no longer
-  // carries that claim. The next test does.
   const N = 8
   const dir = await tmpDir('close-cuts')
   const a = await Bundle.init(dir)
@@ -203,12 +177,12 @@ test('an append that starts after close() begins fails with VAULT_CLOSED, and no
 })
 
 /**
- * The setup of the G10 test (store-ordinal.test.js). After a crash that
- * loses the boot record of b and c's block R, the reopen of b cannot fold
- * S, which links R. A new local node of b then waits behind S, in
- * autobee's memory, and its append waits for the local core (_durable()).
- * Returns `s`: s.b2 is the reopened b. The test can set s.b3 and push
- * unpairs on s.unpairs. t.after closes every vault and unpairs each pair.
+/**
+ * The setup of the crash test in store-ordinal.test.js: the reopened b
+ * cannot fold S, which links the lost block R of c, so a new local node of
+ * b waits behind S in autobee's memory, and its append waits for the local
+ * core. Returns `s`. s.b2 is the reopened b. t.after closes every vault in
+ * s and unpairs s.unpairs.
  */
 async function waitBehindMissingLink(t, name) {
   const s = { unpairs: [], b: null, b2: null, b3: null }
@@ -296,12 +270,11 @@ test('an append that waits behind a missing link fails VAULT_CLOSED_BEFORE_DURAB
 })
 
 test('close() resolves only after every in-flight append has settled: each append whose node waits for the local core fails VAULT_CLOSED_BEFORE_DURABLE before close() resolves, and none is in the core after a reopen (D-047 F10)', { timeout: 60000 }, async (t) => {
-  // Each append hands autobee its node, which waits behind S, so each
-  // append waits for the local core. Only close() ends that wait:
-  // _lengthAfterClose() reads the length of the local core through the
-  // root corestore, which step 3 of close() closes. Without step 2,
-  // `await Promise.all(this._appending)`, close() closes that store while
-  // the reads run (D-047 F10).
+  // Each append hands autobee its node, which waits behind S, so only
+  // close() ends the wait. _lengthAfterClose() reads the local core
+  // through the root corestore, which step 3 of close() closes. Without
+  // step 2, `await Promise.all(this._appending)`, close() closes that
+  // store while the reads run.
   const s = await waitBehindMissingLink(t, 'close-settles')
   const N = 4
   const settled = new Set()
@@ -335,13 +308,11 @@ test('close() resolves only after every in-flight append has settled: each appen
 })
 
 test('close() returns while an append waits for a drain that reads an absent block, and the append fails VAULT_CLOSED_BEFORE_DURABLE (G3-P3 F01)', { timeout: 60000 }, async (t) => {
-  // The port of the D-039 probe probe-close-reorder.mjs. a folds b0, and then
-  // a writes a node that links b0. a closes and loses its stored copy of b0.
-  // It keeps its boot record, its system and its view. a reopens with b
-  // offline. c sends c0, which c made before b0, so autobee reorders, and the
-  // reorder reads b0 and waits for it (lib/topo.js:78, :181-182). An append
-  // of a then waits for that drain (index.js:1575, :645). Only autobee's close
-  // cancels the read.
+  // a folds b0, writes a node that links b0, closes, and loses its stored
+  // copy of b0 but not its boot record, system or view. a reopens with b
+  // offline. c sends c0, made before b0, so autobee reorders and reads b0,
+  // which waits (`inflate` in lib/topo.js). An append of a then waits for
+  // that drain (`_bump`).
   const DEADLINE = 5000
   const adir = await tmpDir('reorder-close-a')
   const a = await Bundle.init(adir)
@@ -354,8 +325,8 @@ test('close() returns while an append waits for a drain that reads an absent blo
   t.after(async () => {
     for (const un of unpairs) un()
     if (a2) {
-      // If close() stays pending, the documented db.close() cancels the read
-      // (D-039 F01), so that the test ends. After the fix it is a no-op.
+      // If close() stays pending, the documented db.close() cancels the read,
+      // so that the test ends. Otherwise it is a no-op.
       await a2.db.close()
       await (closing || a2.close())
     }

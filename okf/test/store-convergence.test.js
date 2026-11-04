@@ -1,7 +1,7 @@
-// Store scope (okf SPEC §13, T4): two-writer convergence over real
-// autobee + corestore — view-hash equality after replication (I2 at store
-// level) — plus admission before the first write: a joiner's append is
-// refused until an indexer admits it, and the refusal uses no seq.
+// Two-writer convergence on real autobee and corestore (I2 at store
+// level), and admission before the first write: the store refuses the
+// append of a joiner until an indexer admits it, and the refusal uses no
+// seq.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Autobee from '../store/node_modules/autobee/index.js'
@@ -20,7 +20,6 @@ test('two writers converge to bit-identical views (hash equality)', async (t) =>
     await b.close()
   })
 
-  // onboarding: genesis indexer admits b (in-log governance op, §8)
   await a.writers.add(b.localKey, { indexer: false })
   assert.ok(
     await until(async () => {
@@ -30,7 +29,6 @@ test('two writers converge to bit-identical views (hash equality)', async (t) =>
     'b becomes writable after the AddWriter op linearizes'
   )
 
-  // cross-writer content ops on one concept
   const { tag: id } = await a.createConcept('guides/home', 'guide')
   assert.ok(
     await until(async () => {
@@ -47,7 +45,6 @@ test('two writers converge to bit-identical views (hash equality)', async (t) =>
   const hash = await converged([a, b])
   assert.ok(hash, 'views converge to one hash')
 
-  // both tags present in the OR-set on both peers; link demand indexed
   for (const v of [a, b]) {
     const rec = await v.val(K.cField(id, 'tags'))
     assert.deepEqual(Object.values(rec.els).sort(), ['p2p', 'wiki'])
@@ -56,7 +53,7 @@ test('two writers converge to bit-identical views (hash equality)', async (t) =>
     assert.equal(await v.val(K.wanted('guides/architecture', id)), true, 'wanted/ demand row')
   }
 
-  // §5 citation contract via the emission helper: remove one tag
+  // a remove cites the observed tags (SPEC §5)
   await b.remTag(id, 'p2p')
   assert.ok(await converged([a, b]), 'views converge after the remove')
   const rec = await a.val(K.cField(id, 'tags'))
@@ -80,9 +77,8 @@ test('a refused append does not burn a seq (§8 forged-clock)', async (t) => {
     })
   )
 
-  // No indexer has admitted c, so db.writable is false and the store
-  // refuses each append up front with VAULT_NOT_WRITABLE, before a seq is
-  // used and before anything reaches the local core.
+  // No indexer admitted c, so the store refuses each append with
+  // VAULT_NOT_WRITABLE before it uses a seq or touches the local core.
   for (const value of ['early', 'early-again']) {
     await assert.rejects(
       () => c.setField(id, 'status', [value]),
@@ -90,7 +86,6 @@ test('a refused append does not burn a seq (§8 forged-clock)', async (t) => {
     )
   }
 
-  // Once admitted, c's first op takes seq 0, and every peer accepts it.
   await a.writers.add(c.localKey, { indexer: false })
   assert.ok(
     await until(async () => {
@@ -114,19 +109,11 @@ test('a refused append does not burn a seq (§8 forged-clock)', async (t) => {
 })
 
 test('a joiner folds every op through its own apply, never a stamped view (I2/I3)', async (t) => {
-  // autobee@2 fast-forwards a peer onto a system/view head another writer
-  // stamped in its oplog once that head is 16+ flushes ahead, and by
-  // default it trusts every writer's stamp (autobee lib/trusted.js). Here
-  // the genesis peer runs a DIFFERENT apply — it writes a key okf's apply
-  // never writes — so a joiner that adopted its stamp would hold that key.
-  //
-  // Positive control: a joiner built from a raw Autobee as the Bundle
-  // builds one (core's createApply under the pinned config of a, the
-  // ViewAdapter, optimistic: false, bootstrapWeight: 0), with one
-  // difference: fastForward stays at autobee's default, on (index.js:106).
-  // It must fast-forward and hold the stamped key. So in this scenario a
-  // joiner with fast-forward on fails the checks that the Bundle joiner
-  // must pass.
+  // autobee fast-forwards a peer onto a system and view head that another
+  // writer stamped, once that head is 16 or more flushes ahead, and by
+  // default it trusts every stamp (lib/trusted.js). The genesis peer here
+  // runs a different apply, which writes a key that okf's apply never
+  // writes. A joiner that adopts the stamp holds that key.
   const open = []
   const unpairs = []
   t.after(async () => {
@@ -151,6 +138,8 @@ test('a joiner folds every op through its own apply, never a stamped view (I2/I3
   assert.equal(await a.val('zz/foreign-config'), 'stamped')
   const aHex = a.localKey.toString('hex')
 
+  // Positive control: a raw Autobee built as the Bundle builds one, but
+  // with fastForward at autobee's default, on. It must hold the stamped key.
   const controlStore = new Corestore(await tmpDir('ff-control'))
   let control = null
   open.push({
@@ -226,8 +215,8 @@ test('opt-in append backpressure throttles without deadlocking', async (t) => {
     })
   )
 
-  // a burst of backpressured appends completes (degrades on ackTimeout
-  // rather than deadlocking) and converges
+  // The burst completes because ackTimeout releases each wait, and it
+  // converges.
   for (let i = 0; i < 8; i++) {
     await b.setField(id, 'n', [String(i)])
   }

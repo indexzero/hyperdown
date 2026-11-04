@@ -1,9 +1,6 @@
-// @auto-okf/cli smoke tests (SPEC §13): the real `auto-okf` binary spawned
-// against real vaults on disk. Test dirs are unique per run under
-// sslop/034/tmp/ (never /tmp, never cleaned up — handles are closed, files
-// are left for post-mortem). Content that the CLI cannot author (it has no
-// write command — content flows in via ingest or the store API) is seeded
-// through @auto-okf/store, exactly as a library caller would.
+// Tests of the real auto-okf binary on real vaults. The CLI has no write
+// command, so content is seeded through the store API. Scratch stays on disk
+// after a run.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -28,7 +25,7 @@ async function tmpDir(name) {
   return dir
 }
 
-/** Run the CLI to completion; resolves { code, stdout, stderr }. */
+/** Run the CLI to completion. Resolves { code, stdout, stderr }. */
 function cli(args) {
   return new Promise((resolve) => {
     execFile('node', [BIN, ...args], { cwd: ROOT, timeout: 90000 }, (err, stdout, stderr) => {
@@ -37,7 +34,7 @@ function cli(args) {
   })
 }
 
-/** Full-view hash (store I2/I3 surface), for zero-ops/read-only assertions. */
+/** The view hash of a vault, to show that a command appended no op. */
 async function snapshotHash(storage) {
   const v = await Bundle.open(storage)
   try {
@@ -88,7 +85,7 @@ test('init creates a pinned vault and refuses to re-init', async () => {
   assert.match(out.stdout, KEY_LINE)
   assert.match(out.stdout, /genesis indexer/)
   assert.match(out.stdout, /generation: {2}root/)
-  await access(join(storage, 'okf-vault.json')) // metadata pin exists
+  await access(join(storage, 'okf-vault.json'))
 
   const again = await cli(['init', storage])
   assert.equal(again.code, 1)
@@ -123,8 +120,8 @@ test('ingest a hand-authored file mints a concept; materialize round-trips it wi
   const mat = await cli(['materialize', storage, bundle])
   assert.equal(mat.code, 0, mat.stderr)
   assert.match(mat.stdout, /materialized .*: \d+ written/)
-  await access(join(bundle, 'index.md')) // per-directory index (OKF §6)
-  await access(join(bundle, 'log.md')) // root update log (OKF §7)
+  await access(join(bundle, 'index.md'))
+  await access(join(bundle, 'log.md'))
   const emitted = await readFile(join(bundle, 'hello.md'), 'utf8')
   assert.match(emitted, /_id:/, 'the mint stamped an _id into the emitted frontmatter')
   assert.match(emitted, /_rev:/, 'the body head produced a _rev')
@@ -163,7 +160,7 @@ test('materialize exit taxonomy: 0 clean, 3 pending-only, 1 failure (ADR-004)', 
   const clean = await cli(['materialize', storage, bundle])
   assert.equal(clean.code, 0, 'clean run exits 0')
 
-  // a concurrent writer's not-yet-ingested file: healthy, not a failure
+  // a file that another writer did not ingest yet is not a failure
   await writeFile(join(bundle, 'foreign.md'), '---\ntype: note\n---\nMid-authoring.\n')
   const pending = await cli(['materialize', storage, bundle])
   assert.equal(pending.code, 3, `pending-only exits 3, stderr:\n${pending.stderr}`)
@@ -175,12 +172,10 @@ test('materialize exit taxonomy: 0 clean, 3 pending-only, 1 failure (ADR-004)', 
   const kept = await readFile(join(bundle, 'foreign.md'), 'utf8')
   assert.match(kept, /Mid-authoring\./, 'the foreign file was left in place')
 
-  // real failure still exits 1
   const broken = await cli(['materialize', join(base, 'no-vault'), bundle])
   assert.equal(broken.code, 1)
   assert.match(broken.stderr, /not a vault/)
 
-  // once the foreign file is ingested the same bundle materializes clean
   await cli(['ingest', storage, bundle])
   const after = await cli(['materialize', storage, bundle])
   assert.equal(after.code, 0, after.stderr)
@@ -193,16 +188,16 @@ test('ingest reports hash-match skips as already up to date (ADR-003)', async ()
   await cli(['init', storage])
   await mkdir(bundle, { recursive: true })
 
-  // an empty bundle prints NO skip clause (decided once: omitted, never "0")
+  // with no skip, the clause is omitted, never "0"
   const empty = await cli(['ingest', storage, bundle])
   assert.equal(empty.code, 0, empty.stderr)
   assert.match(empty.stdout, /^ingest complete: 0 op\(s\) from 0 file\(s\)$/m)
 
   await writeFile(join(bundle, 'note.md'), '---\ntype: note\n---\nConverged body.\n')
   await cli(['ingest', storage, bundle])
-  await cli(['materialize', storage, bundle]) // stamps _id/_rev + manifest hash
+  await cli(['materialize', storage, bundle]) // stamps _id and _rev, and records the hash
 
-  // the swept-writer scenario (F1): every candidate hash-matches the manifest
+  // every file matches its manifest hash
   const again = await cli(['ingest', storage, bundle])
   assert.equal(again.code, 0, again.stderr)
   assert.match(
@@ -226,7 +221,6 @@ test('ingest preflights maxOpBytes: oversize file named, siblings unaffected (AD
   assert.match(ing.stdout, /ingested small\.md: create-concept/, 'the sibling still ingested')
   assert.doesNotMatch(ing.stdout, /ingested big\.md/)
 
-  // zero ops were appended for the oversize file: no concept claims its path
   const v = await Bundle.open(storage)
   try {
     await v.update()
@@ -261,7 +255,6 @@ test('path-scoped ingest folds only the named file (ADR-001)', async () => {
     await v.close()
   }
 
-  // the unnamed file remains pending-ingest: materialize leaves it in place
   const mat = await cli(['materialize', storage, bundle])
   assert.equal(mat.code, 3, mat.stderr)
   assert.match(mat.stderr, /pending ingest .*: drafts\/theirs\.md/)
@@ -285,7 +278,7 @@ test('path-scoped ingest refuses bad paths by name, appending zero ops (ADR-001)
   assert.equal(ghost.code, 1, 'a nonexistent path is an error')
   assert.match(ghost.stderr, /no such file in the bundle: drafts\/ghost\.md/)
 
-  // one bad path aborts the whole run before any op — the good sibling too
+  // one bad path aborts the run before any op, the good sibling included
   const mixed = await cli(['ingest', storage, bundle, 'drafts/real.md', 'drafts/ghost.md'])
   assert.equal(mixed.code, 1)
   assert.match(mixed.stderr, /drafts\/ghost\.md/)
@@ -304,13 +297,11 @@ test('status: a file another process ingested reports in-log, not pending-ingest
     '---\ntype: note\ntitle: Clerk\n---\nSwept while I looked away.\n'
   )
 
-  // hand-authored, not yet ingested: pending-ingest
   const before = await cli(['status', storage, bundle])
   assert.equal(before.code, 0, before.stderr)
   assert.match(before.stdout, /^pending-ingest\tnote\.md$/m)
 
-  // the swept-writer incident: a SECOND process ingests + materializes it
-  // (every cli() call spawns its own auto-okf process)
+  // another process ingests it: each cli() call is its own process
   await cli(['ingest', storage, bundle])
   await cli(['materialize', storage, bundle])
 
@@ -318,7 +309,7 @@ test('status: a file another process ingested reports in-log, not pending-ingest
   assert.equal(after.code, 0, after.stderr)
   assert.match(after.stdout, /^in-log\tnote\.md$/m)
   assert.doesNotMatch(after.stdout, /pending-ingest/)
-  // the derived faces are part of the projection and equally in-log
+  // index.md and log.md are part of the projection, so they are in-log too
   assert.match(after.stdout, /^in-log\tindex\.md$/m)
   assert.match(after.stdout, /^in-log\tlog\.md$/m)
 })
@@ -333,7 +324,6 @@ test('status reports a foreign mid-write file and never ingests it (ADR-002)', a
   await cli(['ingest', storage, bundle])
   await cli(['materialize', storage, bundle])
 
-  // another writer's WIP: no parseable frontmatter/type yet
   await writeFile(join(bundle, 'wip.md'), '# scratch\nmid-write, no frontmatter yet\n')
   const manifestBefore = await readFile(join(bundle, '.okf-manifest.json'), 'utf8')
   const viewBefore = await snapshotHash(storage)
@@ -342,7 +332,6 @@ test('status reports a foreign mid-write file and never ingests it (ADR-002)', a
   assert.equal(st.code, 0, st.stderr)
   assert.match(st.stdout, /^foreign\twip\.md$/m)
 
-  // strictly read-only: no ops appended, no manifest write, file untouched
   assert.equal(await snapshotHash(storage), viewBefore, 'status appended no ops')
   assert.equal(
     await readFile(join(bundle, '.okf-manifest.json'), 'utf8'),
@@ -375,13 +364,13 @@ test('status --json is stable across runs and covers dirty and absent (ADR-002)'
   const paths = rows.map((r) => r.path)
   assert.deepEqual(paths, [...paths].sort(), 'rows are sorted by path')
 
-  // dirty: in the log, hand-edited after materialize
+  // dirty: in the log, edited after materialize
   const note = await readFile(join(bundle, 'note.md'), 'utf8')
   await writeFile(join(bundle, 'note.md'), note + '\nA hand edit.\n')
   const dirty = await cli(['status', storage, bundle])
   assert.match(dirty.stdout, /^dirty\tnote\.md$/m)
 
-  // absent: in the log, missing from disk (materialize would restore)
+  // absent: in the log, gone from disk
   await rm(join(bundle, 'note.md'))
   const absent = await cli(['status', storage, bundle])
   assert.match(absent.stdout, /^absent\tnote\.md$/m)
@@ -425,7 +414,7 @@ test('join + add-writer + remove-writer round trip (§8 governance plumbing)', a
   assert.notEqual(writerKey, vaultKey, 'the peer has its own writer core')
   await access(join(peer, 'okf-vault.json')) // joined storage is pinned
 
-  // reopen pinned storage without a key: reprints identity
+  // a reopen needs no key
   const reopen = await cli(['join', peer])
   assert.equal(reopen.code, 0, reopen.stderr)
   assert.equal(reopen.stdout.match(WRITER_LINE)[1], writerKey)
@@ -438,9 +427,7 @@ test('join + add-writer + remove-writer round trip (§8 governance plumbing)', a
   assert.equal(removed.code, 0, removed.stderr)
   assert.match(removed.stdout, /writer removed/)
 
-  // the unadmitted peer cannot issue governance ops at all: it is not yet a
-  // writer, so the local store refuses the append outright (§8 authority is
-  // moot — there is nothing to append to).
+  // The peer is not admitted, so its store is not writable and refuses the append.
   const rogue = await cli(['add-writer', peer, vaultKey])
   assert.equal(rogue.code, 1, 'an unadmitted peer add-writer must fail')
   assert.match(rogue.stderr, /Not writable|did not take effect/)
@@ -462,7 +449,7 @@ async function freeUdpPort() {
   return port
 }
 
-/** Spawn a foreground command; collects its output in `out.log`. */
+/** Spawn a foreground command. Collects its output in `out.log`. */
 function foreground(args) {
   const child = spawn('node', [BIN, ...args], { cwd: ROOT })
   const out = { log: '' }
@@ -503,7 +490,7 @@ test('init --swarm-allow pins every value and the creator key in the invite, one
   const own = out.stdout.match(SWARM_LINE)[1]
   assert.deepEqual((await invite(storage)).swarm.allow, [k1, k2, own].sort(), 'every value is pinned')
 
-  // The grammar of join --swarm-allow: one key per value.
+  // one key per value: a comma list is not a key
   for (const [name, flags, re] of [
     ['nothex', ['--swarm-allow', 'nothex'], /--swarm-allow must be 64 hex characters/],
     ['comma', ['--swarm-allow', `${k1},${k2}`], /--swarm-allow must be 64 hex characters/],
@@ -554,15 +541,14 @@ test('join refuses fresh storage without the invite, by name and before it creat
   const vaultKey = init.stdout.match(KEY_LINE)[1]
   const re = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
 
-  // The vault key alone pins metadata that is not the creator's: no swarm
-  // key of the invite, so the private swarm admits nobody.
+  // Without the invite the peer pins its own metadata, with no swarm key of
+  // the creator, so the private swarm admits nobody.
   const peer = join(base, 'peer')
   const bare = await cli(['join', peer, vaultKey])
   assert.equal(bare.code, 2, bare.stderr)
   assert.match(bare.stderr, /join needs the invite to join fresh storage: --metadata <okf-vault.json>/)
   await assert.rejects(access(peer), 'nothing is created')
 
-  // A bad invite file fails by name, with its path, before anything exists.
   const junk = join(base, 'junk.json')
   await writeFile(junk, '{ not json')
   const badFile = await cli(['join', peer, vaultKey, '--metadata', junk])
@@ -574,15 +560,12 @@ test('join refuses fresh storage without the invite, by name and before it creat
   assert.match(noFile.stderr, re(`--metadata ${missing}: no such file`))
   await assert.rejects(access(peer), 'nothing is created')
 
-  // With the invite, the peer pins the creator's document. A reopen needs
-  // no invite.
+  // A reopen needs no invite.
   const joined = await cli(['join', peer, vaultKey, '--metadata', join(origin, 'okf-vault.json')])
   assert.equal(joined.code, 0, joined.stderr)
   assert.deepEqual(await invite(peer), await invite(origin), 'the pinned metadata is the invite')
   assert.equal((await cli(['join', peer])).code, 0)
 
-  // A directory that the store API joined with the vault key alone refuses
-  // the invite later, by name, with the fix.
   const keyOnly = join(base, 'key-only')
   const v = await Bundle.join(keyOnly, Buffer.from(vaultKey, 'hex'))
   await v.close()
@@ -602,29 +585,28 @@ test('add-writer refuses, by name and before it appends, a writer that no record
   const writerKey = joined.stdout.match(WRITER_LINE)[1]
   const swarmKey = joined.stdout.match(SWARM_LINE)[1]
 
-  // Without --swarm-key, a remove-writer of this writer could not cut its
-  // swarm key, such as a key that the invite lists.
+  // Without a bound swarm key, a later remove-writer cannot cut the key of
+  // this writer from the allowlist.
   const before = await snapshotHash(origin)
   const refused = await cli(['add-writer', origin, writerKey])
   assert.equal(refused.code, 2, refused.stderr)
   assert.match(refused.stderr, new RegExp(`add-writer needs --swarm-key <hex64>: no gov/writer record binds a swarm key to ${writerKey}`))
   assert.equal(await snapshotHash(origin), before, 'a refused add-writer appends nothing')
 
-  // Once a record binds the key, a later add-writer keeps it and needs no flag.
   assert.equal((await cli(['add-writer', origin, writerKey, '--swarm-key', swarmKey])).code, 0)
   const promoted = await cli(['add-writer', origin, writerKey, '--indexer'])
   assert.equal(promoted.code, 0, promoted.stderr)
   assert.match(promoted.stdout, new RegExp(`writer added: ${writerKey} \\(indexer: true\\)`))
   assert.match(promoted.stdout, new RegExp(`swarm key: {3}${swarmKey}`), 'the record keeps the bound key')
 
-  // The invite binds the creator's swarm key to genesisKey (swarm.genesis).
+  // The invite binds the creator's swarm key as swarm.genesis, so no flag is needed.
   const creator = await cli(['add-writer', origin, vaultKey, '--indexer'])
   assert.equal(creator.code, 0, creator.stderr)
 })
 
 test('watch --swarm refuses by name without --bootstrap or --public-dht, before it opens the vault (T25)', async () => {
   const base = await tmpDir('watch-dht')
-  const missing = join(base, 'no-vault-here') // a refusal after the open would say "not a vault"
+  const missing = join(base, 'no-vault-here') // a refusal after the open says "not a vault" instead
   const bundle = join(base, 'bundle')
   const cases = [
     [['--swarm'], /--swarm needs --bootstrap <host:port,\.\.\.>.*or --public-dht/],
@@ -678,8 +660,6 @@ test('bootstrap runs a private DHT node, and watch --swarm --bootstrap replicate
   await writeFile(join(bundle, 'hello.md'), '---\ntype: note\ntitle: Hello\n---\nOver the private swarm.\n')
   assert.equal((await cli(['ingest', origin, bundle])).code, 0)
 
-  // The peer joins with the invite, which lists the origin's swarm key, and
-  // the origin admits the peer's swarm key.
   peer = await Bundle.join(join(base, 'peer'), Buffer.from(vaultKey, 'hex'), { metadata: await invite(origin) })
   const added = await cli([
     'add-writer', origin, peer.localKey.toString('hex'), '--swarm-key', peer.swarmKey.toString('hex')
@@ -723,13 +703,11 @@ test('join --swarm-allow keeps a local list of swarm keys apart from the invite,
   assert.equal(joined.code, 0, joined.stderr)
   assert.match(joined.stdout, new RegExp(`local allow: {2}${k2}`))
   assert.match(joined.stdout, new RegExp(`local allow: {2}${k1}`))
-  // This peer only: the local list is its own file, and the invite does
-  // not change.
   assert.deepEqual(JSON.parse(await readFile(join(peer, 'okf-swarm-allow.json'), 'utf8')), { allow: [k2, k1] })
   assert.deepEqual(await invite(peer), await invite(origin), 'the pinned metadata is the invite')
   assert.equal((await invite(peer)).swarm.allow.includes(k1), false)
 
-  // A later join on the pinned directory states the list again.
+  // A later join replaces the list.
   const again = await cli(['join', peer, '--swarm-allow', k1])
   assert.equal(again.code, 0, again.stderr)
   assert.deepEqual(JSON.parse(await readFile(join(peer, 'okf-swarm-allow.json'), 'utf8')), { allow: [k1] })
@@ -765,8 +743,8 @@ test('watch --swarm admits the local list of join: a late joiner whose creator i
   })
   await waitFor(() => node.log.includes('bootstrap node: 127.0.0.1:' + port), 30000)
 
-  // The creator admits a second indexer, hands it the ops over a direct
-  // stream, and goes offline for good.
+  // The creator admits a second indexer over a direct stream, then goes
+  // offline for good.
   const init = await cli(['init', origin])
   const vaultKey = init.stdout.match(KEY_LINE)[1]
   indexer = await Bundle.join(join(base, 'indexer'), Buffer.from(vaultKey, 'hex'), { metadata: await invite(origin) })
@@ -791,8 +769,6 @@ test('watch --swarm admits the local list of join: a late joiner whose creator i
   s2.destroy()
   await o.close()
 
-  // The late joiner gets the invite and the indexer's swarm key. The
-  // indexer admits it.
   const joined = await cli([
     'join', late, vaultKey, '--metadata', join(origin, 'okf-vault.json'), '--swarm-allow', indexerSwarmKey
   ])
@@ -835,18 +811,16 @@ test('watch --swarm admits the local list of join: a late joiner whose creator i
 })
 
 /**
- * Seed a body conflict single-writer via the unknown-base rule (SPEC §5): a
- * SetBody citing a base absent from the concept's revisions is stored and
- * flagged flag/conflict against the current head, never becoming head until
- * ResolveConflict. Returns { id, keep, supersede }.
+ * Seed a body conflict with one writer: a SetBody that cites an unknown base
+ * is flagged against the head (SPEC §5). Returns { id, keep, supersede }.
  */
 async function seedConflict(storage) {
   const v = await Bundle.init(storage)
   const { tag: id } = await v.createConcept('notes/a', 'note')
   await v.setBody(id, null, 'version one')
   await v.update()
-  const keep = await v.val(K.cBody(id)) // the real head revHash (R1)
-  await v.setBody(id, 'f'.repeat(64), 'version two') // fabricated base → conflict
+  const keep = await v.val(K.cBody(id))
+  await v.setBody(id, 'f'.repeat(64), 'version two') // an unknown base: a conflict
   await v.update()
   let supersede = null
   for await (const { key } of v.scan(K.flagPrefix('conflict', id))) {
@@ -870,7 +844,6 @@ test('flags lists a seeded conflict; resolve clears it', async () => {
   const rows = JSON.parse(fj.stdout)
   assert.equal(rows.length, 1, 'exactly one open conflict')
 
-  // resolve it
   const resolved = await cli(['resolve', storage, id, '--keep', keep, '--supersede', supersede])
   assert.equal(resolved.code, 0, resolved.stderr)
   assert.match(resolved.stdout, /0 conflict flag\(s\) still open/)
@@ -878,20 +851,20 @@ test('flags lists a seeded conflict; resolve clears it', async () => {
   const cleared = await cli(['flags', storage, 'conflict'])
   assert.match(cleared.stderr, /0 flag\(s\)/)
 
-  // with no conflict open, a generation is materialize, then import (§10)
+  // with no conflict open, a generation follows (SPEC §10)
   const face = await cli(['materialize', storage, join(base, 'face')])
   assert.equal(face.code, 0, face.stderr)
   const key = KEY_LINE.exec((await cli(['join', storage])).stdout)[1]
   const generation = await cli(['import', join(base, 'face'), join(base, 'generation2'), '--metadata', join(storage, 'okf-vault.json'), '--predecessor', key])
   assert.equal(generation.code, 0, generation.stderr)
   assert.match(generation.stdout, /^generation: {2}[0-9a-f]{64}$/m)
-  await access(join(base, 'generation2', 'okf-vault.json')) // the new vault is pinned
+  await access(join(base, 'generation2', 'okf-vault.json'))
 })
 
-// ---------- T17: encryption and plaintext (decision 8) ----------
+// ---------- encryption and plaintext ----------
 
-const ENC_KEY = 'cd'.repeat(32) // the predecessor's key
-const NEW_KEY = 'ef'.repeat(32) // the new vault's key: a generation names its own key
+const ENC_KEY = 'cd'.repeat(32) // the key of the predecessor
+const NEW_KEY = 'ef'.repeat(32) // a generation has a key of its own
 const SECRET = 'TOP-SECRET-PAYLOAD'
 
 /** The entries of a directory, sorted. */
@@ -912,7 +885,7 @@ async function seedSecret(v) {
   return tag
 }
 
-/** An encrypted vault made by `auto-okf init --encryption-key`, with SECRET seeded. Returns its _id. */
+/** An encrypted vault from `auto-okf init --encryption-key`, with SECRET seeded. Returns its _id. */
 async function initEncrypted(storage) {
   const init = await cli(['init', storage, '--encryption-key', ENC_KEY])
   assert.equal(init.code, 0, init.stderr)
@@ -934,9 +907,8 @@ async function headText(v, id) {
 }
 
 /**
- * The stored blocks of the writer, system and view cores that hold
- * `plain`. get({ raw: true }) returns the bytes at rest, not decrypted, as
- * in store-encryption.test.js.
+ * The stored blocks of the writer, system and view cores that hold `plain`.
+ * get({ raw: true }) returns the bytes at rest, not decrypted.
  */
 async function rawHits(v, plain) {
   const hits = []
@@ -954,7 +926,7 @@ async function inspectSecret(v, id) {
   return { encrypted: v.metadata.encrypted, text: await headText(v, id), rawHits: (await rawHits(v, Buffer.from(SECRET))).length > 0 }
 }
 
-/** The CLI's plaintext warning for `dir` (decision 8). */
+/** The plaintext warning of the CLI for `dir`. */
 function plaintextLine(dir) {
   return `warning: ${dir}: now holds the contents of an encrypted vault as plaintext\n`
 }
@@ -964,19 +936,16 @@ test('T17: materialize warns when it writes an encrypted vault as plaintext, and
   const storage = join(base, 'vault')
   await initEncrypted(storage)
 
-  // materialize: exit 0, one warning that names the bundle directory.
   const bundle = join(base, 'bundle')
   const mat = await cli(['materialize', storage, bundle])
   assert.equal(mat.code, 0, mat.stderr)
   assert.equal(mat.stderr, plaintextLine(bundle))
   assert.match(await readFile(join(bundle, 'secret', 'plan.md'), 'utf8'), new RegExp(SECRET))
 
-  // import reads that plaintext face and writes no plaintext: no warning.
   const imp = await cli(['import', bundle, join(base, 'out'), '--metadata', join(storage, 'okf-vault.json'), '--encryption-key', NEW_KEY])
   assert.equal(imp.code, 0, imp.stdout + imp.stderr)
   assert.equal(imp.stderr, '')
 
-  // An unencrypted vault: no warning.
   const plain = join(base, 'plain')
   const pv = await Bundle.init(plain)
   await seedSecret(pv)
@@ -1005,9 +974,8 @@ test('T24: auto-okf materialize exits 1 and names each value that the face canno
   assert.match(r.stdout, /^materialized /m)
   await access(join(base, 'face', 'notes', 'ref.md'))
 
-  // An encrypted vault: the warning names the _id only. The path, the key
-  // and the values are contents of the vault, and stderr can reach a log
-  // (D-060 F23: before the fix, the line printed the path and the key).
+  // For an encrypted vault the warning names the _id only. The path, the key
+  // and the values are contents of the vault, and stderr can reach a log.
   const enc = join(base, 'enc')
   await initEncrypted(enc)
   const ev = await Bundle.open(enc)
@@ -1020,7 +988,7 @@ test('T24: auto-okf materialize exits 1 and names each value that the face canno
   for (const plain of [SECRET, 'secret-ref', 'reference']) assert.ok(!e.stderr.includes(plain), `${plain}: ${e.stderr}`)
 })
 
-// ---------- G3-P5 F03: the plaintext warning comes before the plaintext write ----------
+// ---------- the plaintext warning comes before the plaintext write ----------
 
 /**
  * An encrypted vault that holds concept `a` (body SECRET) and concept `z`.
@@ -1052,9 +1020,8 @@ async function secretIn(face) {
 }
 
 test('F03: the in-process materialize announces the plaintext directory before the first write, and a failure partway carries the warning', async () => {
-  // D-029 F03: a materialize that wrote a.md and then failed threw no
-  // warning. materialize now calls onPlaintext, and awaits it, before the
-  // first write, and puts the warning in the report and in a later error.
+  // materialize must call onPlaintext, and await it, before the first write,
+  // and carry the warning in the report and in a later error.
   const base = await tmpDir('enc-announce')
   const storage = join(base, 'vault')
   await initEncryptedAZ(storage)
@@ -1067,7 +1034,6 @@ test('F03: the in-process materialize announces the plaintext directory before t
       return { calls, onPlaintext: async (w) => calls.push({ w, secretWritten: await secretIn(face) }) }
     }
 
-    // materialize, success: the warning in the report, announced before a.md.
     const ok = join(base, 'mat-ok')
     const okRec = recorder(ok)
     const report = await materialize(v, ok, { onPlaintext: okRec.onPlaintext })
@@ -1075,7 +1041,6 @@ test('F03: the in-process materialize announces the plaintext directory before t
     assert.deepEqual(okRec.calls, [{ w: warning(ok), secretWritten: false }])
     assert.equal(await secretIn(ok), true)
 
-    // materialize, a failure after a.md: the error carries the warning.
     const face = await faceWithDirAtZ(join(base, 'partial-materialize'))
     const rec = recorder(face)
     await assert.rejects(
@@ -1092,7 +1057,6 @@ test('F03: the in-process materialize announces the plaintext directory before t
     await v.close()
   }
 
-  // An unencrypted vault: no warning, and no call.
   const plain = await Bundle.init(join(base, 'plain'))
   const calls = []
   const plainReport = await materialize(plain, join(base, 'plain-bundle'), { onPlaintext: (w) => calls.push(w) })
@@ -1106,7 +1070,6 @@ test('F03: auto-okf materialize prints the plaintext warning before the first pl
   const storage = join(base, 'vault')
   await initEncryptedAZ(storage)
 
-  // A failure after a.md: stderr starts with the warning, then the error.
   for (const [name, args] of [['materialize', (face) => ['materialize', storage, face]]]) {
     const face = await faceWithDirAtZ(join(base, `partial-${name}`))
     const r = await cli(args(face))
@@ -1142,8 +1105,6 @@ test('F03: auto-okf materialize prints the plaintext warning before the first pl
     assert.equal(stderr, plaintextLine(face), `${name}: the crash found no warning on stderr`)
   }
 })
-
-// ---------- tree hashes ----------
 
 /** A sha256 over every file under `root`, dot-files included: each path and its bytes. */
 async function treeHash(root) {
@@ -1188,7 +1149,7 @@ test('watch ingests a human edit in the foreground and exits on SIGINT', async (
   await mkdir(bundle, { recursive: true })
   await writeFile(join(bundle, 'note.md'), '---\ntype: note\ntitle: First\n---\nOriginal body.\n')
   await cli(['ingest', storage, bundle])
-  await cli(['materialize', storage, bundle]) // stamp _id/_rev so the edit diffs cleanly
+  await cli(['materialize', storage, bundle]) // stamps _id and _rev, so the edit diffs cleanly
 
   const child = spawn('node', [BIN, 'watch', storage, bundle], { cwd: ROOT })
   let log = ''
@@ -1207,15 +1168,15 @@ test('watch ingests a human edit in the foreground and exits on SIGINT', async (
   assert.equal(code, 0, `clean shutdown, log:\n${log}`)
 })
 
-// ---------- D-055 Q1: ingest and watch name each op that core rejects ----------
+// ---------- ingest and watch name each op that core rejects ----------
 
 const REJECTED_LINE = /^error: other\/x\.md: core rejected its set-body op \(policy-namespace\), and the file stays pending$/m
 
 /**
- * A vault whose writer may write under team/ only, and its face. other/x
- * predates the policy, and the face holds a human edit of its body, so core
- * rejects the set-body of that edit policy-namespace. team/y.md is a new
- * file that ingests.
+ * A vault whose policy lets the writer write under team/ only, and its face.
+ * other/x predates the policy, and the face holds a human edit of its body,
+ * so core rejects the set-body of that edit as policy-namespace. team/y.md is
+ * a new file that ingests.
  */
 async function rejectingFace(base) {
   const storage = join(base, 'vault')
@@ -1268,8 +1229,7 @@ test('watch prints each op that core rejects, by name, and keeps running (D-055 
 })
 
 test('ingest --confirm-deletes names a delete that core rejects and exits 1; the next ingest retries the delete (G3-P8 F02)', async () => {
-  // Before the fix, ingest printed the rejected delete as ingested, exited
-  // 0 and dropped the manifest entry, so no later ingest retried it.
+  // If ingest drops the manifest entry on a rejected delete, no later ingest retries it.
   const { storage, bundle } = await rejectingFace(await tmpDir('ingest-delete-rejected'))
   await rm(join(bundle, 'other', 'x.md'))
   const ing = await cli(['ingest', storage, bundle, '--confirm-deletes'])
@@ -1278,7 +1238,7 @@ test('ingest --confirm-deletes names a delete that core rejects and exits 1; the
   assert.doesNotMatch(ing.stdout, /ingested other\/x\.md/)
   assert.match(ing.stdout, /ingested team\/y\.md: create-concept/, 'the sibling still ingested')
 
-  // The writer may write anywhere again: the next ingest retries the delete.
+  // With the policy lifted, the next ingest retries the delete.
   const v = await Bundle.open(storage)
   let id
   try {
@@ -1302,9 +1262,9 @@ test('ingest --confirm-deletes names a delete that core rejects and exits 1; the
   }
 })
 
-// ---------- T24: auto-okf import <face-dir> <dir> ----------
+// ---------- auto-okf import <face-dir> <dir> ----------
 
-/** Every file under `dir` whose bytes hold `plain`, as relative paths: what an encrypted vault must never hold. */
+/** Every file under `dir` whose bytes hold `plain`, as relative paths. */
 async function plaintextFiles(dir, plain) {
   const hits = []
   for (const e of await readdir(dir, { recursive: true, withFileTypes: true })) {
@@ -1388,16 +1348,14 @@ test('T24: auto-okf import carries --metadata and records --predecessor in the n
     await nu.close()
   }
 
-  // Without --metadata the new vault takes the default maxOpBytes, and the
-  // preflight refuses the 100 KB body by name. The new directory is removed.
+  // Without --metadata the new vault takes the default maxOpBytes, so the
+  // preflight refuses the 100 KB body.
   const bare = await cli(['import', join(base, 'face'), join(base, 'bare')])
   assert.equal(bare.code, 1, bare.stdout + bare.stderr)
   assert.match(bare.stderr, /^auto-okf import: IMPORT_OVERSIZE: big\/report\.md: its set-body op is \d+ bytes encoded; maxOpBytes is 65536$/m)
   assert.deepEqual(await entries(base), ['face', 'new', 'old'])
 
-  // A --metadata file that is missing, or not metadata of this release,
-  // is refused by name before import writes anything. Version 3 is a
-  // version that no release wrote (RAILS 22b, D-060 F18).
+  // Version 3 is a metadata version that no release wrote.
   await writeFile(join(base, 'v3.json'), JSON.stringify({ ...old, version: 3 }))
   for (const [file, message] of [
     [join(base, 'missing.json'), /^auto-okf import: --metadata \S+missing\.json: no such file$/m],
@@ -1418,8 +1376,7 @@ test('T24: auto-okf import --encryption-key makes a vault whose files hold no pl
   assert.equal(r.code, 0, r.stdout + r.stderr)
   assert.equal(r.stderr, '', 'import reads plaintext and writes none, so it warns about nothing')
   assert.equal((await pinned(out)).encrypted, true)
-  // No file of the new vault holds the body or the concept path, not only
-  // the cores (D-047 F01: a side file in an encrypted directory leaked paths).
+  // Every file of the new vault, not only the cores: a side file can leak paths.
   assert.deepEqual({ body: await plaintextFiles(out, SECRET), path: await plaintextFiles(out, 'secret/plan') }, { body: [], path: [] })
   const nu = await Bundle.open(out)
   try {
@@ -1428,8 +1385,7 @@ test('T24: auto-okf import --encryption-key makes a vault whose files hold no pl
     await nu.close()
   }
 
-  // The control: the same face, no key. Its files and its raw blocks hold
-  // the plaintext, so the checks above can see it.
+  // The control shows that the checks above can see plaintext.
   const ctl = join(base, 'plain')
   const c = await cli(['import', join(base, 'face'), ctl])
   assert.equal(c.code, 0, c.stdout + c.stderr)
@@ -1463,7 +1419,7 @@ test('T24: auto-okf import refuses by name before it writes: a pinned or non-emp
   const copy = `shared/note.conflict-${createHash('sha256').update(y).digest('hex').slice(0, 8)}.md`
   const cases = [
     ['pinned', [face, join(base, 'pinned')], /^auto-okf import: IMPORT_DIR_NOT_EMPTY: \S+pinned is already a vault \(okf-vault\.json exists\)/m],
-    // s1.mjs K: a key never goes to an existing store (G16).
+    // a key never goes to an existing store
     ['pinned, with a key', [face, join(base, 'pinned'), '--encryption-key', NEW_KEY], /^auto-okf import: IMPORT_DIR_NOT_EMPTY: \S+pinned is already a vault/m],
     ['used', [face, join(base, 'used')], /^auto-okf import: IMPORT_DIR_NOT_EMPTY: \S+used is not empty \(keep\.txt\)/m],
     ['vault-ld', [face, join(base, 'sibling')], /^error: \S+sibling is a vault-ld vault \(vault-ld\.json present\); use autovault-ld, not auto-okf$/m],
@@ -1514,14 +1470,14 @@ test('T24: auto-okf import prints every difference and every warning, and exits 
   assert.match(r.stderr, /^notes: {7}2 read, 1 imported$/m)
   assert.match(r.stderr, /^auto-okf import: IMPORT_FIDELITY: /m)
   assert.match(r.stderr, /^ {2}missing notes\/a\.md$/m)
-  // The dot-path note is read and imported, so no difference names it (T14).
+  // The dot-path note is read and imported, so no difference names it.
   assert.ok(!r.stderr.includes('.drafts'), r.stderr)
   assert.deepEqual(await entries(base), ['face', 'old'], 'the failure left the new directory')
 })
 
 test('F02 (T24): the in-process import refuses a key that is not 32 bytes by name, false, empty and zero included, before it writes; and a factory that drops the key', async () => {
-  // D-029 F02: the store reads a false value as no key. import never reads
-  // a value that is not a key as no key.
+  // The store reads a false value as no key. import must refuse every value
+  // that is not a key.
   const base = await tmpDir('imp-badkey')
   await oldWithFace(base, seedSecret)
   const face = join(base, 'face')
@@ -1538,9 +1494,8 @@ test('F02 (T24): the in-process import refuses a key that is not 32 bytes by nam
   }
   assert.deepEqual(await entries(base), ['face', 'old'], 'a refusal created something')
 
-  // initBundle is injected. A factory that does not pass the key on gives
-  // an unencrypted vault. import reads its metadata before the first note,
-  // and removes the new directory.
+  // A factory that drops the key gives an unencrypted vault. import must read
+  // its metadata before the first note.
   const created = []
   const dropKey = async (dir, { encryptionKey, ...opts }) => {
     const v = await Bundle.init(dir, opts)
@@ -1560,9 +1515,8 @@ test('F02 (T24): the in-process import refuses a key that is not 32 bytes by nam
 })
 
 test('T24, decision 8: import refuses to make an unencrypted generation of an encrypted vault, by name, before it writes', async () => {
-  // The face of an encrypted vault is its plaintext export. --metadata says
-  // that the predecessor is encrypted, and a generation never makes an
-  // unencrypted copy of an encrypted vault, so import needs a key for it.
+  // --metadata says that the predecessor is encrypted. A generation never
+  // makes an unencrypted copy of an encrypted vault.
   const base = await tmpDir('imp-keyreq')
   await oldWithFace(base, seedSecret, { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
   const face = join(base, 'face')
@@ -1585,9 +1539,8 @@ test('T24, decision 8: import refuses to make an unencrypted generation of an en
 })
 
 test('F02 (D-060): materialize marks the face of an encrypted vault, and import of that face without a key refuses by name before it writes, without --metadata too', async () => {
-  // Before the fix, the face carried no mark of the encryption. An import
-  // without --metadata and without a key made a plaintext vault, exit 0,
-  // with nothing on stderr. Decision 8: no unencrypted copy, no opt-out flag.
+  // Without the mark, an import with no --metadata and no key makes a
+  // plaintext vault in silence. There is no opt-out flag.
   const base = await tmpDir('imp-mark')
   await oldWithFace(base, seedSecret, { encryptionKey: Buffer.from(ENC_KEY, 'hex') })
   const face = join(base, 'face')
@@ -1604,13 +1557,11 @@ test('F02 (D-060): materialize marks the face of an encrypted vault, and import 
   assert.deepEqual(await entries(base), ['face', 'old'], 'the refusal created something')
   assert.equal(await treeHash(face), before, 'the refusal changed the face')
 
-  // With a key, the import goes on, and the new vault holds no plaintext.
   const ok = await cli(['import', face, join(base, 'out'), '--encryption-key', NEW_KEY])
   assert.equal(ok.code, 0, ok.stdout + ok.stderr)
   assert.equal((await pinned(join(base, 'out'))).encrypted, true)
   assert.deepEqual(await plaintextFiles(join(base, 'out'), SECRET), [])
 
-  // The face of an unencrypted vault holds no mark, and its import needs no key.
   const plainBase = await tmpDir('imp-mark-plain')
   await oldWithFace(plainBase, seedSecret)
   assert.ok(!(await readdir(join(plainBase, 'face'))).includes('.okf-encrypted'))
@@ -1619,9 +1570,8 @@ test('F02 (D-060): materialize marks the face of an encrypted vault, and import 
 })
 
 test('F03 (D-060): auto-okf materialize exits 1 and names a path whose spelling folds together with another one, before an import', async () => {
-  // On APFS, the default file system of macOS, Notes/ and notes/ are one
-  // directory. Before the fix, materialize exited 3 with a notice for
-  // Notes/b.md, and the import gave the concept the path Notes/b.
+  // On a case-insensitive file system, Notes/ and notes/ are one directory,
+  // and the import gives notes/b the path Notes/b.
   const base = await tmpDir('mat-fold')
   const storage = join(base, 'vault')
   const v = await Bundle.init(storage)
@@ -1645,9 +1595,8 @@ test('F06 (D-060): auto-okf import refuses a note whose frontmatter holds no _id
 })
 
 test('F09 (D-060): the oversize line of ingest prints the encoded op size and the limit, so a body below the limit is never the error', async () => {
-  // The preflight measures the encoded set-body op (D-048 F02). Before the
-  // fix, the line printed the body size: "edge.md body is 4,000 bytes;
-  // maxOpBytes is 4,096", which calls a body below the limit too large.
+  // The preflight measures the encoded op. A line that prints the body size
+  // calls a body below the limit too large.
   const base = await tmpDir('oversize-op')
   const storage = join(base, 'vault')
   const bundle = join(base, 'bundle')

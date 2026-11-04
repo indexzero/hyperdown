@@ -1,21 +1,9 @@
-// Store scope (T21, T26, D-060 F12): the store loads without pnpm's hidden
-// hoist, and it pins autobee, corestore and hyperswarm exactly.
-//
-// pnpm links only the dependencies that a package declares. Two packages
-// in the store's tree require a package that they do not declare:
-//
-// - autobee@2.12.1 requires `hypercore-crypto` (index.js:11,
-//   lib/encoding.js:3, lib/encryption.js:3, lib/migrations.js:3) but
-//   declares it only in devDependencies (package.json:44).
-// - bogon@1.3.0 (hyperswarm -> hyperdht -> bogon) requires `b4a`
-//   (index.js:3) but does not declare it.
-//
-// Each require resolves only if the workspace hoists the package to a
-// node_modules directory above the package that requires it. This
-// workspace does not change their manifests. It hoists the two packages
-// publicly instead (`publicHoistPattern` in pnpm-workspace.yaml), so the
-// store does not depend on pnpm's hidden hoist (`hoist=true`, the
-// default).
+// pnpm links only the dependencies that a package declares. autobee
+// requires `hypercore-crypto` but declares it only in devDependencies.
+// bogon (hyperswarm -> hyperdht -> bogon) requires `b4a` and does not
+// declare it. The workspace hoists both publicly (`publicHoistPattern` in
+// pnpm-workspace.yaml), so neither require depends on pnpm's hidden hoist
+// (`hoist=true`, the default).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
@@ -26,8 +14,7 @@ import { fileURLToPath } from 'node:url'
 const PUBLIC = ['hypercore-crypto', 'b4a']
 const FIX = `Keep "publicHoistPattern: [${PUBLIC.join(', ')}]" in pnpm-workspace.yaml, then run pnpm install.`
 
-// autobee as the store loads it: resolved from @auto-okf/store, which
-// depends on it.
+// autobee as the store resolves it, from @auto-okf/store.
 const storeRequire = createRequire(new URL('../store/package.json', import.meta.url))
 const autobeeManifest = storeRequire.resolve('autobee/package.json')
 const autobeeRequire = createRequire(autobeeManifest)
@@ -74,12 +61,11 @@ for (const name of PUBLIC) {
   })
 }
 
-// The exact pins (T26). okf/DEVIATIONS.md records behaviour of autobee
-// 2.12.1 and corestore 7.16.1 that okf relies on, and the autobee README
-// does not document all of it. The ban table of Bundle.swarm() reads
-// hyperswarm 4.17.0 state that the hyperswarm README does not document
-// (D-060 F12). A later release, a patch release too, can change that
-// behaviour. So okf/store/package.json declares each version with no
+// The exact pins. okf/DEVIATIONS.md, "Substrate behaviour that okf relies
+// on", records autobee and corestore behaviour that their READMEs do not
+// document. The ban table of Bundle.swarm() reads hyperswarm state that
+// the hyperswarm README does not document. A patch release can change
+// that behaviour. So okf/store/package.json declares each version with no
 // range, and the store must resolve that version.
 const SUBSTRATE =
   'okf/DEVIATIONS.md, section "Substrate behaviour that okf relies on (autobee@2.12.1)", ' +

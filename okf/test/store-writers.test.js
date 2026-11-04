@@ -1,9 +1,7 @@
-// Store scope (okf SPEC §13, T4): writer add/remove round trip on real
-// autobee — §8 causal revocation (in-band clock rule, never
-// host.removeWriter positional), the seqAtRemoval cross-check on a
-// partitioned post-revocation op, the local revoked-append guard, and
-// cross-peer hash equality of the applied/rejected partition (I10). Also
-// isIndexer from gov/, and weight 0 for every writer (T5).
+// Writer add and remove on real autobee: causal revocation (SPEC §8), the
+// seqAtRemoval rule on a partitioned op, the local guard on a revoked
+// append, equal views on every peer (I10), isIndexer from gov/, and weight
+// 0 for every writer.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bundle, K, tmpDir, pair, until, sleep, converged } from './store-helpers.js'
@@ -20,7 +18,6 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
   })
   const bHex = b.localKey.toString('hex')
 
-  // add: in-log governance op from the genesis indexer
   await a.writers.add(b.localKey, { indexer: false })
   assert.ok(
     await until(async () => {
@@ -33,8 +30,8 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
   const rec = await a.val(K.govWriter(bHex))
   assert.deepEqual(rec, { indexer: false, namespacePrefixes: [], rateCeiling: null })
 
-  // b writes one accepted op; a folds it before revoking, so the
-  // remove-writer's clock cites b@0 (seqAtRemoval = 0)
+  // a folds one op of b before it revokes b, so the removal cites position
+  // 0 of b (seqAtRemoval 0).
   const { tag: id } = await b.createConcept('agents/b/note', 'note')
   assert.ok(
     await until(async () => {
@@ -44,7 +41,6 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
     'a folds b op before the removal'
   )
 
-  // partition b, revoke, let b append one more op while partitioned
   unpair()
   await a.writers.remove(b.localKey)
   await a.update()
@@ -55,9 +51,8 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
   const late = await b.setField(id, 'status', ['sneaky']) // b has not folded the removal yet
   assert.equal(late.seq, 1)
 
-  // heal: the post-revocation op linearizes on BOTH peers and is rejected
-  // 'revoked' on both — host.removeWriter is never called, so every node
-  // keeps linearizing and the partition of applied/rejected is uniform
+  // The op after the revocation linearizes on both peers, because the store
+  // never calls host.removeWriter. Both peers reject it revoked.
   unpair = pair(a, b)
   assert.ok(
     await until(async () => {
@@ -74,7 +69,6 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
     assert.deepEqual((await v.val(K.cMeta(id))).created, id, 'pre-revocation op survives')
   }
 
-  // the revoked writer's own store refuses further local appends (§8)
   await b.update()
   await assert.rejects(
     () => b.setField(id, 'status', ['again']),
@@ -82,8 +76,6 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
     'local append refused once the revocation is folded'
   )
 
-  // governance from a non-indexer is rejected in apply on every peer:
-  // the removal of b did not go through b, and a stays the only indexer
   const aOthers = await a.val(K.govWriter(bHex))
   assert.equal(aOthers.indexer, false)
 })
@@ -123,12 +115,11 @@ test('addWriter carries the swarm key onto gov/writer, and refuses a bad one bef
 })
 
 test('an append from a writer that is not writable fails fast: VAULT_NOT_WRITABLE, autobee stays open, no seq used (G12)', async (t) => {
-  // Ported from ab2-review/scratch-A/s3-plain-fresh.mjs. autobee's own
-  // append refuses only a writer it records as removed (autobee
-  // index.js:1531-1533). A writer it never added got past that check. Its
-  // node then failed the local flush with 'Not writable'
-  // (lib/writers.js:633-638), autobee closed itself (index.js:669-690),
-  // and the append still resolved with a seq.
+  // autobee's own append refuses only a writer that it records as removed
+  // (`append` in index.js). A writer that it never added gets past that
+  // refusal. Its node then fails the local flush with 'Not writable' (`_next`
+  // in lib/writers.js), autobee closes itself (`_onError`), and the append
+  // still resolves with a seq.
   const a = await Bundle.init(await tmpDir('nw-a'))
   const { tag: id } = await a.createConcept('notes/x', 'note')
   const c = await Bundle.join(await tmpDir('nw-c'), a.key)
@@ -178,7 +169,6 @@ test('remove-writer that would leave zero indexers is rejected (§8)', async (t)
   await a.update()
   assert.deepEqual(await a.val(K.flagRejected(aHex, r.seq)), { reason: 'policy-governance' })
   assert.equal(await a.val(K.govRemoved(aHex)), undefined, 'genesis indexer not removed')
-  // vault remains governable
   const c = await a.createConcept('still/alive', 'note')
   await a.update()
   assert.ok(await a.val(K.cMeta(c.tag)))
@@ -221,9 +211,8 @@ test('setWriterPolicy round trip: namespace prefixes enforced at apply', async (
 })
 
 test('isIndexer answers from gov/: a live gov/writer record with indexer true', async (t) => {
-  // okf authority, never autobee's weight: a writer is an indexer while
-  // gov/writer/<self> says indexer: true and no gov/removed/<self> exists
-  // (the live-indexer rule of core apply).
+  // isIndexer reads gov/, never autobee's weight: indexer true in
+  // gov/writer/<self>, and no gov/removed/<self>.
   const aDir = await tmpDir('idx-a')
   const a = await Bundle.init(aDir)
   const b = await Bundle.join(await tmpDir('idx-b'), a.key)
@@ -256,7 +245,6 @@ test('isIndexer answers from gov/: a live gov/writer record with indexer true', 
   assert.equal(b.isIndexer, true, 'b: admitted as an indexer')
   assert.equal(c.isIndexer, false, 'c: admitted as a plain writer')
 
-  // revocation: gov/removed/<b> ends b's authority, and gov/writer/<b> stays
   await a.writers.remove(b.localKey)
   assert.ok(
     await until(async () => {
@@ -281,11 +269,11 @@ test('isIndexer answers from gov/: a live gov/writer record with indexer true', 
 })
 
 test('every writer stands at weight 0 on every peer, and no honest node carries approvals or a witness', async (t) => {
-  // T5 acceptance: bootstrapWeight 0 and every grant at weight 0. Nobody
-  // has standing, so no peer collects an approval (autobee index.js:1255),
-  // no append cites a witness (index.js:1546-1553), and nobody climbs.
-  // b admits c while genesis is offline, so a grant carried by a
-  // non-genesis indexer is covered too.
+  // bootstrapWeight 0 and every grant at weight 0. Nobody has standing, so
+  // no peer collects an approval (`_collectApprovals`), no append cites a
+  // witness (`append` in index.js), and nobody climbs. b admits c while
+  // genesis is offline, so a grant that a non-genesis indexer carries is
+  // covered too.
   const a = await Bundle.init(await tmpDir('w0-a'))
   const b = await Bundle.join(await tmpDir('w0-b'), a.key)
   const c = await Bundle.join(await tmpDir('w0-c'), a.key)
@@ -314,7 +302,7 @@ test('every writer stands at weight 0 on every peer, and no honest node carries 
     for (const w of [a, b, c]) assert.deepEqual(await sys(v, w.localKey), W0, 'weight 0 while genesis is offline')
   }
 
-  // genesis returns and appends; then b and c append again
+  // genesis returns and appends, and then b and c append again
   unpairAB = pair(a, b)
   assert.ok(await until(async () => (await a.update(), (await a.val(K.cMeta(c0.tag))) !== undefined)))
   const a1 = await a.createConcept('w0/a1', 'note')
@@ -351,19 +339,17 @@ test('a forged approval from genesis adds an autobee writer apply never granted,
   assert.ok(await until(async () => (await s.update(), (await s.val(K.cMeta(seed))) !== undefined)))
   assert.equal(s.writable, false)
 
-  // genesis (weight 0) appends a node whose approvals name s. Decision 5:
-  // the test forges the node through the local writer's appendLocal.
+  // genesis, at weight 0, appends a node whose approvals name s. The test
+  // forges the node through appendLocal of the local writer.
   forgeNext(a, { approvals: [{ key: s.localKey, weight: 2 }] })
   await a.createConcept('appr/carrier', 'note')
   assert.ok(await until(async () => (await s.update(), s.writable)), 'the approval alone makes s writable')
   for (const v of [a, s]) {
-    // the ceiling is capped at the carrier's weight, 0 (autobee lib/system.js:75)
+    // the ceiling is capped at the weight of the carrier, 0 (`System.addWriter`)
     assert.deepEqual(await sys(v, s.localKey), { weight: 0, maxWeight: 0, isRemoved: false })
     assert.equal(await v.val(K.govWriter(sHex)), undefined, 'okf never admitted s')
   }
 
-  // s's PLAIN ops reach okf apply (seen/ counts them) but change no c/
-  // key, because okf never admitted s; s's governance op is rejected
   const c0 = await s.createConcept('appr/from-s', 'note')
   const g1 = await s.addWriter(a.localKey, { indexer: true })
   const hash = await converged([a, s])
@@ -372,8 +358,8 @@ test('a forged approval from genesis adds an autobee writer apply never granted,
     assert.equal(await v.val(K.seen(sHex)), 2, 'both plain ops reached apply')
     assert.equal(await v.val(K.cMeta(c0.tag)), undefined, 'no c/ effect (I10)')
     assert.deepEqual(await v.val(K.flagRejected(sHex, g1.seq)), { reason: 'policy-governance' })
-    // the grant hint is at weight 0, so s's appends cite no witness and s
-    // stays at 0 (autobee index.js:1546-1553)
+    // the grant hint is at weight 0, so the appends of s cite no witness
+    // (`append` in index.js)
     assert.equal((await sys(v, s.localKey)).weight, 0, 's never climbs')
     assert.deepEqual(
       (await carriers(v)).map((n) => [n.writer, n.approvals, n.witness]),
@@ -414,21 +400,12 @@ test('a forged approval from a member at weight 0 also adds the key, at weight 0
 })
 
 test('HostAdapter returns the autobee grant, so core resumes only once the system records it, on every peer (G40)', async (t) => {
-  // The Bundle hands core apply a HostAdapter over autobee's host
-  // (store/lib/bundle.js), and core awaits host.addWriter for every
-  // AddWriter op it folds (core/lib/apply.js grant). autobee's addWriter
-  // reads the system before it records the grant (lib/system.js:66-92).
-  // autobee flushes the system right after apply returns
-  // (index.js:1447-1462), and the flush writes only the updates it reads
-  // when it starts (lib/system.js:417-470). So the adapter must return the
-  // grant's promise. A grant that core cannot await can land after the
-  // flush read its updates. Then the flush drops it, or a later flush
-  // writes it.
-  //
-  // A pass-through observer sits between core apply and the real
-  // HostAdapter of each peer. It hands every grant to the adapter, and when
-  // the value that core awaits settles, it records whether autobee's
-  // pending system updates hold the key (lib/system.js:321-356).
+  // Core awaits host.addWriter for every AddWriter it folds. autobee's
+  // addWriter reads the system before it records the grant
+  // (`System.addWriter`), and the system flush right after apply
+  // (`_applyBatch`) writes only the updates it reads when it starts
+  // (`System.flush`). So the adapter must return the promise of the grant,
+  // or the grant can land after the flush read its updates.
   const open = []
   let unpair = () => {}
   t.after(async () => {
@@ -440,6 +417,9 @@ test('HostAdapter returns the autobee grant, so core resumes only once the syste
   const b = await Bundle.join(await tmpDir('grant-b'), a.key)
   open.push(b)
   unpair = pair(a, b)
+  // A pass-through observer between core apply and the real HostAdapter.
+  // When the value that core awaits settles, it records whether autobee's
+  // pending system updates hold the key (`System.update`).
   const observed = { a: [], b: [] }
   for (const [name, v] of [['a', a], ['b', b]]) {
     const pinned = v._coreApply

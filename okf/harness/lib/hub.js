@@ -1,21 +1,17 @@
-// Fault-proxy hub: every replication byte between two writer processes
-// passes through here (assignment §1 "fault proxy"). Writer processes dial
-// the hub over local TCP, identify themselves with one JSON header line
-// ({ link, side }), and the hub pairs side 0 with side 1 of the same link
-// through two independent FaultDirection pipes (one per direction), each
-// supporting seeded fixed latency, jitter, probabilistic byte-stalls, a
-// byte-budget kill (kill-mid-frame), and hard cut (partition).
+// Every replication byte between two writers passes through the hub over
+// local TCP. A writer sends one JSON header line, { link, side }. The hub
+// pairs side 0 with side 1 of one link through two FaultDirection pipes.
 //
-// All stochastic decisions come from a per-direction child of the run's
-// seeded RNG; every fault decision is appended to the run log, so a run is
-// replayable from its seed.
+// Every random decision comes from the run's RNG and goes to the run log,
+// so a run replays from its seed.
 import net from 'node:net'
 
 class FaultDirection {
   /**
-   * @param from source socket   @param to destination socket
+   * @param from the source socket
+   * @param to the destination socket
    * @param profile { latencyMs, jitterMs, stallP, stallMs }
-   * @param rng seeded Rng child unique to this direction
+   * @param rng a seeded Rng child unique to this direction
    * @param log (line) => void
    */
   constructor(name, from, to, profile, rng, log) {
@@ -29,19 +25,18 @@ class FaultDirection {
     this.bytes = 0
     this._queue = [] // ordered { at, chunk }
     this._timer = null
-    this._lastAt = 0 // absolute-time delivery watermark (monotonic)
+    this._lastAt = 0 // the delivery time of the last queued chunk, never decreases
     this._destroyed = false
     this._ending = false // the source sent its FIN
     this._ended = false // the queue drained after the FIN, and `to` got its FIN
 
     from.on('data', (chunk) => this._enqueue(chunk))
     from.on('error', () => {})
-    // A FIN from the source is a graceful close of this direction only. The
-    // bytes already in the queue still go out, and then the destination
-    // gets a FIN. The hub's sockets are half-open, so the FIN does not end
-    // the hub's writes to the source: the other direction still drains its
-    // own queue into it. A close with no FIN before it (a reset, an error
-    // or a destroy) drops the queue at once, as cut() and kill-mid-frame do.
+    // A FIN from the source closes this direction only. The queued bytes
+    // still go out, then the destination gets a FIN. The sockets are
+    // half-open, so the other direction still drains into the source. A
+    // close with no FIN first (a reset, an error or a destroy) drops the
+    // queue at once, as cut() and kill-mid-frame do.
     from.once('end', () => {
       this._ending = true
       this._endIfDrained()
@@ -49,10 +44,9 @@ class FaultDirection {
     from.on('close', () => {
       if (!this._ending) this.destroy('peer-close')
     })
-    // The source is paused only while `to` drains, and a closed `to` never
-    // drains. A paused source with bytes in its read buffer hides its FIN,
-    // so it would never close. Resume it: its later bytes have nowhere to
-    // go, and its FIN can arrive.
+    // A paused source hides its FIN, and a closed `to` never emits 'drain'.
+    // So the source stays paused and never closes. Resume it so that its
+    // FIN can arrive.
     to.on('close', () => {
       if (!this._destroyed) from.resume()
     })
@@ -70,10 +64,9 @@ class FaultDirection {
       delay += p.stallMs
       this.log(`${this.name} stall +${p.stallMs}ms (chunk ${chunk.length}B)`)
     }
-    // Absolute-time watermark scheduling: latency is per-chunk but PIPELINED
-    // (real links do not serialize latency), so a burst of N chunks is
-    // spread by jitter around one delay, not compounded into N*delay of
-    // backlog. Delivery order is preserved because `at` is monotonic.
+    // Latency is per chunk but pipelined, as on a real link. A burst of N
+    // chunks spreads around one delay, not N delays. `at` never decreases,
+    // so the delivery order holds.
     const now = Date.now()
     const at = Math.max(now + delay, this._lastAt)
     this._lastAt = at
@@ -107,8 +100,8 @@ class FaultDirection {
       if (this.to.writable) {
         const ok = this.to.write(out)
         if (!ok && !this.from.isPaused()) {
-          // Destination backpressure: pause the source until `to` drains.
-          // One 'drain' resumes it, so wait for one, not one per write.
+          // Pause the source until `to` drains. One 'drain' event resumes
+          // it, so register one listener, not one per write.
           this.from.pause()
           this.to.once('drain', () => {
             if (!this._destroyed) this.from.resume()
@@ -120,8 +113,6 @@ class FaultDirection {
     this._schedule()
   }
 
-  // After the source's FIN, end the destination when the queue is empty.
-  // A socket closes when both of its directions have ended.
   _endIfDrained() {
     if (!this._ending || this._ended || this._destroyed || this._queue.length) return
     this._ended = true
@@ -141,8 +132,7 @@ class FaultDirection {
   }
 }
 
-// A header is one JSON object: { link: <string>, side: 0 or 1 }. Return
-// { link, side }, or { error } with the reason that the header is bad.
+// Returns { link, side }, or { error } with the reason that the header is bad.
 function parseHeader(bytes) {
   let header
   try {
@@ -160,18 +150,17 @@ function parseHeader(bytes) {
 
 export class FaultHub {
   /**
-   * @param rng run Rng (children are derived per link direction)
-   * @param defaultProfile applied to every link unless overridden
+   * @param rng the run Rng. The hub derives one child per link direction.
+   * @param defaultProfile the profile of every link without an override
    * @param log (line) => void
-   * @param opts.headerTimeoutMs a connection that sends no header line
-   *   within this time is destroyed. Default 10000 ms.
-   * @param opts.headerMaxBytes a header line longer than this, with or
-   *   without its newline, is destroyed. Default 1024 bytes.
-   * @param opts.pendingTimeoutMs a socket that has no partner within this
-   *   time after its header line is destroyed. Default 30000 ms.
-   * @param opts.pendingMaxBytes a socket that waits for its partner and
-   *   buffers more than this is destroyed. The bytes after its header line
-   *   count. Default 1048576 bytes (1 MiB).
+   * @param opts.headerTimeoutMs the hub destroys a connection that sends no
+   *   header line within this time. Default 10000 ms.
+   * @param opts.headerMaxBytes the hub destroys a connection whose header
+   *   line is longer than this, with or without its newline. Default 1024.
+   * @param opts.pendingTimeoutMs the hub destroys a socket that has no
+   *   partner within this time after its header line. Default 30000 ms.
+   * @param opts.pendingMaxBytes the hub destroys a waiting socket that
+   *   buffers more than this after its header line. Default 1048576.
    */
   constructor(
     rng,
@@ -191,10 +180,9 @@ export class FaultHub {
     this.links = new Map() // linkId -> { a2b, b2a, sockets, epoch }
     this.profiles = new Map() // linkId -> profile override
     this.epochs = new Map() // linkId -> connection epoch counter
-    // Half-open sockets: a FIN from a client does not end the hub's writes
-    // to that client. A paired direction ends its destination only after
-    // its own queue drains (FaultDirection). The hub ends an unpaired
-    // socket itself when it reads its FIN (_onConnection, _wait).
+    // Half-open: a FIN from a client does not end the hub's writes to it.
+    // FaultDirection, _onConnection and _wait each end their socket after
+    // its FIN.
     this.server = net.createServer({ allowHalfOpen: true }, (socket) => this._onConnection(socket))
   }
 
@@ -211,10 +199,9 @@ export class FaultHub {
     this.profiles.set(linkId, profile)
   }
 
-  // The header phase lasts from accept until the header line arrives. It
-  // has a deadline and a size limit. A connection that misses either, or
-  // sends a bad header, ends alone: the hub logs it and destroys only that
-  // socket. A FIN before the header line ends the socket. `conns` holds
+  // The header phase runs from accept to the header line, under a deadline
+  // and a size limit. A connection that misses either, or sends a bad
+  // header, dies alone: the hub destroys only that socket. `conns` holds
   // every socket until it closes, so close() finds a socket in any phase.
   _onConnection(socket) {
     socket.setNoDelay(true)
@@ -261,13 +248,10 @@ export class FaultHub {
     timer = setTimeout(() => reject(`no header line within ${this.headerTimeoutMs}ms`), this.headerTimeoutMs)
   }
 
-  // The newest registration of a link id wins. If the link is paired, the
-  // hub destroys the old pair first, so no byte of it passes a later cut().
-  // Two sockets that claim one side never pair: the hub destroys the older
-  // one, and the newer one waits. A client dials again because it takes
-  // its old socket to be dead. The hub can see that close late, or never
-  // for a half-dead socket. If the older socket won, it could block the
-  // link until then.
+  // The newest registration of a link wins. An old pair dies first, so a
+  // later cut() misses no byte of it. Two sockets on one side never pair:
+  // the hub destroys the older one. A client dials again when it takes its
+  // old socket to be dead, and the hub can see that close late or never.
   _register(link, side, socket, rest) {
     if (this.links.has(link)) this.cut(link, 're-register')
     let other = this.pending.get(link)
@@ -298,26 +282,15 @@ export class FaultHub {
     const entry = { a2b, b2a, sockets: [s0, s1], epoch }
     this.links.set(link, entry)
     this.log(`link ${link}#${epoch} paired (profile ${profile.name})`)
-    // The bytes glued to each header are real replication bytes. They go
-    // first, then the bytes the pending socket buffered while it waited, in
-    // order. Later bytes reach the 'data' listener of each FaultDirection.
+    // The bytes after each header line are replication bytes. They go
+    // first, then the bytes that the pending socket buffered, in order.
     for (const chunk of q0) if (chunk.length) a2b._enqueue(chunk)
     for (const chunk of q1) if (chunk.length) b2a._enqueue(chunk)
   }
 
-  // An unpaired socket waits in `pending`, and a 'data' listener buffers
-  // what it reads until its partner arrives. The listener keeps the bytes:
-  // a flowing socket with no listener drops them, and a replication
-  // initiator sends its first handshake message at once, so the link would
-  // pair dead. The listener also keeps the socket flowing: a paused socket
-  // defers 'end', so after a FIN it would never close and would stay
-  // pending, and the next socket for the link would pair with it. The
-  // socket is half-open, so after its FIN the hub ends it, and it closes.
-  //
-  // The wait has a deadline and the buffer has a byte limit, as the header
-  // phase has. A socket that misses either is destroyed, the hub logs it,
-  // and its pending entry goes. The hub never pauses a pending socket to
-  // limit its buffer, because a paused socket hides its FIN.
+  // An unpaired socket waits in `pending`. A 'data' listener buffers its
+  // bytes: a flowing socket with no listener drops them, and a replication
+  // initiator sends its handshake at once, so the link pairs dead.
   _wait(link, side, socket, rest) {
     const entry = { side, socket, chunks: [], bytes: 0, detach: null }
     const onGone = () => {
@@ -330,6 +303,9 @@ export class FaultHub {
       this.log(`link ${link} side ${side} destroyed while pending: ${reason}`)
       socket.destroy()
     }
+    // Never pause a pending socket to limit its buffer. A paused socket
+    // defers 'end', so it never closes, stays pending, and pairs with the
+    // next socket of the link. Destroy it over the limit instead.
     const onData = (chunk) => {
       entry.chunks.push(chunk)
       entry.bytes += chunk.length
@@ -373,8 +349,8 @@ export class FaultHub {
 
   async close() {
     for (const linkId of [...this.links.keys()]) this.cut(linkId, 'hub-close')
-    // This also destroys each pending socket, and each socket that has not
-    // sent its header line yet. Otherwise server.close() waits for them.
+    // This destroys pending sockets and sockets with no header line too.
+    // Otherwise server.close() waits for them.
     for (const socket of [...this.conns]) socket.destroy()
     for (const entry of this.pending.values()) entry.detach()
     this.pending.clear()

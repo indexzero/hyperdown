@@ -1,22 +1,14 @@
-// Writer process (okf harness §1: "real processes, not in-process fakes").
-// One OS process per writer, its own Corestore directory, driven by the
-// controller over the child_process fork IPC channel. Replication never
-// touches public DHT infra: every link dials the controller's fault-proxy
-// hub over local TCP (see hub.js).
-//
-// This is the vault-ld harness writer retargeted to speak the auto-okf op
-// vocabulary over a REAL @auto-okf/store Bundle (autobee + corestore on
-// disk). The command surface is unchanged (init/join/open, call/append/
-// appendRaw, hash, dump, link/unlink for pause/resume replication, crash =
-// SIGKILL, restart = respawn) — only the imported store/faces and the op
-// helpers differ.
+// The writer process: one OS process per writer, with its own corestore
+// directory. The controller drives it over the child_process fork IPC
+// channel. Every replication link dials the controller's fault proxy over
+// local TCP (hub.js), never the DHT.
 import net from 'node:net'
 import { Bundle } from '../../store/index.js'
 import { materialize, createIngestWatcher, wanted, importFace } from '../../faces/index.js'
 
 let vault = null
 const links = new Map() // linkId -> { socket, stream }
-const errors = [] // forwarded autobee/vault 'error' events (e.g. revocation teardown)
+const errors = [] // the 'error' events that the vault emitted
 
 process.on('uncaughtException', (err) => {
   errors.push(`uncaught: ${err.stack || err}`)
@@ -31,7 +23,7 @@ function hex(buf) {
   return buf ? Buffer.from(buf).toString('hex') : null
 }
 
-/** Rehydrate { __hex: '...' } markers into Buffers (op payloads). */
+/** Turn { __hex } markers back into Buffers. The inverse of sanitize. */
 function reviveBuffers(v) {
   if (v === null || typeof v !== 'object') return v
   if (typeof v.__hex === 'string') return Buffer.from(v.__hex, 'hex')
@@ -68,16 +60,15 @@ const handlers = {
     return info()
   },
 
-  /** Generic vault method call: call {method, args}. Buffers as {__hex}. */
+  /** Call any vault method. Buffers travel as { __hex } in both directions. */
   async call({ method, args = [] }) {
     const out = await vault[method](...args.map(reviveBuffers))
     return sanitize(out)
   },
 
   /**
-   * §3 op append. The auto-okf tag/opId is a HEX STRING (writerKeyHex ‖
-   * seqHex), not a Buffer — pass it through verbatim (the minting
-   * create-concept's tag is the concept _id the scenarios track).
+   * The tag is a hex string, not a Buffer, so it passes as is. For a
+   * minting create-concept the tag is the `_id` of the concept.
    */
   async append({ type, payload = {} }) {
     const res = await vault.append(type, reviveBuffers(payload))
@@ -85,9 +76,9 @@ const handlers = {
   },
 
   /**
-   * Poison-op path: append raw bytes, bypassing the op encoder. Like
-   * Bundle.append, it refuses a writer that autobee has not added: a plain
-   * append from such a writer would close autobee (G12).
+   * Append raw bytes without the op encoder. Like Bundle.append, it refuses
+   * a writer that autobee has not added. A plain append from such a writer
+   * closes autobee.
    */
   async appendRaw({ hexBytes }) {
     if (!vault.writable) throw new Error('VAULT_NOT_WRITABLE: appendRaw before admission')
@@ -95,7 +86,6 @@ const handlers = {
     return true
   },
 
-  /** snapshot-view-hash: full ordered range scan, single hash. */
   async hash() {
     return vault.hash()
   },
@@ -110,8 +100,8 @@ const handlers = {
   },
 
   async dump({ prefix = '' }) {
-    // A full dump must be an UNBOUNDED scan: K.range('') would miss most of
-    // the keyspace, so scan the whole view when prefix is empty.
+    // An empty prefix must scan the whole view. vault.scan('') uses
+    // K.range(''), which misses most of the keyspace.
     const out = {}
     if (prefix === '') {
       for await (const { key, value } of vault.view.createReadStream({})) {
@@ -123,7 +113,7 @@ const handlers = {
     return out
   },
 
-  /** Dial the fault-proxy hub and pipe a replication stream through it. */
+  /** Dial the fault proxy and pipe a replication stream through it. */
   async link({ linkId, port, side }) {
     if (links.has(linkId)) throw new Error(`link exists: ${linkId}`)
     const socket = net.connect(port, '127.0.0.1')
@@ -159,20 +149,15 @@ const handlers = {
     return errors.slice()
   },
 
-  /** S9: project the OKF face; returns the materialize report. */
   async materialize({ dir, opts = {} }) {
     return sanitize(await materialize(vault, dir, opts))
   },
 
-  /** wanted/ ranked demand index. */
   async wanted() {
     return sanitize(await wanted(vault))
   },
 
-  /**
-   * One-shot ingest scan of a face dir; records every op the watcher emits
-   * (and forwards it to the vault). Returns the recorded op list.
-   */
+  /** One ingest scan of a bundle directory. Returns the ops that the watcher appended. */
   async ingest({ dir }) {
     const recorded = []
     const w = await createIngestWatcher(vault, dir, {
@@ -191,13 +176,10 @@ const handlers = {
   },
 
   /**
-   * S9 generation (SPEC §10): materialize the live bundle into `faceDir`,
-   * then import that face into a FRESH vault at `vaultDir` with _id
-   * adoption, carrying the metadata and recording this vault's key as
-   * predecessorKey. The new (open) vault becomes this writer's vault.
-   * Returns the new vault's key so a second peer can join it. Any live
-   * replication links must be torn down by the controller before this is
-   * called.
+   * Materialize into `faceDir`, then import that bundle into a fresh vault
+   * at `vaultDir` with `_id` adoption. The new vault becomes this writer's
+   * vault. Returns its key so that a second peer can join it. The
+   * controller must tear down the replication links first. See SPEC §10.
    */
   async generation({ faceDir, vaultDir }) {
     for (const { socket, stream } of links.values()) {
@@ -210,9 +192,9 @@ const handlers = {
     const old = vault
     attach(res.vault)
     await old.close()
-    // A fresh peer MUST join with predecessorKey in its invite metadata, so
-    // it derives the SAME §10 per-generation namespace (else its writer
-    // cores derive under 'root' and it cannot converge).
+    // A joiner must put predecessorKey in its invite metadata. Otherwise
+    // its writer cores derive under 'root', not under the generation
+    // namespace, and it cannot converge.
     return {
       key: vault.keyHex,
       localKey: hex(vault.localKey),

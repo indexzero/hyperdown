@@ -1,8 +1,5 @@
-// Shared harness for the @auto-okf/faces tests: REAL @auto-okf/store vaults
-// (autobee + corestore on disk) driving materialize/ingest against REAL
-// bundle directories. All scratch lives under sslop/031/tmp/, unique per
-// run; handles are closed but files are NEVER deleted (post-mortem), and
-// nothing under sslop/ (or /tmp) is touched.
+// Shared harness for the faces tests, on real store vaults and real bundle
+// directories. Scratch stays on disk after a run, for a post-mortem.
 import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +13,6 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const RUN = `run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 let seq = 0
 
-/** Unique on-disk scratch dir under sslop/031/tmp/ (never cleaned up). */
 export async function tmpDir(name) {
   const dir = join(ROOT, 'sslop', '031', 'tmp', RUN, `${name}-${seq++}`)
   await mkdir(dir, { recursive: true })
@@ -34,7 +30,7 @@ export async function until(fn, ms = 20000, step = 50) {
   }
 }
 
-/** Direct replication stream pair between two vaults; returns unpair(). */
+/** A direct replication stream pair between two vaults. Returns the function that destroys it. */
 export function pair(a, b) {
   const s1 = a.replicate(true)
   const s2 = b.replicate(false)
@@ -47,7 +43,7 @@ export function pair(a, b) {
   }
 }
 
-/** Wait until every vault reports the same non-null view hash; returns it. */
+/** Wait until every vault reports the same view hash. Returns it, or null after `ms`. */
 export async function converged(vaults, ms = 30000) {
   let hashes = []
   const ok = await until(async () => {
@@ -73,7 +69,7 @@ export async function readBundle(root, rel = '', out = new Map()) {
   return out
 }
 
-/** Compare two bundle maps for byte-identity; returns a diff description or null. */
+/** Compare two bundle maps byte for byte. Returns the first difference, or null. */
 export function bundleDiff(a, b) {
   const keys = new Set([...a.keys(), ...b.keys()])
   for (const k of [...keys].sort()) {

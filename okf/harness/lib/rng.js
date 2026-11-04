@@ -1,6 +1,5 @@
-// Seeded PRNG (mulberry32) — every stochastic decision in the harness
-// (fault schedules, fuzz op generation, permutation orders) flows through
-// one of these, so a run is replayable from its logged seed.
+// A seeded PRNG (mulberry32). Every random decision in the harness comes
+// from one of these, so a run replays from its logged seed.
 
 export function mulberry32(seed) {
   let a = seed >>> 0
@@ -53,7 +52,7 @@ export class Rng {
     return out
   }
 
-  /** Derive an independent child stream (e.g. one per proxy direction). */
+  /** Derive an independent child stream, for example one per proxy direction. */
   child(label) {
     let h = 2166136261
     for (const c of String(label)) {
@@ -64,7 +63,7 @@ export class Rng {
   }
 }
 
-/** Seed from env (HARNESS_SEED) or the clock; always log it. */
+/** The seed from HARNESS_SEED, or else from the clock. The caller must log it. */
 export function resolveSeed() {
   const env = process.env.HARNESS_SEED
   if (env !== undefined && env !== '') return Number(env) >>> 0

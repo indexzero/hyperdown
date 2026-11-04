@@ -1,9 +1,6 @@
-// okf/examples/vlurp-library is executable documentation AND an I9 fixture:
-// this test RUNS the import script FULLY OFFLINE (committed fixture, no vlurp
-// binary, no network) into a fresh scratch dir and asserts the freshly
-// generated out/ is byte-identical to the committed tree and OKF-conformant,
-// and that re-import reused every _id (no duplicate concepts).
-// Regenerate with `node okf/examples/vlurp-library/import.js` — never hand-edit out/.
+// The committed out/ of okf/examples/vlurp-library is an I9 fixture. If this
+// test fails after an intended change, regenerate out/ with
+// `node okf/examples/vlurp-library/import.js` and commit it. Do not edit it by hand.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
@@ -19,7 +16,7 @@ test('vlurp-library regenerates the committed out/ byte-identically (I9), offlin
   await mkdir(scratch, { recursive: true })
   const outDir = join(scratch, 'out')
 
-  // OKF_VLURP_USE_BINARY is left unset: the run is guaranteed offline (fixture).
+  // OKF_VLURP_USE_BINARY stays unset, so the run is offline and reads the committed fixture.
   const { code, stdout, stderr } = await runScript(join(EXAMPLE, 'import.js'), {
     OKF_VLURP_OUT: outDir,
     OKF_VLURP_STAGING: join(scratch, 'staging'),

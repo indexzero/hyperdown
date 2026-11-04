@@ -1,23 +1,9 @@
-// Store scope (okf SPEC §13): the formats that state that this release is
-// v2, and the private swarm (T25).
-// - Hyperswarm replication on the auto-okf/2 topic. vault.swarm()
-//   announces the vault on sha256('auto-okf/2' ‖ db.discoveryKey), never
-//   on the bare discovery key, and feeds every admitted connection into
-//   db.replicate. A peer that announces on another topic never finds a
-//   vault of this release.
-// - The private swarm (T25). Every vault has a persistent swarm key, and
-//   its swarm firewall admits only the keys of metadata.swarm.allow and the
-//   swarm keys of live gov/writer records. The vault key is no capability
-//   to connect. swarm() joinPeers each listed key. A removed writer and a
-//   revoked peer lose their connections. The invite binds the creator's
-//   swarm key to genesisKey (metadata.swarm.genesis), so a removed creator
-//   loses its connections too (D-060 F01).
-// - Every swarm test runs on a local hyperdht testnet, which the vaults
-//   reach with `bootstrap` (no public DHT). hyperdht is a transitive dep of
-//   hyperswarm, resolved through the store package's module graph. Every
-//   wait has a deadline.
-// - Vault metadata version 2. A vault of this release records it, and
-//   loadMetadata refuses every other version.
+// swarm() announces the vault on sha256('auto-okf/2' ‖ db.discoveryKey),
+// never on the bare discovery key, and the firewall admits only
+// allowlisted swarm keys (SPEC §8). Every test runs on a local hyperdht
+// testnet, reached through `bootstrap`, so no test touches the public
+// DHT. hyperdht resolves through the module graph of the store package,
+// because the test declares no dependency of its own.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -85,7 +71,7 @@ function connected(vault, peer) {
 /**
  * The swarm key that a directory will have, before it holds a vault. A
  * pre-provisioned fleet needs each key before the creator writes the
- * invite. The derivation test below pins Bundle.readSwarmKey.
+ * invite.
  */
 async function provisionedKey(dir) {
   return hex(await Bundle.readSwarmKey(dir))
@@ -113,8 +99,6 @@ test('two vaults replicate over hyperswarm on the auto-okf/2 topic', { timeout: 
   const swarmA = await withDeadline(a.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'a.swarm()')
   const swarmB = await withDeadline(b.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'b.swarm()')
 
-  // Each swarm joins one topic only, the namespaced one, so the two peers
-  // can find each other on that topic only.
   const topic = namespacedTopic(a.discoveryKey)
   for (const [name, swarm] of [
     ['a', swarmA],
@@ -178,8 +162,8 @@ test('a stand-in peer on the bare discovery key never replicates with a namespac
   await a.addWriter(b.localKey, { swarmKey: b.swarmKey })
   await a.addWriter(c.localKey, { swarmKey: swarmC.keyPair.publicKey })
 
-  // c stands in for a peer of another release. It is a vault of this
-  // release, but it never calls swarm(): a raw Hyperswarm announces it on
+  // c takes the role of a peer of another release. It is a vault of this
+  // release, but it never calls swarm(). A raw Hyperswarm announces it on
   // the bare db.discoveryKey and feeds each connection to c, with the same
   // wiring as swarm().
   swarmC.on('connection', (conn) => {
@@ -200,7 +184,7 @@ test('a stand-in peer on the bare discovery key never replicates with a namespac
   assert.ok(await folds(b, id), 'b, a namespaced peer, folds the op')
 
   // The stand-in queries the DHT again, after both namespaced peers
-  // announced. It must get no connection and no op.
+  // announced.
   await withDeadline(swarmC.flush(), DEADLINE, 'stand-in flush')
   const leaked = await until(async () => {
     if (swarmC.connections.size > 0) return true
@@ -245,8 +229,9 @@ test('a peer with the vault key and the invite, and a swarm key outside the allo
   // Control: the member folds the op, so the DHT and the dial work.
   assert.ok(await folds(b, id), 'b, an admitted member, folds the op')
 
-  // The outsider's dial reaches a. With the firewall, a rejects the key, and
-  // hyperswarm bans it (index.js:315-319). Without it, a connection opens.
+  // The dial of the outsider reaches a. With the firewall, a rejects the
+  // key, and hyperswarm bans it (`_handleFirewall`). Without it, a
+  // connection opens.
   const dHex = hex(d.swarmKey)
   assert.ok(
     await until(() => seenA.bans.includes(dHex) || seenA.connections.includes(dHex), DEADLINE),
@@ -325,8 +310,6 @@ test("a removed writer's swarm key leaves the allowlist though a live record car
   assert.ok(await folds(b, id), 'b folds while it is a member')
   assert.ok(connected(a, b), 'a holds a connection to b')
 
-  // The removal of b takes its swarm key out, though the alias record is
-  // live and carries the same key.
   await a.removeWriter(b.localKey)
   await a.update()
   assert.equal(await a.val(K.govRemoved(hex(alias))), undefined, 'the alias record stays live')
@@ -336,7 +319,7 @@ test("a removed writer's swarm key leaves the allowlist though a live record car
   const leaked = await until(async () => connected(a, b) || (await folds(b, after, 50)), QUIET)
   assert.equal(leaked, false, 'b gets no new connection and no new op')
 
-  // A reopen reads the allowlist from gov/ again, and the key stays out.
+  // A reopen reads the allowlist from gov/ again.
   await a.close()
   a = await Bundle.open(dirA)
   const swarmA = await withDeadline(a.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'reopened a.swarm()')
@@ -381,17 +364,16 @@ test("a folded RemoveWriter of the creator cuts the creator's swarm key, which t
     'b folds its admission as an indexer, and the two connect'
   )
   // The genesis record carries no swarm key: core seeds it from the apply
-  // config alone. The invite binds the creator's swarm key instead.
+  // configuration alone. The invite binds the creator's swarm key instead.
   assert.equal((await b.val(K.govWriter(creator))).swarmKey, undefined, 'the genesis record holds no swarm key')
 
-  // The second indexer removes the creator. Its own fold cuts the creator.
   await b.removeWriter(a.localKey)
   await b.update()
   assert.notEqual(await b.val(K.govRemoved(creator)), undefined, 'the removal is in the view of b')
   assert.ok(await until(() => !connected(a, b) && !connected(b, a), DEADLINE), "b's fold destroys the creator's connection")
 
-  // The creator dials again: it joins the swarm anew, looks the topic up,
-  // and finds b. b's firewall refuses it.
+  // The creator leaves and joins again, so it looks the topic up and dials
+  // b anew.
   await withDeadline(a.leaveSwarm(), DEADLINE, 'a.leaveSwarm()')
   await withDeadline(a.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'a.swarm() again')
   assert.ok(await until(() => connected(a, b) || swarmB.peers.get(aHex)?.banned === true, DEADLINE), 'the creator reached b again')
@@ -402,7 +384,7 @@ test("a folded RemoveWriter of the creator cuts the creator's swarm key, which t
   assert.equal(swarmB.peers.get(aHex)?.banned, true, "b's firewall refused the creator")
 
   // A reopen reads the binding from the pinned invite and the removal from
-  // gov/ again, so the creator stays out.
+  // gov/ again.
   await b.close()
   b = await Bundle.open(dirB)
   const reopened = await withDeadline(b.swarm({ bootstrap: tn.bootstrap }), DEADLINE, 'reopened b.swarm()')
@@ -415,8 +397,7 @@ test("a folded RemoveWriter of the creator cuts the creator's swarm key, which t
   assert.equal(b.metadata.swarm.genesis, aHex, "the pinned invite binds the creator's swarm key to genesisKey")
 
   // A fresh joiner with the invite dials the creator first, because the
-  // invite lists it. Once it folds the removal, it stops: the same rule on
-  // the same pinned invite and the same gov/ cuts the creator.
+  // invite lists it. Once it folds the removal, it stops.
   c = await Bundle.join(await tmpDir('genesis-rm-c'), a.key, { metadata: a.metadata })
   await b.addWriter(c.localKey, { swarmKey: c.swarmKey })
   await b.update()
@@ -450,10 +431,10 @@ test('a flood of fresh swarm keys leaves at most 64 ban records, and the firewal
 
   // One attempt: an authenticated Noise handshake with the target under a
   // key that nobody admitted. hyperswarm bans the key that the firewall
-  // rejects (index.js:315-319), and keeps a banned record until it is
-  // unbanned (lib/peer-info.js:113-115). A rejected attempt gets no reply
-  // (hyperdht lib/server.js:258-261), so the test reads the target's ban
-  // events and then drops its own sockets.
+  // rejects (`_handleFirewall`), and keeps the record until `ban(false)`
+  // (lib/peer-info.js). A rejected attempt gets no reply (hyperdht
+  // `_addHandshake` in lib/server.js), so the test reads the ban events
+  // of the target and then drops its own sockets.
   const keyPairs = Array.from({ length: 2 * N + 8 }, () => DHT.keyPair())
   const keys = keyPairs.map((kp) => hex(kp.publicKey))
   const opened = []
@@ -479,8 +460,8 @@ test('a flood of fresh swarm keys leaves at most 64 ban records, and the firewal
   const lifted = keys.filter((k) => !swarm.peers.has(k))
   assert.ok(lifted.length >= keys.length - N, `the bound freed the records of ${lifted.length} keys`)
 
-  // The bound lifted the oldest bans, and the firewall still decides every
-  // attempt: each key whose record was freed is rejected, and banned, again.
+  // The bound freed the oldest records. The firewall still rejects each
+  // freed key, and bans it again.
   dialAll()
   assert.ok(await until(() => lifted.every((k) => bans(k) >= 2), DEADLINE), 'the firewall rejected each freed key again')
   await sleep(1000) // the attempts of the keys that are still banned
@@ -671,8 +652,8 @@ test('loadLocalAllow refuses a file that is not JSON by name, with its path; sav
   }
 
   // A write never changes the file in place: a reader sees the old list or
-  // the new one, whole. The new file comes in through a rename, so it is a
-  // new inode, and no temporary file stays.
+  // the new one, whole. The rename makes a new inode, and no temporary
+  // file stays.
   assert.deepEqual(await saveLocalAllow(dir, [k1]), [k1])
   const before = await stat(path)
   assert.deepEqual(await saveLocalAllow(dir, [k1, k2]), [k2, k1])

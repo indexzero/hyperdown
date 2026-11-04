@@ -1,27 +1,8 @@
-// G9b, the governance race, at store level (okf SPEC §8, AD7). Adopted
-// from the T1b spike, which ported the D-001 probes
-// probe-g9-vanish-config-c.mjs and probe-g9-vanish-config-c-phase2.mjs
-// (themselves from ab2-review/scratch-A/s4-race.mjs).
-//
-// The race: a and b are indexers. b revokes a while a and b are
-// partitioned. 100 ms later a admits c, and c appends Y, which links the
-// AddWriter. The RemoveWriter carries the earlier timestamp, so once the
-// partition heals it sorts first, and core rejects the AddWriter
-// 'revoked' on every peer. On a and c, that reorder flips an AddWriter
-// that core first accepted.
-//
-// Core grants c at weight 0 for every AddWriter op it folds, accepted or
-// rejected (§8). So c is an autobee writer on every peer in every order.
-// Y and c's next op Z reach apply on every peer, and core rejects them
-// 'not-a-writer'. If core granted only an accepted AddWriter, autobee
-// would keep Y in the systems of a and c (index.js:1430 records it before
-// canApply at :1447), and b would never see it (index.js:1359). Y would
-// vanish with no flag (I4). Z would then reach apply on a and c
-// (lib/writers.js:526-533, lib/system.js:249-250) and not on b, and the
-// views would split for good (I2, I3).
-//
-// Every wait has a deadline and fails the test when it passes. The test
-// reads db.system only to report state. It changes no autobee behaviour.
+// The governance race at store level (SPEC §8). b revokes a while a and b
+// are partitioned. 100 ms later a admits c, and c appends Y. The
+// RemoveWriter has the earlier timestamp, so after the heal it sorts first
+// and every peer rejects the AddWriter revoked. On a and c, that reorder
+// flips an AddWriter that core first accepted.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bundle, K, tmpDir, pair, sleep } from './store-helpers.js'
@@ -170,8 +151,11 @@ test('G9b: the governance race converges, and every op of the race writer leaves
       )
     }
 
-    // Every op of c before its re-admission leaves a flag on every peer
-    // (I4), and takes no effect.
+    // Core grants every AddWriter it folds, accepted or rejected, so Y
+    // reaches apply on every peer and leaves a flag. With a grant on accept
+    // only, autobee keeps Y in the systems of a and c, and b never sees
+    // it: Y vanishes with no flag (I4). okf/core/lib/apply.js
+    // holds the grant rule.
     const flagged = async (op) => {
       for (const v of peers) {
         assert.deepEqual(
@@ -220,8 +204,7 @@ test('G9b: the governance race converges, and every op of the race writer leaves
       assert.equal((await v.val(K.cPath(R.tag))).path, 'c/r', 'R takes effect')
     }
 
-    // A fresh peer syncs from nothing (store-level I3, as in
-    // store-restart.test.js 'fresh peer rebuild from the log').
+    // A fresh peer rebuilds from nothing (I3).
     const d = await Bundle.join(await tmpDir('race-d'), a.key)
     peers.push(d)
     link(b, d)

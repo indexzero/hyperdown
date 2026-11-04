@@ -1,10 +1,7 @@
-// Store scope (okf SPEC §13, T4): vault-metadata determinism — the pinned
-// document is byte-identical across peers (incl. the §8 appendOnly
-// constant and the §10 predecessorKey), the appendOnly constant is
-// immutable (unrepresentable off and refused at open when tampered), and
-// the per-generation writer namespace derives deterministically from
-// predecessorKey alone (T24). The rate group holds defaultCeiling only
-// (T6c), and limits and rate refuse a key that version 2 does not define.
+// Vault metadata: the pinned document is byte-identical across peers,
+// appendOnly cannot be false, the generation derives from predecessorKey
+// alone, and limits, rate and swarm are closed groups. The rules live in
+// okf/store/lib/metadata.js.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -38,17 +35,15 @@ test('vault metadata is deterministic and identical across peers', async (t) => 
     await b.close()
   })
 
-  // §8: the appendOnly constant, written at init, loaded at open
   assert.equal(a.metadata.appendOnly, true)
   assert.equal(b.metadata.appendOnly, true)
-  // §10: the generation chain is predecessorKey alone (root vault: null).
-  // The metadata holds no record of the predecessor's state (T24).
+  // The generation chain is predecessorKey alone (SPEC §10). The metadata
+  // holds no record of the state of the predecessor.
   assert.equal(a.metadata.predecessorKey, null)
   assert.ok(!('predecessorCheckpoint' in a.metadata), 'the metadata holds no predecessorCheckpoint')
   assert.equal(a.metadata.generation, ROOT_GENERATION)
   assert.equal(a.generation, ROOT_GENERATION)
 
-  // cross-peer pin: same canonical bytes, same hash, on disk and in memory
   assert.equal(metadataHash(a.metadata), metadataHash(b.metadata))
   assert.deepEqual(
     canonicalMetadataBytes(a.metadata),
@@ -59,7 +54,6 @@ test('vault metadata is deterministic and identical across peers', async (t) => 
   const onDiskB = await loadMetadata(join(dirB, METADATA_FILE))
   assert.equal(metadataHash(onDiskA), metadataHash(onDiskB))
 
-  // a peer that replicated is pinned to the same genesis/vault key
   assert.equal(b.metadata.genesisKey, a.keyHex)
   assert.ok(
     await until(async () => {
@@ -70,13 +64,11 @@ test('vault metadata is deterministic and identical across peers', async (t) => 
 })
 
 test('appendOnly is immutable: unrepresentable off, refused when tampered', async (t) => {
-  // §8: no input can construct an appendOnly:false document
   assert.throws(
     () => createMetadata({ genesisKey: 'a'.repeat(64), appendOnly: false }),
     /appendOnly/
   )
 
-  // a tampered on-disk document cannot open
   const dir = await tmpDir('meta-tamper')
   const v = await Bundle.init(dir)
   let reopened = null
@@ -99,18 +91,15 @@ test('a vault of this release writes rate with defaultCeiling as its only key', 
   const v = await Bundle.init(dir)
   await v.close()
 
-  // the pinned document on disk
   const path = join(dir, METADATA_FILE)
   const onDisk = JSON.parse(await readFile(path, 'utf8'))
   assert.deepEqual(onDisk.rate, { defaultCeiling: 1024 })
 
-  // it validates: loadMetadata and a reopen accept it as written
   assert.deepEqual(await loadMetadata(path), onDisk)
   const reopened = await Bundle.open(dir)
   t.after(() => reopened.close())
   assert.deepEqual(reopened.metadata.rate, { defaultCeiling: 1024 })
 
-  // core gets the same rate slice
   assert.deepEqual(applyConfig(reopened.metadata).rate, { defaultCeiling: 1024 })
 })
 
@@ -133,8 +122,6 @@ test('validateMetadata accepts a version 2 document whose rate holds only defaul
 test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys, and it is in the hash (T25)', () => {
   const k1 = '1'.repeat(64)
   const k2 = 'ab'.repeat(32)
-  // the default is an empty allowlist and no bound creator key, when the
-  // fields are absent
   assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64) }).swarm, { allow: [], genesis: null })
   assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64), swarm: {} }).swarm, { allow: [], genesis: null })
   // createMetadata lowercases and sorts, so peers pin the same bytes
@@ -149,7 +136,6 @@ test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys,
     'the allowlist is part of the pinned hash'
   )
 
-  // validateMetadata refuses every other shape
   const good = createMetadata({ genesisKey: 'a'.repeat(64) })
   const refused = [
     [{ ...good, swarm: undefined }, /metadata\.swarm must be an object/],
@@ -167,8 +153,7 @@ test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys,
     /metadata\.swarm\.extra is not a metadata version 2 field/,
     'no input can add a key to the group'
   )
-  // G3-P9 F04: a supplied list is never changed in silence. A value that is
-  // not an array, a bad key and a key listed twice are refused by name.
+  // A supplied list is never changed in silence.
   for (const [allow, re] of [
     ['not-an-array', /metadata\.swarm\.allow must be an array of swarm keys/],
     [null, /metadata\.swarm\.allow must be an array of swarm keys/],
@@ -195,7 +180,6 @@ test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys,
 test('swarm.genesis binds one key of the allowlist to genesisKey: null or a listed 64-hex key, and it is in the hash (D-060 F01)', async (t) => {
   const k1 = '1'.repeat(64)
   const k2 = 'ab'.repeat(32)
-  // createMetadata takes 32 bytes or 64 hex in any case, as for allow
   const bound = createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [k1, k2], genesis: k2.toUpperCase() } })
   assert.deepEqual(bound.swarm, { allow: [k1, k2], genesis: k2 })
   assert.deepEqual(
@@ -219,7 +203,7 @@ test('swarm.genesis binds one key of the allowlist to genesisKey: null or a list
     )
   }
 
-  // validateMetadata: version 2 always holds the key, null or a listed key
+  // validateMetadata requires the key: null or a listed key.
   const good = createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [k1] } })
   for (const [swarm, re] of [
     [{ allow: [k1] }, /metadata\.swarm\.genesis must be null or a 64-char lowercase-hex key/],
@@ -245,7 +229,6 @@ test('swarm.genesis binds one key of the allowlist to genesisKey: null or a list
   t.after(() => keyOnly.close())
   assert.equal(keyOnly.metadata.swarm.genesis, null)
 
-  // A creator refuses to bind any key but its own, by name, before it pins.
   const dirC = await tmpDir('genesis-bind-other')
   await assert.rejects(
     Bundle.init(dirC, { metadata: { swarm: { allow: [k1], genesis: k1 } } }),
@@ -291,7 +274,6 @@ test('Bundle.init refuses a malformed metadata.swarm.allow by name, before it ad
 })
 
 test('limits and rate are closed: a key that metadata version 2 does not define is refused', async (t) => {
-  // no input can add a key to either group
   assert.throws(
     () => createMetadata({ genesisKey: 'a'.repeat(64), rate: { extra: 1 } }),
     /metadata\.rate\.extra is not a metadata version 2 field/
@@ -301,7 +283,6 @@ test('limits and rate are closed: a key that metadata version 2 does not define 
     /metadata\.limits\.extra is not a metadata version 2 field/
   )
 
-  // a document on disk with an added rate key does not load or open
   const dir = await tmpDir('meta-closed')
   const v = await Bundle.init(dir)
   await v.close()
@@ -321,7 +302,6 @@ test('version 2 metadata is a closed document: an unknown top-level key, the del
     assert.throws(() => createMetadata({ genesisKey: 'a'.repeat(64), [key]: { seq: 0 } }), re, `createMetadata: ${key}`)
   }
 
-  // A document on disk with the key does not load or open.
   const re = /metadata\.predecessorCheckpoint is not a metadata version 2 field/
   const dir = await tmpDir('meta-top-closed')
   const v = await Bundle.init(dir)
@@ -332,7 +312,6 @@ test('version 2 metadata is a closed document: an unknown top-level key, the del
   await assert.rejects(() => loadMetadata(path), re)
   await assert.rejects(() => Bundle.open(dir), re)
 
-  // An invite with the key is refused, and nothing is pinned.
   const a = await Bundle.init(await tmpDir('meta-top-a'))
   t.after(() => a.close())
   const dirB = await tmpDir('meta-top-b')
@@ -374,8 +353,6 @@ test('a directory that joined with the vault key alone refuses the invite later,
 test('generation chain: predecessorKey alone pins a deterministic writer namespace (§10)', async (t) => {
   const predecessorKey = 'd'.repeat(64)
 
-  // the generation id is sha256 over the predecessor key bytes, and over
-  // nothing else (T24: the metadata holds no record of the predecessor's state)
   const e1 = generationId(predecessorKey)
   assert.equal(e1, createHash('sha256').update(Buffer.from(predecessorKey, 'hex')).digest('hex'))
   assert.equal(generationId(Buffer.from(predecessorKey, 'hex')), e1, 'a key given as bytes derives the same id')
@@ -383,15 +360,13 @@ test('generation chain: predecessorKey alone pins a deterministic writer namespa
   assert.notEqual(e1, ROOT_GENERATION)
   assert.equal(generationId(null), ROOT_GENERATION)
 
-  // a predecessorKey that is not a 64-hex key is refused
   assert.throws(
     () => createMetadata({ genesisKey: 'a'.repeat(64), predecessorKey: 'not-a-key' }),
     /metadata\.predecessorKey must be a 64-char lowercase-hex key/
   )
 
-  // a fresh vault records the key and derives its writer cores under the
-  // per-generation namespace: same directory, different generation → different vault
-  // (writer) key — the §10 keypair-freshness guarantee
+  // A new generation derives its writer cores under its own namespace, so
+  // the vault key differs (SPEC §10).
   const dir = await tmpDir('meta-generation')
   const genesisVault = await Bundle.init(dir)
   const genesisKey = genesisVault.keyHex
@@ -406,15 +381,12 @@ test('generation chain: predecessorKey alone pins a deterministic writer namespa
   assert.equal(next.generation, e1)
   assert.notEqual(next.keyHex, genesisKey)
 
-  // reopen from disk restores the same generation and key
   await next.close()
   const reopened = await Bundle.open(dir2)
   t.after(() => reopened.close())
   assert.equal(reopened.generation, e1)
   assert.equal(reopened.metadata.generation, e1)
 
-  // a pinned document whose generation does not derive from its
-  // predecessorKey does not load
   const path = join(dir2, METADATA_FILE)
   const doc = JSON.parse(await readFile(path, 'utf8'))
   doc.generation = generationId('e'.repeat(64))
@@ -423,15 +395,14 @@ test('generation chain: predecessorKey alone pins a deterministic writer namespa
 })
 
 test('same corestore directory, different generations → fresh writer keypairs (§10)', async (t) => {
-  // the hazard §10 names: an operator re-inits in a REUSED directory; the
-  // per-generation namespace must still yield a fresh local writer keypair
+  // An operator re-inits in a reused directory. The per-generation
+  // namespace must still give a fresh writer key pair (SPEC §10).
   const dir = await tmpDir('meta-reuse')
   const v1 = await Bundle.init(dir)
   const k1 = v1.keyHex
   await v1.close()
 
-  // simulate the generation cycle re-using the directory: remove the pinned
-  // metadata (operator archived the old vault), init with a predecessor
+  // The operator archived the old vault and removed the pinned metadata.
   const { rm } = await import('node:fs/promises')
   await rm(join(dir, METADATA_FILE))
   const v2 = await Bundle.init(dir, { metadata: { predecessorKey: k1 } })

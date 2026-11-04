@@ -1,7 +1,6 @@
-// Shared harness for the okf/examples/* determinism tests: run a committed
-// example script into a fresh scratch dir (never the committed out/) and
-// compare the freshly generated tree to the committed one, byte-for-byte
-// (I9). Scratch lives under sslop/035/tmp/, unique per run, never cleaned up.
+// Shared harness for the okf/examples/* tests: run an example script into a
+// fresh scratch directory, then compare its tree with the committed out/
+// byte for byte (I9). Scratch stays on disk after a run.
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { readFile, readdir } from 'node:fs/promises'
@@ -10,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-/** Run a node script with env overrides; resolves { code, stdout, stderr }. */
+/** Run a node script with extra env. Resolves { code, stdout, stderr }. */
 export function runScript(scriptPath, env = {}, timeout = 300000) {
   return new Promise((resolve) => {
     execFile(
@@ -22,7 +21,7 @@ export function runScript(scriptPath, env = {}, timeout = 300000) {
   })
 }
 
-/** Sorted rel -> sha256 map of every file under dir (byte identity). */
+/** A sorted map of relative path to sha256 for every file under dir. A missing dir gives an empty map. */
 export async function treeHashes(dir) {
   const out = new Map()
   await walk(dir, '', out)

@@ -1,14 +1,8 @@
-// Store scope (okf SPEC §13, T4): encryptionKey end to end (§8) — writer
-// cores, system and view encrypted at rest; reopen-from-disk needs no key
-// (autobee lib/boot.js:108-131 persists it in the local core's userData as
-// `autobee/encryption`); an invited peer holding the key replicates and
-// reads. autobee@2.12.1 encrypts the cores itself (lib/encryption.js). It
-// asks for its system and view cores at manifest version 3
-// (index.js:213-221, lib/constants.js:3), and its view encryption refuses
-// a view core below version 3 (lib/encryption.js:83-86). corestore honours
-// that per-core manifestVersion from 7.12.6 on, so 7.12.6 is the floor
-// under the exact pin 7.16.1 (okf/DEVIATIONS.md, "The pins, and the
-// corestore floor").
+// encryptionKey end to end. autobee stores the key in the user data of
+// the local core as `autobee/encryption` (lib/boot.js), so a reopen needs
+// no key. autobee's view encryption refuses a view core below manifest
+// version 3 (`AutobeeEncryption.encrypt`). okf/DEVIATIONS.md, "The pins,
+// and the corestore floor", says why.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -16,7 +10,7 @@ import { Bundle, K, tmpDir, pair, until, converged } from './store-helpers.js'
 
 const BODY = 'meet at dawn'
 
-/** A vault with one concept whose body is BODY, folded. */
+/** Writes one concept with the body BODY to `v`, and folds it. Returns the id. */
 async function withSecret(v) {
   const { tag: id } = await v.createConcept('secret/plan', 'plan')
   await v.setBody(id, null, BODY)
@@ -25,8 +19,8 @@ async function withSecret(v) {
 }
 
 /**
- * The blocks of `core` that hold `needle`: as stored (get({ raw: true })
- * returns the stored bytes, undecrypted), and decrypted.
+ * Counts the blocks of `core` that hold `needle`, as stored and decrypted.
+ * `get({ raw: true })` returns the stored bytes.
  */
 async function hits(core, needle) {
   const out = { raw: 0, decrypted: 0 }
@@ -39,9 +33,9 @@ async function hits(core, needle) {
 
 /**
  * The at-rest scan. Each core gets a needle that its plaintext blocks
- * hold. The system core never holds an op body: it holds writer records
- * keyed by the writer key, and system info that lists the heads
- * (autobee lib/system.js:417-460). So its needle is the writer key.
+ * hold. The system core holds no op body. It holds writer records keyed
+ * by the writer key, and the heads (System.flush in lib/system.js). So
+ * its needle is the writer key.
  */
 async function atRest(v) {
   const body = Buffer.from(BODY)
@@ -67,8 +61,8 @@ test('at rest: no stored block of the system, writer or view core holds plaintex
   assert.equal(plain.metadata.encrypted, false)
 
   const e = await atRest(enc)
-  // controls: decrypted, each core holds its needle, so the raw scan below
-  // looks for bytes that are there
+  // Control: the decrypted scan finds each needle, so the raw scan looks
+  // for bytes that are there.
   for (const name of ['system', 'writer', 'view']) {
     assert.ok(e[name].decrypted > 0, `control: the decrypted ${name} core holds its needle`)
   }
@@ -77,8 +71,7 @@ test('at rest: no stored block of the system, writer or view core holds plaintex
   assert.equal(e.view.raw, 0, 'no stored block of the view core holds the body')
   assert.equal(enc.db.bee.core.manifest.version, 3, 'view core at manifest v3 (autobee@2 view encryption)')
 
-  // the scan can fail: the stored blocks of an unencrypted vault hold each
-  // needle, the system core included
+  // Control: the same scan finds each needle in an unencrypted vault.
   const p = await atRest(plain)
   assert.ok(p.system.raw > 0, 'an unencrypted system core holds the writer key in its stored blocks')
   assert.ok(p.writer.raw > 0, 'an unencrypted writer core holds the body in its stored blocks')
@@ -102,7 +95,7 @@ test('encrypted vault: reopen from disk without the key, invited peer reads', as
   await a.close()
   open.delete(a)
 
-  // reopen WITHOUT passing the key: restored from the local core userData
+  // No key on the reopen.
   const a2 = await Bundle.open(dir)
   open.add(a2)
   assert.equal(await a2.snapshotHash(), before, 'reopened encrypted view is intact')
@@ -111,7 +104,6 @@ test('encrypted vault: reopen from disk without the key, invited peer reads', as
   const rev = await a2.val(K.cRev(id, head))
   assert.equal(rev.text, BODY)
 
-  // an invited peer holding the key converges and reads
   const b = await Bundle.join(await tmpDir('enc-b'), a2.key, { encryptionKey })
   open.add(b)
   unpair = pair(a2, b)

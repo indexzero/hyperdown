@@ -1,9 +1,6 @@
-// Fault profiles (assignment §2): every scenario runs at three profiles.
-// - clean:       0ms, no faults
-// - lossy:       200ms latency ± 150ms jitter, 5% per-chunk stalls
-// - partitioned: clean links, but scenarios write during an explicit
-//                partition and heal after (the partition schedule is the
-//                scenario's, not the link's)
+// Fault profiles. Every scenario runs at all three. `partitioned` has
+// clean links: the scenario, not the link, schedules the partition and
+// the heal.
 export const PROFILES = {
   clean: {
     name: 'clean',

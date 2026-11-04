@@ -1,9 +1,6 @@
-// okf/examples/slop-archive is executable documentation AND an I9 fixture:
-// this test RUNS the script into a fresh scratch dir and asserts the freshly
-// generated out/ is byte-identical to the committed tree and OKF-conformant,
-// and that the narrative demonstrates the append-only guarantee (tombstone +
-// recovery + zero byte-destroying ops).
-// Regenerate with `node okf/examples/slop-archive/archive.js` — never hand-edit out/.
+// The committed out/ of okf/examples/slop-archive is an I9 fixture. If this
+// test fails after an intended change, regenerate out/ with
+// `node okf/examples/slop-archive/archive.js` and commit it. Do not edit it by hand.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'

@@ -1,23 +1,13 @@
-// INDEPENDENT OKF v0.1 conformance checker (okf SPEC §9 acceptance; OKF
-// SPEC §9 conformance). Written from scratch against the OKF spec text — it
-// does NOT import @auto-okf/faces' emitter or parser, so a bug in the
-// emitter cannot mask itself. It parses frontmatter with the maintained
-// `yaml` package directly (parse-only) and checks the three OKF §9 rules:
-//
-//   1. Every non-reserved `.md` file has a parseable YAML frontmatter block.
-//   2. Every frontmatter block has a non-empty `type` field.
-//   3. Every reserved filename (index.md/log.md) follows §6/§7 structure.
-//
-// Returns { ok, violations: [{ file, rule, message }] }. A green result is
-// necessary for I9/acceptance but says nothing about determinism (that is a
-// separate byte-equality check in the suite).
+// An OKF v0.1 conformance checker for a bundle directory (OKF §9).
+// Do not import the parser or the emitter of @auto-okf/faces here. A bug in
+// the emitter then passes its own check.
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
-/** Recursively list every `.md` file (relative, forward-slash), ignoring dot-files. */
+/** Every `.md` file under root, as relative paths with forward slashes on every platform. */
 async function listMarkdown(root, rel = '', out = []) {
   const abs = rel === '' ? root : join(root, rel)
   for (const e of await readdir(abs, { withFileTypes: true })) {
@@ -46,6 +36,7 @@ function isReserved(rel) {
   return name === 'index.md' || name === 'log.md'
 }
 
+/** Returns { ok, violations: [{ file, rule, message }], files }. A pass says nothing about determinism. */
 export async function checkOkfConformance(root) {
   const violations = []
   const files = (await listMarkdown(root)).sort()
@@ -58,7 +49,6 @@ export async function checkOkfConformance(root) {
       else checkLog(rel, text, violations)
       continue
     }
-    // Rule 1: parseable YAML frontmatter block.
     const { frontmatter } = splitFrontmatter(text)
     if (frontmatter === null) {
       violations.push({ file: rel, rule: 1, message: 'no YAML frontmatter block' })
@@ -75,7 +65,6 @@ export async function checkOkfConformance(root) {
       violations.push({ file: rel, rule: 1, message: 'frontmatter is not a mapping' })
       continue
     }
-    // Rule 2: non-empty `type`.
     const type = fm.type
     if (typeof type !== 'string' || type.trim() === '') {
       violations.push({ file: rel, rule: 2, message: 'missing or empty `type`' })
@@ -85,7 +74,7 @@ export async function checkOkfConformance(root) {
   return { ok: violations.length === 0, violations, files }
 }
 
-/** OKF §6: index.md — frontmatter only at root (okf_version), section headings + bullets. */
+/** The index.md rules of OKF §6. */
 function checkIndex(rel, text, violations) {
   const isRoot = rel === 'index.md'
   const { frontmatter, body } = splitFrontmatter(text)
@@ -117,20 +106,19 @@ function checkIndex(rel, text, violations) {
     }
     if (line.trim() === '') continue
     if (/^\s*[*-]\s+/.test(line)) {
-      // §6 bullets carry a markdown link: [title](url)
       if (!/^\s*[*-]\s+\[[^\]]*\]\([^)]*\)/.test(line)) {
         violations.push({ file: rel, rule: 3, message: 'index bullet is not a markdown link: ' + line })
       }
       continue
     }
-    // any other non-empty content is tolerated by OKF §6 (loose), so ignore
+    // OKF §6 allows other content in an index, so it is not a violation.
   }
   if (!sawHeading) {
     violations.push({ file: rel, rule: 3, message: 'index.md has no section heading (OKF §6)' })
   }
 }
 
-/** OKF §7: log.md — a title, then `## YYYY-MM-DD` ISO date headings. */
+/** The log.md rules of OKF §7: a title, then ISO date headings. */
 function checkLog(rel, text, violations) {
   const { frontmatter, body } = splitFrontmatter(text)
   if (frontmatter !== null) {
@@ -155,7 +143,6 @@ function checkLog(rel, text, violations) {
     }
   }
   if (!sawTitle) violations.push({ file: rel, rule: 3, message: 'log.md has no title heading (OKF §7)' })
-  // A log with no dated entries is still structurally valid (empty history);
-  // sawDate is informational only.
+  // A log with no dated entry is valid (an empty history), so sawDate is not a rule.
   void sawDate
 }

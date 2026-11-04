@@ -1,15 +1,10 @@
-// Independent index-coherence checker (okf harness S10; SPEC §11 I8):
-// path/, link/, bl/, wanted/, wantedrank/ and revbybase/ are exactly
-// derivable from c/ at every quiescent point. This is an INDEPENDENT
-// reimplementation of the derivation and of the §9 link extraction — it
-// imports nothing from @auto-okf/* (the code under test). Escaping, the
-// wantedrank inv-count, and the markdown link extraction are all rewritten
-// here from SPEC §4/§7/§9 and cross-checked against the packages' READMEs.
-//
-// Given a full flat view dump ({ key: value }), rederives the six index
-// families from c/ alone and reports every discrepancy.
+// The index-coherence checker for I8: path/, link/, bl/, wanted/,
+// wantedrank/ and revbybase/ derive from c/ alone at every quiescent
+// point. This file must import nothing from @auto-okf/*, the code under
+// test. It reimplements the keyspace escaping, the wantedrank inverse
+// count and the link extraction. See SPEC §4, §9 and §11.
 
-// ---- §4 keyspace escaping (reimplemented) ----
+// Keyspace escaping. See SPEC §4.
 function esc(component) {
   return String(component).replace(/%/g, '%25').replace(/\//g, '%2F')
 }
@@ -20,14 +15,13 @@ function parseKey(key) {
   return key.split('/').map(unesc)
 }
 
-// wantedrank/<inv-count>/<path>: inv-count = (MAX - count), 16-digit padded,
-// MAX = 10^16 - 1 (reimplemented from §4).
+// wantedrank/<inv-count>/<path>. See SPEC §4.
 const WANTED_MAX = 10n ** 16n - 1n
 function invCount(count) {
   return String(WANTED_MAX - BigInt(count)).padStart(16, '0')
 }
 
-// ---- §9 markdown link extraction (reimplemented, restricted CommonMark) ----
+// Markdown link extraction, a restricted CommonMark subset. See SPEC §9.
 const SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/
 
 function nfc(s) {
@@ -39,7 +33,7 @@ function dirOf(path) {
   return i === -1 ? '' : String(path).slice(0, i)
 }
 
-/** Resolve `.`/`..` of target against baseDir; null if it escapes the root. */
+/** Resolve `.` and `..` of target against baseDir. Returns null if it escapes the root. */
 function resolveTarget(target, baseDir) {
   const segs = (baseDir ? baseDir.split('/') : []).concat(String(target).split('/'))
   const stack = []
@@ -55,7 +49,7 @@ function resolveTarget(target, baseDir) {
   return stack.join('/')
 }
 
-/** Normalize one raw destination per §9; null for citations/escapes/empty. */
+/** Normalize one raw destination. Returns null for a citation, an escape or an empty target. */
 function normalizeLinkTarget(raw, sourceDir) {
   let t = String(raw)
   if (t.startsWith('<') && t.endsWith('>')) t = t.slice(1, -1)
@@ -71,17 +65,16 @@ function normalizeLinkTarget(raw, sourceDir) {
 }
 
 /**
- * Extract resolved bundle-relative link targets from markdown body text.
- * Restricted (independent) CommonMark subset matching §9: skip fenced/
- * indented code and inline code spans; inline links + reference links; no
- * images, no autolinks. Faithful to core/lib/links.js on the harness's
- * (deliberately simple) body texts.
+ * Extract the resolved bundle-relative link targets of a markdown body.
+ * Skips fenced and indented code and inline code spans. Reads inline and
+ * reference links. Ignores images and autolinks. Matches core/lib/links.js
+ * on the simple bodies of the harness only.
  */
 function extractLinks(text, sourceDir = '') {
   const targets = new Set()
   if (!text) return targets
 
-  // 1. drop fenced code blocks and indented code lines
+  // fenced code blocks and indented code lines become blank lines
   const kept = []
   let fence = null
   for (const line of String(text).split('\n')) {
@@ -100,10 +93,10 @@ function extractLinks(text, sourceDir = '') {
   }
   let body = kept.join('\n')
 
-  // 2. blank inline code spans
+  // inline code spans
   body = body.replace(/(`+)[^`]*?\1/g, ' ')
 
-  // 3. reference definitions, then blank the definition lines
+  // reference definitions, then blank the definition lines
   const defs = new Map()
   const normLabel = (l) => String(l).trim().replace(/\s+/g, ' ').toLowerCase()
   for (const m of body.matchAll(/^ {0,3}\[([^\]]+)\]:[ \t]*(\S+)/gm)) {
@@ -117,13 +110,13 @@ function extractLinks(text, sourceDir = '') {
     if (t !== null) targets.add(t)
   }
 
-  // 4. inline links [text](dest "title"), images skipped
+  // inline links [text](dest "title")
   for (const m of body.matchAll(/(!?)\[([^\]]*)\]\(([^()\s]+)(?:[ \t]+"[^"]*")?\)/g)) {
     if (m[1] !== '!') add(m[3])
   }
   body = body.replace(/!?\[[^\]]*\]\([^()]*\)/g, ' ')
 
-  // 5. full and collapsed reference links
+  // full and collapsed reference links
   for (const m of body.matchAll(/(!?)\[([^\]]*)\]\[([^\]]*)\]/g)) {
     if (m[1] === '!') continue
     const t = defs.get(normLabel(m[3] === '' ? m[2] : m[3]))
@@ -131,7 +124,7 @@ function extractLinks(text, sourceDir = '') {
   }
   body = body.replace(/!?\[[^\]]*\]\[[^\]]*\]/g, ' ')
 
-  // 6. shortcut references
+  // shortcut references
   for (const m of body.matchAll(/(!?)\[([^\]]+)\]/g)) {
     if (m[1] === '!') continue
     const t = defs.get(normLabel(m[2]))
@@ -142,11 +135,11 @@ function extractLinks(text, sourceDir = '') {
 }
 
 /**
- * @param {object} dump  full flat view dump { key: value }
- * @returns {string[]}   violations (empty = coherent)
+ * @param {object} dump the full flat view dump { key: value }
+ * @returns {string[]} the violations. Empty means coherent.
  */
 export function checkCoherence(dump) {
-  // -- pass 1: collect per-concept state from c/ --
+  // pass 1: per-concept state from c/
   const concepts = new Map() // id -> { meta, path, body, revs: Map }
   for (const [key, value] of Object.entries(dump)) {
     if (!key.startsWith('c/')) continue
@@ -163,7 +156,7 @@ export function checkCoherence(dump) {
     else if (segs[2] === 'rev') c.revs.set(segs[3], value)
   }
 
-  // -- pass 2: derived families --
+  // pass 2: the derived families
   const expected = {
     revbybase: new Set(),
     path: new Map(), // key -> id
@@ -173,7 +166,7 @@ export function checkCoherence(dump) {
     wantedrank: new Map() // key -> count
   }
 
-  // revbybase/: every revision citing a non-null base
+  // revbybase/: every revision with a non-null base
   for (const [id, c] of concepts) {
     for (const [rh, rev] of c.revs) {
       if (rev && rev.base !== null && rev.base !== undefined) {
@@ -192,7 +185,7 @@ export function checkCoherence(dump) {
   }
   for (const [p, { id }] of claims) expected.path.set(`path/${esc(p)}`, id)
 
-  // link/ + bl/ + wanted/(+rank): live concepts' head-text extraction
+  // link/, bl/, wanted/ and wantedrank/: the links of each live head text
   const wantedCounts = new Map()
   for (const [id, c] of concepts) {
     if (!isLive(c) || c.body === undefined) continue
@@ -211,7 +204,7 @@ export function checkCoherence(dump) {
   }
   for (const [t, n] of wantedCounts) expected.wantedrank.set(`wantedrank/${invCount(n)}/${esc(t)}`, n)
 
-  // -- pass 3: compare with the actual dump --
+  // pass 3: compare with the dump
   const violations = []
   const setFamily = (prefix, expSet) => {
     const actual = new Set(Object.keys(dump).filter((k) => k.startsWith(prefix)))
@@ -223,7 +216,7 @@ export function checkCoherence(dump) {
   setFamily('wanted/', expected.wanted)
   setFamily('revbybase/', expected.revbybase)
 
-  // path/ (value-bearing)
+  // path/ carries a value
   const actualPath = new Set(Object.keys(dump).filter((k) => k.startsWith('path/')))
   for (const [k, id] of expected.path) {
     if (!(k in dump)) violations.push(`missing ${k}`)
@@ -231,7 +224,7 @@ export function checkCoherence(dump) {
   }
   for (const k of actualPath) if (!expected.path.has(k)) violations.push(`stray ${k}`)
 
-  // wantedrank/ (value-bearing count)
+  // wantedrank/ carries a count
   const actualRank = new Set(Object.keys(dump).filter((k) => k.startsWith('wantedrank/')))
   for (const [k, n] of expected.wantedrank) {
     if (!(k in dump)) violations.push(`missing ${k}`)

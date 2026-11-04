@@ -1,7 +1,6 @@
-// Store scope (okf SPEC §13, T4), I3 at store level: a vault reopened from
-// disk holds a view bit-identical to the pre-restart view, appends continue
-// with correct seq/clock continuity, and a fresh peer that rebuilds from
-// the replicated log converges to the same hash (rebuild equivalence).
+// Rebuild equivalence (I3) at store level: a vault reopened from disk
+// holds the same view, appends continue at the next position, and a fresh
+// peer that rebuilds from the log converges to the same hash.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Corestore from '../store/node_modules/corestore/index.js'
@@ -26,8 +25,8 @@ test('restart from disk: reopened view equals the pre-close view (I3)', async (t
   assert.equal(await a2.snapshotHash(), before, 'hash equality across restart')
   assert.deepEqual(Object.keys(await a2.view.dump('')), beforeKeys, 'same key set')
 
-  // still writable with correct seq continuity after restart (§8
-  // forged-clock: the self entry must equal the actual local position)
+  // The self entry of the clock must equal the position, or apply rejects
+  // the op forged-clock (SPEC §8).
   const r = await a2.setField(id, 'title', ['Back again'])
   assert.equal(r.seq, 6, 'seq continues from the persisted local core')
   await a2.update()
@@ -36,17 +35,11 @@ test('restart from disk: reopened view equals the pre-close view (I3)', async (t
 })
 
 test('an empty block at the tail of the local core takes a position, so the seq after restart skips it (§3, §8 forged-clock)', async (t) => {
-  // AD4: the seq of an op is its node's position in the local core,
-  // node.length - 1. An empty block takes a position and never reaches
-  // apply (autobee index.js:1444: only non-empty values reach apply). So
-  // after a restart, seen/<self> counts the ops that apply saw, and the
-  // next position is past the empty block. The first op after the restart
-  // must take that position, or every peer rejects it forged-clock.
-  //
-  // G13: the test does not imitate an autobee ack. okf's configuration
-  // never makes autobee append one (store-ordinal.test.js, G13). The test
-  // appends the empty block with the documented db.append, which any
-  // client that holds the vault's autobee can call.
+  // An empty block takes a position and never reaches apply, so after a
+  // restart the next position is past it. The first op after the restart
+  // must take that position, or every peer rejects it forged-clock. The
+  // test appends the empty block with db.append, not as an autobee ack,
+  // because okf's configuration never makes autobee append one.
   const dir = await tmpDir('restart-empty')
   const open = new Set()
   t.after(async () => {
@@ -72,25 +65,20 @@ test('an empty block at the tail of the local core takes a position, so the seq 
   assert.equal(r.seq, 3, 'the seq is the position of the node, past the empty block')
   assert.equal(a2.db.local.length, 4, 'the node is at position 3')
   await a2.update()
-  // Core keys a rejection by the node's position, not by the seq that the
-  // op claims (core/lib/apply.js reject). So check every rejection of self.
+  // Core keys a rejection by the position of the node, not by the seq that
+  // the op claims (core/lib/apply.js reject). So the test scans every
+  // rejection of self.
   assert.deepEqual(await a2.view.dump(K.flagPrefix('rejected', self)), {}, 'no op of self is rejected')
   assert.equal(await a2.val(K.seen(self)), 4, 'seen/<self> is the last position plus one')
   assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['After the empty block'])
 })
 
 test('a reopen folds every node that the local core holds before open resolves', async (t) => {
-  // Bundle.open runs db.update() before it resolves (store/lib/bundle.js
-  // _openInner), so the view is current when open resolves. A crash can
-  // leave a node in the local core that the stored boot record does not
-  // cover: autobee's drain writes the local nodes to the core
-  // (index.js:824) before it stores the boot record, `autobee/head` in the
-  // user data of the local core (index.js:841, :1492). The test simulates
-  // that crash. It puts back the boot record from before the last node,
-  // through the documented hypercore API of a closed store, as
-  // store-ordinal.test.js G10 does. Without the update() on open, autobee
-  // folds the node later in the background, and reads right after open
-  // miss it.
+  // Bundle.open runs db.update() before it resolves (`_openInner`).
+  // autobee's `_drain` writes the local nodes to the core before it stores
+  // the boot record (`_storeBoot`). So a crash can leave a node that the
+  // boot record does not cover. Without the update() on open, a read right
+  // after open misses that node.
   const dir = await tmpDir('reopen-fold')
   const open = new Set()
   t.after(async () => {
@@ -153,29 +141,15 @@ test('fresh peer rebuild from the log equals the restarted view (I3)', async (t)
   assert.deepEqual((await fresh.val(K.cField(id, 'title'))).values, ['Rebuild me'])
 })
 
-// ---------- D-047 F02: a restart during a heal ----------
+// ---------- a restart during a heal ----------
 
 const hex = (k) => k.toString('hex')
 
 test('a peer that closes during a heal, and reopens in a quiet vault, converges: open wakes each writer with a gov/writer record (D-047 F02)', { timeout: 120000 }, async (t) => {
-  // The port of the D-047 probe convergence/probe-c-stall-3.mjs (who=ac,
-  // bWrites=yes). b is away while a, b and c write. b reconnects, and it
-  // closes as soon as its own cores of a and c hold every new block, while
-  // its fold of them can still run. After the reopen, no peer writes.
-  //
-  // autobee restarts only the writers that are system heads, plus the boot
-  // hints since the last drain that applied hints (index.js:605-618,
-  // :853-875, :877-892). b's last node links the old heads of a and c, so
-  // neither is a head. a and c are caught up, so they announce no pending
-  // writer (autobee-wakeup index.js:19-23). b already holds the blocks, so
-  // no new length reaches it. Without a wakeup, b stays behind until
-  // somebody writes. Bundle._openInner calls the documented db.wakeup for
-  // each key with a gov/writer record (autobee README.md:165-167).
-  //
-  // The close races b's fold. The trials run at once, and under that load
-  // most of them close before the fold ends. Without the wakeup, the D-055
-  // probe sslop/D-055/probes/probe-par.mjs stalled 4, 3 and 4 of 4 trials,
-  // and with it 0 of 8. Four trials keep the load low for the other tests.
+  // b is away while a, b and c write. b reconnects and closes as soon as
+  // its cores of a and c hold every new block, while its fold can still
+  // run. After the reopen, no peer writes. The trials run at once, so most
+  // close before the fold ends. Without the wakeup, 3 or 4 of 4 stalled.
   const TRIALS = 4
   const N = 10
   const DEADLINE = 15000
@@ -244,6 +218,12 @@ test('a peer that closes during a heal, and reopens in a quiet vault, converges:
     await b.close()
     open.delete(b)
 
+    // autobee restarts only the writers that are system heads, plus recent
+    // boot hints (`_bootOnline`, `_applyWakeupHints`). The last node of b
+    // links the heads of a and c, so neither is a head, and a and c
+    // announce no pending writer (autobee-wakeup `onlookup`). So without
+    // the wakeup that Bundle._openInner sends for each gov/writer key, b
+    // stays behind until somebody writes.
     b = await Bundle.open(bdir)
     open.add(b)
     link(a, b)
@@ -264,14 +244,10 @@ test('a peer that closes during a heal, and reopens in a quiet vault, converges:
 })
 
 test('open wakes each key with a gov/writer record, and never a key that only seen/ holds (D-047 F02, G32)', { timeout: 60000 }, async (t) => {
-  // m is a member and no indexer. Core rejects m's AddWriter of j
-  // policy-governance, and grants j at weight 0 all the same (AD7). So the op
-  // of j reaches apply: a holds seen/<j>, and j has no gov/writer record. A
-  // junk key of G32 is such a key, and the open must not open a core for it.
-  // a's last node links the heads of m and j, so neither is a system head
-  // at the reopen, and autobee itself restarts neither (index.js:605-618).
-  // The test records each core that the store opens, through corestore's
-  // documented store.watch (corestore README.md:105-113).
+  // m is a member and no indexer, so core rejects its AddWriter of j
+  // policy-governance and grants j at weight 0 all the same. The op of j
+  // then reaches apply: a holds seen/<j>, and j has no gov/writer record.
+  // The open must not open a core for such a key.
   const adir = await tmpDir('wake-a')
   const a = await Bundle.init(adir)
   const m = await Bundle.join(await tmpDir('wake-m'), a.key)
@@ -289,14 +265,14 @@ test('open wakes each key with a gov/writer record, and never a key that only se
   const [mDk, jDk] = [m, j].map((v) => hex(v.db.local.discoveryKey))
   await a.writers.add(m.localKey)
   assert.ok(await until(async () => (await m.update(), m.writable)), 'm is admitted')
-  await m.writers.add(j.localKey) // rejected policy-governance, granted at weight 0 (AD7)
+  await m.writers.add(j.localKey) // rejected policy-governance, granted at weight 0
   assert.ok(await until(async () => (await j.update(), j.writable)), 'j is an autobee writer (positive control)')
   await j.createConcept('j/x', 'note')
   assert.ok(await until(async () => (await a.update(), (await a.val(K.seen(jHex))) === 1)), 'a folds the op of j')
   assert.deepEqual(await a.val(K.flagRejected(jHex, 0)), { reason: 'not-a-writer' })
   assert.notEqual(await a.val(K.govWriter(mHex)), undefined, 'm has a gov/writer record')
   assert.equal(await a.val(K.govWriter(jHex)), undefined, 'j has no gov/writer record')
-  await a.createConcept('a/last', 'note') // it links the heads of m and j
+  await a.createConcept('a/last', 'note') // links the heads of m and j, so autobee itself restarts neither
   await a.update()
   for (const un of unpairs) un()
   await a.close()

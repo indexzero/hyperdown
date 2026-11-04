@@ -1,7 +1,7 @@
-// Shared harness for the @auto-okf/store integration tests: REAL autobee +
-// corestore instances on disk (no MemView, no stubs). Test dirs are unique
-// per run under sslop/030/tmp/ (never /tmp, never cleaned up — handles are
-// closed, files are left for post-mortem).
+// The shared harness of the store tests: real autobee and corestore
+// instances on disk. Test directories are unique per run under
+// sslop/030/tmp/. Nothing deletes them, so a failed run leaves its files
+// for inspection.
 import { mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +23,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const RUN = `run-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 let seq = 0
 
-/** Unique on-disk scratch dir for one vault. */
+/** A unique scratch directory on disk for one vault. */
 export async function tmpDir(name) {
   const dir = join(ROOT, 'sslop', '030', 'tmp', RUN, `${name}-${seq++}`)
   await mkdir(dir, { recursive: true })
@@ -32,7 +32,7 @@ export async function tmpDir(name) {
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-/** Poll until fn() is truthy (returns false on timeout, never throws up). */
+/** Polls until fn() is truthy. Returns false at the deadline, and never throws. */
 export async function until(fn, ms = 20000, step = 50) {
   const t0 = Date.now()
   for (;;) {
@@ -43,9 +43,8 @@ export async function until(fn, ms = 20000, step = 50) {
 }
 
 /**
- * Direct replication stream pair between two vaults (autobee README:
- * `db1.replicate(true)` / `db2.replicate(false)`, pipe both ways).
- * Returns an unpair() that destroys both streams.
+ * A direct replication stream pair between two vaults. Returns a function
+ * that destroys both streams.
  */
 export function pair(a, b) {
   const s1 = a.replicate(true)
@@ -59,7 +58,7 @@ export function pair(a, b) {
   }
 }
 
-/** Wait for every vault to report the same non-null view hash; returns it. */
+/** Waits until every vault reports one view hash. Returns the hash, or null at the deadline. */
 export async function converged(vaults, ms = 30000) {
   let hashes = []
   const ok = await until(async () => {

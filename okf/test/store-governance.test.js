@@ -1,7 +1,4 @@
-// The governance helpers of the Bundle (okf SPEC §8, §13), on real autobee
-// and corestore instances: the key check before an append (D-047 F18), the
-// wait for open (D-047 N13), and the weight of the substrate grant (D-047
-// F08).
+// The governance helpers of Bundle on real autobee and corestore instances.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bundle, K, tmpDir, pair, until } from './store-helpers.js'
@@ -9,9 +6,9 @@ import { Bundle, K, tmpDir, pair, until } from './store-helpers.js'
 const hex = (k) => k.toString('hex')
 
 test('writers.add, writers.remove and writers.setPolicy refuse a key that is not 32 bytes or 64 hex characters, VAULT_BAD_WRITER_KEY, and append nothing (D-047 F18)', async (t) => {
-  // Before the fix, toKeyBuffer took any string as hex. A z-base-32 id,
-  // which is how hypercore names a core (db.local.id), decoded to no bytes,
-  // and the indexer's AddWriter of it wrote a phantom gov/writer record.
+  // A z-base-32 id, which is how hypercore names a core (db.local.id),
+  // decodes as hex to no bytes. If writers.add does not test the key, an
+  // AddWriter of such an id writes a phantom gov/writer record.
   const a = await Bundle.init(await tmpDir('badkey-a'))
   const b = await Bundle.join(await tmpDir('badkey-b'), a.key)
   t.after(async () => {
@@ -48,9 +45,8 @@ test('writers.add, writers.remove and writers.setPolicy refuse a key that is not
 })
 
 test('writers.setPolicy before open waits for open, and takes the default ceiling from the pinned metadata (D-047 N13)', async (t) => {
-  // The default rateCeiling comes from this.metadata, which open loads.
-  // Before the fix, setWriterPolicy read it before open, so a call before
-  // ready() threw a TypeError. Every other append helper waits for open.
+  // The default rateCeiling comes from the metadata, which open loads. A
+  // setPolicy that reads it before open throws a TypeError.
   const dir = await tmpDir('policy-before-open')
   const v = await Bundle.init(dir, { metadata: { rate: { defaultCeiling: 8 } } })
   const self = hex(v.localKey)
@@ -65,22 +61,12 @@ test('writers.setPolicy before open waits for open, and takes the default ceilin
 })
 
 test('an AddWriter grant leaves no pending promotion on any peer: HostAdapter grants at weight 0, not at autobee\'s default (D-047 F08)', async (t) => {
-  // autobee's host.addWriter defaults to isIndexer true and weight 2
-  // (lib/apply-calls.js:33). The carrier of the grant stands at weight 0,
-  // so autobee caps the effective weight and the ceiling at 0 at any asked
-  // weight (lib/system.js:75), and every weight still reads 0. A grant at
-  // the default weight still records a pending promotion to weight 2
-  // (lib/system.js:78). With M2 (bootstrapWeight back at its default), that
-  // brings back the G1 livelock (D-047 F08).
-  //
-  // No documented surface shows the promotion. autobee's README documents
-  // the instance API key, discoveryKey, id, local, view, bee, writable,
-  // isIndexer, append, update, updated, flush, replicate, wakeup, setLocal,
-  // setAcking and views, and the host API addWriter with isIndexer only. It
-  // documents no read of a weight, a ceiling or a pending promotion.
-  // db.isIndexer reads a ceiling of 2 or more, and the cap keeps the
-  // ceiling at 0. So the test reads autobee's system, and only reads it, as
-  // the attack tests do (attack-helpers.js sys()).
+  // autobee's host addWriter (lib/apply-calls.js) defaults to weight 2.
+  // The carrier stands at weight 0, so autobee caps every weight at 0, but
+  // a grant at the default weight still records a pending promotion to 2
+  // (System.addWriter, `pending`). That promotion brings back a livelock.
+  // No documented autobee surface shows the promotion, so the test reads
+  // db.system, as the attack tests do.
   const a = await Bundle.init(await tmpDir('grant-a'))
   const b = await Bundle.join(await tmpDir('grant-b'), a.key)
   const c = await Bundle.join(await tmpDir('grant-c'), a.key)

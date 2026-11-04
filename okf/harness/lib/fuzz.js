@@ -1,11 +1,8 @@
-// S10 fuzz engine (okf harness): seeded random op schedules across N writers
-// with random partition schedules — including malformed ops, oversized
-// paths, unknown op types, garbage bases, and adversarial _id mint attempts.
-// After every heal: the convergence hash (across peers) AND an INDEPENDENT
-// index-coherence check (path/, link/, bl/, wanted/, wantedrank/, revbybase/
-// derivable from c/ — coherence.js reimplements the checker, it never calls
-// the code under test). On failure the schedule is greedily shrunk to a
-// minimal repro and written to okf/test/regressions/ as a committed fixture.
+// The fuzz engine: seeded random op schedules across N writers with random
+// partitions, malformed ops included. After every heal it makes sure that
+// the peers converge and, independently, that the indexes cohere
+// (coherence.js). On failure it shrinks the schedule to a minimal repro
+// and writes it to okf/test/regressions/.
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,10 +12,9 @@ import { Rng } from './rng.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
-// Symbolic subjects: a fixed pool the generator references; each maps at
-// runtime to whatever _id gets minted (writer keys are random per run, so a
-// schedule must be id-agnostic to replay). Every subject's canonical path is
-// `notes/<subject>`, so body links (`/notes/<subject>`) resolve deterministically.
+// Symbolic subjects. Writer keys are random per run, so a schedule names a
+// subject, and the run maps it to the `_id` that it mints. The path of a
+// subject is `notes/<subject>`, so body links `/notes/<subject>` resolve.
 const SUBJECTS = ['alpha', 'beta', 'gamma', 'delta', 'home', 'a/b/c', 'wiki/x']
 
 const pathOf = (s) => `notes/${s}`
@@ -66,7 +62,7 @@ function randomHex(rng, n) {
   return s
 }
 
-/** Resolve (creating if needed) the id a subject maps to this run. */
+/** The id of a subject in this run. Creates the concept on first use. */
 async function ensure(state, writers, w, s) {
   if (state.ids.has(s)) return state.ids.get(s)
   const res = await writers[w].call('createConcept', pathOf(s), 'note')
@@ -79,8 +75,7 @@ async function execOp(state, writers, op) {
   try {
     switch (op.kind) {
       case 'create': {
-        // first create registers the subject; a repeat mints a colliding
-        // concept on the same path (exercises pathcollision)
+        // A repeat create mints a second concept on the same path, for pathcollision.
         if (!state.ids.has(op.s)) return await ensure(state, writers, op.w, op.s)
         return await w.call('createConcept', pathOf(op.s), 'note')
       }
@@ -109,7 +104,7 @@ async function execOp(state, writers, op) {
       case 'adversarial-id': {
         const id = op.mode === 'dup'
           ? (state.ids.get(op.s) || 'abcdef0123456789')
-          : (w.info.localKey + '5') // writerKey||seqHex shape → mint-collision-risk
+          : (w.info.localKey + '5') // the shape writerKey ‖ seqHex, for mint-collision-risk
         return await w.call('createConcept', pathOf(`${op.s}-adv`), 'note', { id })
       }
       case 'weird-path':
@@ -122,7 +117,7 @@ async function execOp(state, writers, op) {
 
 /**
  * Run one schedule against real writer processes.
- * @returns {null | { round, reason, detail }} first failure, or null
+ * @returns {null | { round, reason, detail }} the first failure, or null
  */
 export async function runSchedule(schedule, { profile } = {}) {
   const { ctl, writers } = await setupVaultCluster(`fuzz-${schedule.seed}`, schedule.writers, {
@@ -163,9 +158,9 @@ export async function runSchedule(schedule, { profile } = {}) {
 
 /**
  * Greedy shrink: drop rounds, then ops, then partitions, while the failure
- * still reproduces. `predicate(schedule) -> bool` defaults to running the
- * schedule against real processes; inject a synthetic predicate to unit-test
- * the shrink machinery without spawning anything.
+ * still reproduces. `predicate(schedule) -> bool` defaults to a run against
+ * real processes. Pass a synthetic predicate to test the shrink without
+ * spawning anything.
  */
 export async function shrinkSchedule(schedule, { profile, maxRuns = 40, predicate = null } = {}) {
   let best = schedule
@@ -203,7 +198,7 @@ export async function shrinkSchedule(schedule, { profile, maxRuns = 40, predicat
   return { schedule: best, runs }
 }
 
-/** Persist a shrunk failing schedule as a committed regression fixture. */
+/** Write a failing schedule as a regression fixture. */
 export async function saveRegression(schedule, failure) {
   const dir = join(ROOT, 'okf', 'test', 'regressions')
   await mkdir(dir, { recursive: true })

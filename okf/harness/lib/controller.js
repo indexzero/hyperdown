@@ -1,14 +1,6 @@
-// Test controller (okf harness, retargeted from /harness §1): spawns writer
-// processes, routes control commands over fork IPC, owns the fault-proxy
-// hub, provides barriers, partitions/heals, the convergence oracle, and
-// permutation replay by universe cloning (close all writers, copy their
-// corestore dirs, reopen the copies and heal links in a different order —
-// same writer keys, same cores, so view hashes are directly comparable
-// across clones).
-//
-// Format-blind infrastructure (hub/rng/profiles/quiesce/cloneUniverse) is
-// reused wholesale from the vault-ld harness; only the writer op vocabulary
-// (writer.js) and the scenarios are auto-okf-specific.
+// The test controller: spawns writer processes, drives them over fork IPC,
+// owns the fault proxy, and holds the convergence oracle (quiesce) and
+// permutation replay by universe cloning (cloneUniverse).
 import { fork } from 'node:child_process'
 import { mkdir, appendFile, cp, rm } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
@@ -130,13 +122,12 @@ export class WriterHandle {
     return this.cmd('errors')
   }
 
-  /** SIGKILL, no cleanup (crash). */
+  /** SIGKILL, no cleanup. */
   crash() {
     this.proc.kill('SIGKILL')
     return new Promise((r) => this.proc.once('exit', r))
   }
 
-  /** Respawn on the same directory (restart). */
   async restart() {
     await this.spawn()
     return this.open()
@@ -179,7 +170,7 @@ export class Controller {
     this.log(
       `run ${this.runId} seed=${this.seed} profile=${this.profile.name} hub=127.0.0.1:${this.hub.port}`
     )
-    // The seed line the report/replay instructions reference:
+    // The report and the replay instructions quote this line.
     console.log(`[harness] run=${this.runId} seed=${this.seed} profile=${this.profile.name}`)
     return this
   }
@@ -189,7 +180,6 @@ export class Controller {
     if (this.logStream) this.logStream.write(msg)
   }
 
-  /** Spawn a writer process with its own corestore dir under the run dir. */
   async spawn(name) {
     const dir = join(this.baseDir, name)
     await mkdir(dir, { recursive: true })
@@ -204,7 +194,6 @@ export class Controller {
     return [a.name, b.name].sort().join('|')
   }
 
-  /** Connect two writers through the fault proxy. */
   async connect(a, b, profile = null) {
     const pk = this.pairKey(a, b)
     if (this.links.has(pk)) return this.links.get(pk)
@@ -221,7 +210,6 @@ export class Controller {
     return entry
   }
 
-  /** Partition two writers (hard cut through the proxy + local teardown). */
   async disconnect(a, b) {
     const pk = this.pairKey(a, b)
     const entry = this.links.get(pk)
@@ -236,7 +224,7 @@ export class Controller {
     return true
   }
 
-  /** Forget links touching a writer (after a crash killed its sockets). */
+  /** Forget the links of a writer after a crash killed its sockets. */
   purgeLinks(w) {
     for (const [pk, entry] of [...this.links]) {
       if (entry.a === w || entry.b === w) {
@@ -246,7 +234,6 @@ export class Controller {
     }
   }
 
-  /** Fully connect a set of writers (mesh). */
   async connectAll(writers) {
     for (let i = 0; i < writers.length; i++) {
       for (let j = i + 1; j < writers.length; j++) {
@@ -255,21 +242,19 @@ export class Controller {
     }
   }
 
-  /** Sever every link crossing between the two groups. */
   async partition(groupA, groupB) {
     for (const a of groupA) for (const b of groupB) await this.disconnect(a, b)
   }
 
-  /** Barrier: run one command per writer, released simultaneously. */
   barrier(fns) {
     return Promise.all(fns.map((fn) => fn()))
   }
 
   /**
-   * Convergence oracle. Quiescence = every writer reports the same
-   * snapshot-view-hash on two consecutive rounds with an update() forced
-   * in between (so a wrong "synced" signal cannot make the check vacuous).
-   * Returns the hash, or throws with per-writer hashes on timeout.
+   * The convergence oracle. Quiescent means that every writer reports the
+   * same hash on two rounds in a row. One round is not enough: a wrong
+   * "synced" signal makes the oracle vacuous. Returns the hash, or throws
+   * with the hash of each writer on timeout.
    */
   async quiesce(writers, { timeout = quiesceTimeout(this.profile), step = 250 } = {}) {
     const t0 = Date.now()
@@ -291,10 +276,7 @@ export class Controller {
     )
   }
 
-  /**
-   * Key-by-key diff of two writers' full views (used to localize a
-   * divergence once quiesce fails).
-   */
+  /** Key-by-key diff of two full views, to localize a divergence after quiesce fails. */
   async diffViews(a, b) {
     const [da, db] = await Promise.all([a.dump(''), b.dump('')])
     const keys = new Set([...Object.keys(da), ...Object.keys(db)])
@@ -308,10 +290,10 @@ export class Controller {
   }
 
   /**
-   * Permutation replay by cloning: shut every writer down cleanly, copy
-   * all their directories into <run>/clones/<label>/, and reopen the
-   * copies in fresh processes. Same keys + same cores => hashes across
-   * clones of the same universe are directly comparable (I1/I2).
+   * Permutation replay by cloning: close every writer, copy its directory
+   * to <run>/clones/<label>/, and reopen the copies in fresh processes.
+   * The clones keep the keys and the cores, so their hashes compare with
+   * each other and with the originals.
    */
   async cloneUniverse(writers, label) {
     for (const w of writers) await w.cmd('close')
@@ -320,10 +302,10 @@ export class Controller {
       const dir = join(this.baseDir, 'clones', label, w.name)
       await mkdir(dirname(dir), { recursive: true })
       await cp(w.dir, dir, { recursive: true })
-      // hypercore-storage's CORESTORE device file detects copied dirs
-      // ("moved unsafely") via inode+xattr; clones are legitimate here
-      // because clone universes never cross-replicate, so the writer-fork
-      // hazard the guard exists for cannot arise. Fresh device file on open.
+      // hypercore-storage's CORESTORE device file detects a copied directory
+      // by inode and xattr ("moved unsafely"). Clone universes never
+      // replicate with each other, so the writer fork that the guard
+      // prevents cannot happen. Delete the file, and open makes a fresh one.
       await rm(join(dir, 'CORESTORE'), { force: true })
       const c = new WriterHandle(this, `${label}/${w.name}`, dir)
       await c.spawn()
@@ -358,7 +340,7 @@ export class Controller {
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-/** Poll until fn() is truthy; false on timeout, never throws. */
+/** Poll until fn() is truthy. Returns false on timeout and never throws. */
 export async function until(fn, ms = 30000, step = 100) {
   const t0 = Date.now()
   for (;;) {
