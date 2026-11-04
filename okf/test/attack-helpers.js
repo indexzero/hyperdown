@@ -1,26 +1,8 @@
-// Test-only attacker toolkit for the substrate attack suite
-// (store-substrate-attacks.test.js) and the writer tests. Adopted from the
-// T1 spike (D-003) without its configuration switch: the product has one
-// substrate configuration (store/lib/bundle.js), so every helper runs
-// against it.
-//
-// What an attacker may do here (decision 5): a test wraps the local
-// writer's `appendLocal` to forge the fields an honest client never sets:
-// approvals, a witness, a timestamp, a link set. That is a malicious
-// CLIENT, not a modified autobee. The forged node is a legal oplog node,
-// and every peer that reads it runs stock autobee@2.12.1. An outsider's
-// client also asks for an optimistic node and announces its own core over
-// the wakeup protocol (outsiderAppend, announce), which the Bundle never
-// does. A client that runs no part of autobee's drain writes the oplog
-// block straight to the core it owns (forgeRawNode). Nothing here changes
-// how a victim's autobee behaves: the other helpers only read, and
-// watchApply wraps okf's apply handler, not autobee. Product code never
-// does any of this.
-//
-// This file is also a child-process entry point (see the end): the G2
-// approval at a huge weight can exhaust a heap, so it runs in a child.
-//
-// Vaults live under the store tests' temp root (store-helpers.js tmpDir).
+// The attacker toolkit of the substrate attack suite and the writer tests.
+// The attacker is a malicious client, never a modified autobee. Each forged
+// node is a legal oplog node, and every peer that reads it runs stock
+// autobee. No helper changes the autobee of a victim. watchApply wraps the
+// apply handler of okf, not autobee.
 import { mkdir, appendFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dirname } from 'node:path'
@@ -33,26 +15,24 @@ import { Bundle, K, tmpDir, pair, until, sleep, converged } from './store-helper
 
 export { Bundle, K, tmpDir, pair, until, sleep, converged }
 
-// TEST-ONLY deep require, for forgeRawNode alone: the oplog codec of the
-// pinned release, read never written. It encodes the block that a client
-// which runs no part of autobee's drain writes to the core it owns. Nothing
-// in the product imports it (RAILS 22a), and it changes no autobee
-// behaviour on any peer: a victim decodes such a block with the same codec
-// (autobee lib/writers.js:572).
+// A test-only deep require, for forgeRawNode alone. The oplog codec of the
+// pinned release encodes the block that forgeRawNode writes. Nothing in the
+// product imports it. A victim decodes the block with the same codec
+// (`encoding.decodeOplog` in autobee `Writer._next`).
 const abRequire = createRequire(new URL('../store/package.json', import.meta.url))
 const abEncoding = abRequire('autobee/lib/encoding.js')
 
-// Keys are Buffers in this workspace (corestore/hypercore on node).
+// Keys are Buffers here (corestore and hypercore on node).
 export const hex = (k) => Buffer.from(k).toString('hex')
 
 /**
- * Forge the next local append of `v`. Pass any of `approvals`, `witness`,
- * `timestamp`, `links` and `hash`. An absent field keeps what the honest
- * client would send. One append only: the wrapper removes itself.
+ * Forge the next local append of `v`, one append only. `over` sets any of
+ * `approvals`, `witness`, `timestamp`, `links`, `optimistic` and `hash`. An
+ * absent field keeps the honest value.
  *
- * `hash: null` matters for a reorder attack. autobee appends a node at the
- * tip with no sort when the node's hash equals the receiver's system hash
- * and the node links every head (autobee index.js:1377-1384).
+ * `hash: null` enables a reorder. autobee appends a node at the tip with no
+ * sort (`prepareBatch`) when its hash equals the system hash of the
+ * receiver. It must also link every head.
  */
 export function forgeNext(v, over = {}) {
   const w = v.db.writers
@@ -75,29 +55,19 @@ export function forgeNext(v, over = {}) {
 }
 
 /**
- * Append one forged node as an outsider's client. The outsider is a Bundle
- * that no indexer admitted. The Bundle refuses its appends
- * (VAULT_NOT_WRITABLE) and never asks for an optimistic node, so the
- * outsider calls autobee's documented `db.append(buf, { optimistic: true
- * })` (autobee README.md:131-134) itself. `over` forges node fields
- * through forgeNext. It waits until the outsider's own core holds the
- * node, and returns that core length: the attack length that a positive
- * control checks.
+ * Append one forged node as the client of an outsider, a Bundle that no
+ * indexer admitted. The Bundle refuses its appends (VAULT_NOT_WRITABLE), so
+ * this helper calls `db.append(buf, { optimistic: true })` itself. `over`
+ * forges node fields through forgeNext. Returns the length of the outsider
+ * core once it holds the node: the attack length of the positive control.
  *
- * The outsider's own autobee runs with optimistic: false, so it never
- * applies its own node (autobee index.js:1357-1364). A writer that a peer
- * never applied is no system head there, so that peer never couples the
- * core to the wakeup protocol (lib/writers.js:504-516), and no other peer
- * hears of it. A test therefore sends the core with announce(), as a
- * modified client can.
+ * No peer hears of the core by itself. The outsider never applies its own
+ * node (`_bumpPendingWriters`), so no peer couples the core to the wakeup
+ * protocol (`Writer.update`). A test must send it with announce().
  *
- * Thus an outsider writes one node to its core, and no more. Its autobee
- * reads that node from the core again on each pass and drops it, so it
- * never gets to a second local node (lib/writers.js:560-621, :624-664).
- * A node whose witness or links cite a writer that the outsider's own
- * system does not hold never gets written either (lib/writers.js:673-722,
- * lib/system.js:32-36). In these cases this helper throws, so no test
- * can count a node that no core holds.
+ * An outsider writes one node, and no more (`Writer._next`). A node whose
+ * witness or links cite a writer outside the outsider's system is
+ * never written (`Writer._isLinked`). In both cases this helper throws.
  */
 export async function outsiderAppend(v, path, over = {}) {
   const self = hex(v.db.local.key)
@@ -121,23 +91,15 @@ export async function outsiderAppend(v, path, over = {}) {
  * core length. `over` sets any of `approvals`, `witness`, `links`,
  * `timestamp`, `hash`, `optimistic` and `value`.
  *
- * This models the adversary the security model defines: a client that
- * bypasses client libraries and appends arbitrary bytes to its own core. It
- * runs no part of autobee's drain, so two gates of a wrapped `appendLocal`
- * do not apply to it:
+ * This is the adversary of SECURITY_MODEL.md "The adversaries": a client
+ * that appends arbitrary bytes to its own core. It runs no part of the
+ * drain of autobee, so two gates of a wrapped `appendLocal` do not apply.
+ * The local flush gate refuses a node whose links are missing
+ * (`Writer._next`). The drain order folds a local node before it flushes it
+ * (`_bumpPendingWriters`, then `_flushLocal`). A block written here is
+ * durable first, whatever the fold does to the sender.
  *
- * - the local flush gate, which refuses to flush a node whose links are
- *   missing (autobee lib/writers.js:641-664),
- * - and the drain ORDER, which folds a local node (index.js:818) before it
- *   flushes it to the core (index.js:824). A node that kills the sender's
- *   own fold therefore never leaves the sender's core, while a block
- *   written here is durable first and replicates whatever the sender does
- *   next.
- *
- * The block is a legal oplog node of the pinned release, so a receiver
- * decodes it with stock autobee (lib/writers.js:571-572). Adopted from the
- * T1 spike (D-003 `forgeRawNode`, which measured the A9 missing-link
- * variant with it).
+ * A receiver decodes the block with stock autobee (`encoding.decodeOplog`).
  */
 export async function forgeRawNode(v, over = {}) {
   await v.db.local.ready()
@@ -173,9 +135,9 @@ export async function forgeRawNode(v, over = {}) {
 
 /**
  * Send one wakeup announce of `entries` from `from` to its paired peers, as
- * a modified client can (autobee-wakeup/index.js:24-26: a receiver hints
- * every announced key). Returns true when a non-pending wakeup peer took
- * it. Adopted from the T1 spike (D-003).
+ * a modified client can. A receiver hints every announced key
+ * (autobee-wakeup `onannounce`). Returns true when a non-pending wakeup
+ * peer took it.
  */
 export async function announce(from, entries, ms = 15000) {
   const session = from.db._wakeup._session
@@ -193,11 +155,10 @@ export async function announce(from, entries, ms = 15000) {
 }
 
 /**
- * True when `v`'s corestore holds the first `length` blocks of the core
+ * True when the corestore of `v` holds the first `length` blocks of the core
  * `key`: the outsider's node reached the victim. This is the positive
- * control of an outsider attack, so a test that sees no effect knows that
- * the node arrived. It reads through a short-lived session, and it never
- * creates a core that is missing.
+ * control of an outsider attack. It must never create a missing core, or
+ * the probe itself adds a core to the victim.
  */
 export async function holds(v, key, length = 1) {
   const core = v.store.get({ key, createIfMissing: false })
@@ -212,11 +173,11 @@ export async function holds(v, key, length = 1) {
 }
 
 /**
- * True when `v`'s corestore has a stored core for `key`, whether or not it
- * holds blocks. After a reopen this is how a test tells that an outsider's
- * announced writer core persisted. Only call it for a core that is
- * expected: hypercore rejects a missing one with STORAGE_EMPTY, and that
- * rejection can also surface outside this call.
+ * True when the corestore of `v` has a stored core for `key`, with or
+ * without blocks. After a reopen this tells a test that an announced writer
+ * core persisted. Call it only for a core that the test expects. hypercore
+ * rejects a missing core with STORAGE_EMPTY, and that rejection can also
+ * surface outside this call.
  */
 export async function storedCore(v, key) {
   const core = v.store.get({ key, createIfMissing: false })
@@ -231,17 +192,14 @@ export async function storedCore(v, key) {
 }
 
 /**
- * The per-peer positive control. Poll until each peer `[name, vault]` in
- * `peers` holds the first `length` blocks of each attack core `{ key,
- * length }` in `cores`. Returns `{ <name>: true | false }`, one entry per
- * peer. A peer that never got the attack nodes reads false: no effect on
- * that peer proves nothing, so a test asserts every entry true before it
- * asserts no effect. A length below 1 is no attack, so every entry then
- * reads false.
+ * The per-peer positive control. Poll until each peer `[name, vault]` holds
+ * the first `length` blocks of each attack core `{ key, length }`. Returns
+ * `{ <name>: true | false }`. A peer that reads false never got the attack
+ * nodes, so a test asserts every entry true before it asserts no effect. A
+ * length below 1 is no attack, so every entry then reads false.
  *
- * Each poll updates the peer under a deadline. A stalled update is a
- * liveness result that the test asserts by itself. It does not stall this
- * check, which reads only the blocks.
+ * Each poll updates the peer under a deadline, so a stalled peer does not
+ * stall this check. The stall is a result that the test asserts by itself.
  */
 export async function deliveredTo(peers, cores, ms = 20000) {
   const out = Object.fromEntries(peers.map(([name]) => [name, false]))
@@ -264,10 +222,9 @@ export async function deliveredTo(peers, cores, ms = 20000) {
 }
 
 /**
- * Record the writer key (hex) of every node that autobee hands to okf's
- * apply on `v`. It wraps the Bundle's apply handler (store/lib/bundle.js
- * `_apply`, which the Autobee `apply` option calls), never autobee.
- * Returns the live Set.
+ * Record the writer key (hex) of every node that autobee hands to the apply
+ * of okf on `v`. It wraps the apply handler of the Bundle (`_apply` in
+ * store/lib/bundle.js), never autobee. Returns the live Set.
  */
 export function watchApply(v) {
   const writers = new Set()
@@ -279,9 +236,9 @@ export function watchApply(v) {
   return writers
 }
 
-// Bundle re-emits autobee's `error` event, and an EventEmitter 'error' with
-// no listener crashes the process. An attack that makes a peer's own
-// autobee close must be a RECORDED result, not a dead test run.
+// Bundle re-emits the `error` event of autobee, and an EventEmitter 'error'
+// with no listener crashes the process. An attack that closes the autobee
+// of a peer must be a recorded result, not a dead test run.
 const ERRORS = new WeakMap()
 
 /** Attach an error sink to a vault. Returns the vault. */
@@ -295,7 +252,7 @@ export function quiet(v) {
 /** Every error a vault emitted since `quiet()`. */
 export const errorsOf = (v) => ERRORS.get(v) || []
 
-/** autobee's system record for one writer key, or null. */
+/** The system record of autobee for one writer key, or null. */
 export async function sys(v, key) {
   await v.update()
   const r = await v.db.system.get(key)
@@ -303,10 +260,10 @@ export async function sys(v, key) {
 }
 
 /**
- * Every node in `v`'s linearized order (autobee index.js:1758-1760,
- * lib/topo.js:38-54), as `{ writer, length, weight, approvals, witness }`.
- * `weight` is the resolved weight autobee pinned for the node, and
- * `approvals` / `witness` say whether the node carries the field.
+ * Every node in the linearized order of `v` (autobee `replay`), as
+ * `{ writer, length, weight, approvals, witness }`. `weight` is the resolved
+ * weight that autobee pinned for the node. `approvals` and `witness` say
+ * whether the node carries the field.
  */
 export async function linearized(v) {
   await v.update()
@@ -329,7 +286,7 @@ export async function carriers(v) {
 
 /**
  * Bound any step. Resolves `{ status: 'ok' | 'TIMEOUT' | 'ERROR', ms,
- * value, error }`, so a stall or a crash is a RESULT and never a hung test.
+ * value, error }`. A stall or a crash is then a RESULT, never a hung test.
  */
 export async function timed(fn, ms, label = '') {
   const t0 = Date.now()
@@ -354,10 +311,8 @@ export async function timed(fn, ms, label = '') {
 }
 
 /**
- * autobee counters of one vault: reorders undone, nodes applied, writer
- * cores opened and closed (autobee lib/writers.js:266, :464), and the
- * writers it keeps active (lib/writers.js:41-43). The G44 flood is measured
- * in `opened` and `active`.
+ * autobee counters of one vault. The wakeup flood is measured in `opened`
+ * and `active`.
  */
 export function coreStats(v) {
   return {
@@ -369,7 +324,7 @@ export function coreStats(v) {
   }
 }
 
-/** Bytes on disk under `dir`, recursively. The G44 storage metric. */
+/** Bytes on disk under `dir`, recursively. The storage metric of the wakeup flood. */
 export async function duBytes(dir) {
   let total = 0
   for (const e of await readdir(dir, { withFileTypes: true })) {
@@ -388,8 +343,8 @@ export function freshKeys(n, length = 1) {
 }
 
 /**
- * Milliseconds for `n` appends plus folds on one vault: the G44 latency
- * metric. Each append is one honest op through the Bundle.
+ * Milliseconds for `n` appends plus folds on one vault: the latency metric
+ * of the wakeup flood. Each append is one honest op through the Bundle.
  */
 export async function timeAppends(v, label, n = 20) {
   const t0 = performance.now()
@@ -401,9 +356,9 @@ export async function timeAppends(v, label, n = 20) {
 }
 
 /**
- * Record one attack result. It goes to the test's diagnostics as
- * `ATTACK-RESULT {json}`, and is appended to the JSON-lines file at
- * `$OKF_ATTACK_RECORD` when that is set.
+ * Record one attack result. It goes to the diagnostics of the test as
+ * `ATTACK-RESULT {json}`, and to the JSON-lines file at `$OKF_ATTACK_RECORD`
+ * when that is set.
  */
 export async function record(t, attack, data) {
   const line = JSON.stringify({ attack, ...data })
@@ -415,9 +370,9 @@ export async function record(t, attack, data) {
 }
 
 /**
- * Close a vault, open the same directory again, and time one update. This
- * is the "permanent brick on reopen" check: a peer that cannot reopen, or
- * whose first fold after a reopen never returns, is bricked.
+ * Close a vault, open the same directory again, and time one update. A peer
+ * that cannot reopen, or whose first fold after a reopen never returns, is
+ * bricked.
  */
 export async function reopenCheck(vault, dir, ms = 20000) {
   const first = await timed(() => vault.close(), ms, 'close')
@@ -472,17 +427,16 @@ export function runChild(args, ms) {
 // ---------------------------------------------------------------------------
 // Child-process entry point. A peer that applies an approval at weight W
 // builds one Set entry and one digest slot per tier (autobee
-// lib/promotions.js:137, :144). At W = 1e9 that exhausts the heap, so the
-// G2 tests spawn this file and read the JSON line it prints:
+// `Promotions.flushPending`). At W = 1e9 that exhausts the heap, so the
+// huge-approval tests spawn this file and read the JSON line it prints:
 //
 //   node okf/test/attack-helpers.js huge-approval <arm> <weight>
 //
-// `arm` is `outsider` (a Bundle that no indexer admitted), `member` (a key
-// an indexer admitted with add-writer, appending through autobee) or
-// `member-raw` (the same key, through a client that writes the block to
-// its own core and folds nothing). The first two come from the T1 spike
-// (D-003). `member-raw` separates the sender's own drain order from the
-// residual that a victim pays (D-038 F01).
+// `arm` selects the attacker:
+// - `outsider`: a Bundle that no indexer admitted.
+// - `member`: an admitted key, appending through autobee.
+// - `member-raw`: the same key, through a client that writes the block to
+//   its own core and folds nothing.
 // ---------------------------------------------------------------------------
 async function childHugeApprovalOutsider(weight) {
   const rss = () => Math.round(process.memoryUsage().rss / 1048576)
@@ -546,16 +500,12 @@ async function childHugeApprovalOutsider(weight) {
 }
 
 /**
- * The member arm of G2 (T11 residual). The carrier is a key an indexer
- * admitted with add-writer, so autobee has added it and its plain nodes
- * reach _applyBatch on every peer that reads them (index.js:1359,
- * :1425-1455). okf cannot filter the approvals on such a node: autobee
- * applies them before apply runs (index.js:1432-1441).
+ * The member arm. An indexer admitted the carrier, so autobee added it and
+ * its plain nodes reach `_applyBatch` on every peer. okf cannot filter the
+ * approvals on such a node: autobee applies them before apply runs.
  *
- * The result records which peers died and what the memory cost was. A
- * member folds its OWN node before the drain flushes it to the local core
- * (index.js:818 _bumpPendingWriters, then :824 _flushLocal), so the first
- * peer to pay the cost is the attacker itself.
+ * A member folds its own node (`_bumpPendingWriters`) before the drain
+ * flushes it (`_flushLocal`), so the first peer to pay is the attacker.
  */
 async function childHugeApprovalMember(weight) {
   const rss = () => Math.round(process.memoryUsage().rss / 1048576)
@@ -571,15 +521,15 @@ async function childHugeApprovalMember(weight) {
     out.memberWritable = await until(async () => (await b.update(), b.writable), 20000)
     out.hash0 = await converged([a, b], 20000)
 
-    // the attack: the member's next node approves a key at `weight`
+    // the attack: the next node of the member approves a key at `weight`
     forgeNext(b, { approvals: [{ key: named, weight }] })
     const append = await timed(() => b.createConcept('carrier', 'note'), 120000)
     out.forgedAppend = append.status
     out.forgedError = append.error ?? null
     out.rssAfterAppend = rss()
 
-    // Did the forged node leave the attacker's core, and did the victim
-    // fold it? Both are reads, each under a deadline, because either peer
+    // Did the forged node leave the attacker's core, and did the
+    // victim fold it? Both reads run under a deadline, because either peer
     // can be down by now.
     const len = await timed(() => b.db.local.length, 5000)
     out.memberCoreLength = len.status === 'ok' ? len.value : null
@@ -588,8 +538,8 @@ async function childHugeApprovalMember(weight) {
         ? await deliveredTo([['a', a]], [{ key: b.localKey, length: out.memberCoreLength }], 10000)
         : { a: false }
     // How long the victim takes to fold the forged approval into its own
-    // system. A node that never left the attacker's core cannot be folded,
-    // so that case is recorded and not waited on.
+    // system. A node that never left the attacker's core cannot be
+    // folded, so that case is recorded and not waited on.
     const fold = out.delivered.a
       ? await timed(
           () =>
@@ -621,9 +571,9 @@ async function childHugeApprovalMember(weight) {
   } finally {
     out.rssEnd = rss()
     out.errors = { victim: errorsOf(a), member: errorsOf(b) }
-    // The peers that the forged approval took down, by the error autobee
-    // reported. A Set with 1e9 requested tiers exceeds V8's limit
-    // (lib/promotions.js:137).
+    // The peers that the forged approval took down, by the error that
+    // autobee reported. A Set with 1e9 requested tiers exceeds the limit of
+    // V8.
     out.crashed = Object.entries(out.errors)
       .filter(([, errs]) => errs.some((e) => /Set maximum size exceeded/.test(e)))
       .map(([name]) => name)
@@ -639,18 +589,16 @@ async function childHugeApprovalMember(weight) {
 }
 
 /**
- * The member arm of G2 through a client that does not fold (T11 residual,
- * D-038 F01). The attacker writes the approval block straight to the core
- * it owns (forgeRawNode), so the block is durable before any fold and the
- * sender's own drain order no longer gates delivery. The victim is genesis,
- * on stock autobee, and the result states the order that a residual claim
- * needs: delivery FIRST, then the victim's failure, then its reopen.
+ * The member arm through a client that does not fold. forgeRawNode makes
+ * the block durable before any fold, so the drain order of the sender no
+ * longer gates delivery. The victim is genesis, on stock autobee. The
+ * result states the order that a residual claim needs: delivery first,
+ * then the failure of the victim, then its reopen.
  *
- * The reopen can die inside `Bundle.open`: the boot drain folds the stored
- * block (index.js:620 then :818) before a caller can attach an error
- * listener, and an EventEmitter 'error' with no listener ends the process.
- * So this arm installs an uncaughtException handler, prints the result and
- * exits 0. A lost run would prove nothing.
+ * The reopen can die inside `Bundle.open`: the boot drain (`_bootOnline`)
+ * folds the stored block before a caller can attach an error listener. So
+ * this arm installs an uncaughtException handler, prints the result and
+ * exits 0. A lost run proves nothing.
  */
 async function childHugeApprovalMemberRaw(weight) {
   const SET_LIMIT = /Set maximum size exceeded/
@@ -696,14 +644,14 @@ async function childHugeApprovalMemberRaw(weight) {
     out.rawError = raw.error ?? null
     out.memberCoreLength = raw.status === 'ok' ? raw.value : null
 
-    // FIRST the positive control: the victim holds the block. No claim
-    // about a victim that never got the attack proves anything.
+    // FIRST the positive control: the victim holds the block. A claim about
+    // a victim that never got the attack proves nothing.
     out.delivered =
       out.memberCoreLength > 0
         ? await deliveredTo([['a', a]], [{ key: b.localKey, length: out.memberCoreLength }], 20000)
         : { a: false }
 
-    // THEN the victim's failure, and whether it can still append.
+    // THEN the failure of the victim, and whether it can still append.
     out.victimCrashed = await until(() => errorsOf(a).some((e) => SET_LIMIT.test(e)), 120000, 100)
     out.victimUpdate = (await timed(() => a.update(), 20000)).status
     out.victimAppends = (await timed(() => timeAppends(a, 'g2r', 2), 30000)).status

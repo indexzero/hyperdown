@@ -1,36 +1,8 @@
-// Deterministic apply: folds the linearized op stream into the view
-// (okf SPEC §5–§8, plus the apply-time link/wanted maintenance of §9).
-// Pattern ancestor: vault-ld/core/lib/apply.js (patterns only, no code path
-// shared — SPEC §0 copy-don't-depend).
-//
-// Transport contract (SPEC §1, verified against the installed source of
-// autobee@2.12.1): `apply(nodes, view, host)` (README.md:74,
-// lib/apply-view.js:17-19) receives linearized writer nodes shaped
-// { key, value, length, optimistic, ... } (lib/writers.js:808-829); the
-// view is hyperbee2-flavored (get / write() batches with
-// tryPut+tryDelete+flush / createReadStream — see memview.js for the
-// verified surface); host exposes addWriter(key, { isIndexer, weight })
-// and removeWriter(key) (lib/apply-calls.js:33, :49 — note the default
-// weight is `isIndexer ? 2 : 1`, which is why §8 mandates an explicit
-// weight). Core calls only addWriter. host.ackWriter is a deprecated no-op
-// (README.md:224-227, lib/apply-calls.js:44-47).
-//
-// This module is PURE over (linearized prefix, config): no wall clock, no
-// randomness, no map-iteration-order dependence (every write goes through
-// stableStringify; every scan is byte-ordered), no reads of peer-local
-// replication state (I1). `at` is copied from op payloads verbatim and
-// never compared or ordered on.
-//
-// Per-writer ordinal (SPEC §3, AD4): the actual seq of a node is its
-// position in its writer's core, node.length - 1. The transport documents
-// node.length as the "position in the writer's core" (autobee@2.12.1
-// README, Apply). autobee sets it to the core length after the node
-// (lib/writers.js:571-579 for a replicated node, :332 and :748 for a local
-// one). The position is unforgeable, the same on every peer and stable
-// under reorders. seen/<W> holds the last folded position plus one. A node
-// that never reaches apply still takes a position: autobee passes only the
-// nodes with a non-empty value to apply (index.js:1444). So the seqs of a
-// writer's ops can have gaps.
+// apply folds the linearized op stream into the view (SPEC §5 to §9).
+// `apply(nodes, view, host)` receives nodes shaped { key, value, length }.
+// The view must offer get, write() with tryPut, tryDelete and flush, and
+// createReadStream. apply calls only host.addWriter. The store wires
+// autobee in okf/store/lib/bundle.js.
 import { createHash } from 'node:crypto'
 import * as K from './keyspace.js'
 import { nfc, canonicalArray, valuesEqual, stableStringify } from './canonical.js'
@@ -45,9 +17,8 @@ import {
 } from './ops.js'
 import { extractLinks, dirOf } from './links.js'
 
-// §3 default limits, exported so boundary layers (faces ingest, ADR-005)
-// can preflight against the same values apply defends with — never a
-// duplicated constant.
+// The default limits of SPEC §3. ingest imports them for its oversize
+// preflight. Do not copy the values.
 export const DEFAULT_LIMITS = Object.freeze({
   maxOpBytes: 65536,
   maxPathBytes: 1024,
@@ -55,21 +26,19 @@ export const DEFAULT_LIMITS = Object.freeze({
 })
 
 const DEFAULTS = {
-  // §3 limits: fixed check order, single recorded reason.
   limits: DEFAULT_LIMITS,
-  // §8: defaultCeiling is the admitted-writer ceiling when no
-  // SetWriterPolicy has set one (spec-silent; pinned here and in vault
-  // metadata by the store package). It is the only rate setting.
+  // The rate ceiling of a writer that no SetWriterPolicy has set (SPEC §8).
+  // okf/store/lib/metadata.js pins the same value in the vault metadata.
   rate: { defaultCeiling: 1024 }
 }
 
-// §5: reserved field keys — identity and revision are never fields, tag
-// mutations travel only as AddTag/RemTag (checked post-NFC, exact).
+// SPEC §5: tags change only through AddTag and RemTag. _id and _rev are
+// never fields. The check is exact, after NFC.
 const RESERVED_FIELD_KEYS = new Set(['tags', '_id', '_rev'])
 
 const ADOPTED_ID_RE = /^[0-9a-f]{2,128}$/
-// §7: the conflicted-copy component pattern is reserved on every extension
-// length ("any terminal hex run of 8 or more").
+// SPEC §7 reserves the conflicted-copy suffix on every length: any
+// terminal hex run of 8 or more, not only 8.
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}$/
 
 function keyHex(key) {
@@ -83,11 +52,11 @@ function keyBuf(key) {
 }
 
 /**
- * §3 (AD4): the 0-based position of a node in its writer's core. The
- * transport sets node.length to the core length after the node, so a node
- * without a positive integer length breaks the transport contract. That
- * throws, also out of containThrow, and autobee closes on a throw from
- * apply (README, append; index.js:669-690). It is never an op rejection.
+ * The 0-based position of a node in its writer's core (SPEC §3).
+ * A node without a positive integer length breaks the transport contract,
+ * so this throws, also inside containThrow. autobee then closes. It is
+ * never an op rejection. See DEVIATIONS.md, "Substrate behaviour that okf
+ * relies on".
  */
 function positionOf(node) {
   const len = node.length
@@ -107,17 +76,16 @@ function byteCompare(a, b) {
   return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))
 }
 
-/** Informational timestamp (§3): never rejected, garbage → epoch 0. */
+/** The informational timestamp of SPEC §3. Never rejected. Garbage becomes 0. */
 function atOf(op) {
   const v = op.at
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0
 }
 
 /**
- * Path normalization (§7): NFC, forward-slash, no `.md` suffix stored.
- * One trailing `.md` is stripped case-insensitively so a path authored
- * with the emitted-file suffix maps onto the same claim (resolution where
- * the spec is silent on apply-side `.md` handling; ingest strips too).
+ * Path normalization (SPEC §7): NFC, and one trailing `.md` stripped
+ * without regard to case. A path authored with the emitted file suffix
+ * then maps onto the same claim. ingest strips it too.
  */
 export function normalizePath(p) {
   const s = nfc(String(p))
@@ -125,19 +93,18 @@ export function normalizePath(p) {
 }
 
 /**
- * Casefolded comparison form for reservation and collision checks (§7):
- * NFC + default casefolding (approximated by toLowerCase over the NFC
- * form, deterministic per ECMA-262 — locale-independent).
+ * The casefold form for reservation and collision checks (SPEC §7): NFC,
+ * then toLowerCase. toLowerCase is locale-independent per ECMA-262.
  */
 export function casefoldPath(p) {
   return nfc(String(p)).toLowerCase()
 }
 
 /**
- * Path validation (§7). Returns null when valid, else the fixed rejection
- * reason: 'unsafe-path' (escapes the bundle root / absolute / empty or
- * dot segments) or 'reserved-path' (terminal component casefolding to
- * 'index'/'log' per OKF §3.1, or the conflicted-copy suffix pattern).
+ * Path validation (SPEC §7). Returns null for a valid path, else the
+ * rejection reason: 'unsafe-path' (absolute, backslash, drive letter,
+ * empty or dot segment) or 'reserved-path' (a terminal component that
+ * casefolds to 'index' or 'log', or the conflicted-copy suffix).
  */
 export function validatePath(p) {
   if (p === '' || p.startsWith('/') || p.includes('\\') || /^[A-Za-z]:/.test(p)) {
@@ -154,8 +121,9 @@ export function validatePath(p) {
   return null
 }
 
-/** §8 namespace governance: path-segment prefix matching after NFC (empty
- * prefix list = unrestricted). Byte-prefix matching is forbidden. */
+/** SPEC §8 namespace policy: path-segment prefix matching after NFC. An
+ * empty prefix list matches every path. Do not match byte prefixes: 'a'
+ * must not match 'ab'. */
 export function namespaceMatches(prefixes, path) {
   if (!Array.isArray(prefixes) || prefixes.length === 0) return true
   const s = nfc(String(path))
@@ -167,9 +135,10 @@ export function namespaceMatches(prefixes, path) {
 }
 
 /**
- * Vector-clock strict precedence (§8 revocation): c < r iff every entry of
- * c is ≤ r's entry AND the clocks differ (some r entry exceeds c's, or r
- * observes a writer c does not).
+ * Vector clock strict precedence, for revocation (SPEC §8). c precedes r
+ * when every entry of c is at most the entry of r, and the clocks differ.
+ * They differ when an entry of r exceeds c, or r observes a writer that c
+ * does not.
  */
 export function strictlyPrecedes(c, r) {
   let strict = false
@@ -202,12 +171,11 @@ function decodeValue(v) {
 const DEL = Symbol('del')
 
 /**
- * Read-your-writes overlay over the hyperbee2 view surface. apply buffers
- * every put/del here and flushes once per node through a view.write()
- * batch (tryPut/tryDelete/flush), so intra-node reads observe intra-node
- * writes without relying on unflushed-batch semantics of the store.
- * Values are serialized with stableStringify so map-iteration order never
- * reaches the view (I1).
+ * Read-your-writes overlay over the view. apply buffers every put and del
+ * here and flushes once per node through one view.write() batch, so a
+ * read inside a node sees the writes of that node without relying on the
+ * unflushed-batch semantics of the store. Values go through
+ * stableStringify, so map iteration order never reaches the view (I1).
  */
 class Tx {
   constructor(view) {
@@ -233,7 +201,7 @@ class Tx {
     this.o.set(key, DEL)
   }
 
-  /** Byte-ordered prefix scan merging the overlay with the view. */
+  /** Byte-ordered prefix scan over the view merged with the overlay. */
   async scanAll(prefix) {
     const { gte, lt } = K.range(prefix)
     const merged = new Map()
@@ -264,11 +232,13 @@ class Tx {
 }
 
 /**
- * Create the deterministic apply function for a vault.
+ * Create the apply function of one vault. It is pure over the linearized
+ * prefix and the configuration (I1): no wall clock, no randomness, no map
+ * iteration order, no read of peer-local replication state.
  * config: {
- *   genesisKey,   // Buffer|hex: the vault creator's key, first indexer (§8)
- *   limits: { maxOpBytes, maxPathBytes, maxPathDepth },      // §3
- *   rate:   { defaultCeiling }                               // §8
+ *   genesisKey,   // Buffer|hex: the creator's key, the first indexer (SPEC §8)
+ *   limits: { maxOpBytes, maxPathBytes, maxPathDepth },      // SPEC §3
+ *   rate:   { defaultCeiling }                               // SPEC §8
  * }
  */
 export function createApply(config = {}) {
@@ -289,15 +259,11 @@ export function createApply(config = {}) {
         await a.applyNode(node)
         await tx.flush()
       } catch (err) {
-        // §3 (I1/I10): apply MUST NOT throw — a single hand-crafted op must
-        // never halt every peer's fold. The partial tx is discarded (its
-        // buffered writes never reach the view), then a FRESH tx records a
-        // deterministic per-op rejection (seen/ + ord/ + flag/rejected,
-        // reason 'apply-error'). Same node, same throw point, same
-        // containment on every peer, so the applied/rejected partition and
-        // the I2 view hash stay replay-stable. This is the last-resort net;
-        // the op handlers above reject cleanly (their own reasons) for every
-        // input we have found reachable.
+        // apply must not throw (SPEC §3). One crafted op must never halt
+        // the fold on every peer. The partial tx is discarded. A fresh tx
+        // records seen/, ord/ and the rejection 'apply-error', the same on
+        // every peer. The handlers reject every known bad input with their
+        // own reason. This is the last-resort net.
         const tx2 = new Tx(view)
         const a2 = new Applier(cfg, tx2, host)
         await a2.containThrow(node)
@@ -312,7 +278,7 @@ class Applier {
     this.cfg = cfg
     this.tx = tx
     this.host = host
-    this.events = [] // log/ narration accumulator for this node (§4, §9)
+    this.events = [] // the log/ events of this node (SPEC §4, §9)
     this.at = 0
   }
 
@@ -345,19 +311,18 @@ class Applier {
     const W = keyHex(node.key)
     const raw = Buffer.isBuffer(node.value) ? node.value : Buffer.from(node.value || [])
 
-    // Global apply position: incremented once per node, so every
-    // path-claim ord and log/ key is unique and monotone in linearization
-    // (§4 `ord`; see keyspace.js `ord/global`).
+    // The global apply ordinal, one per node, so every path ord and log/
+    // key is unique and monotone in linearization (SPEC §4).
     this.pos = ((await this.val(K.ordGlobal())) ?? 0) + 1
     this.put(K.ordGlobal(), this.pos)
 
-    // §3 (AD4): the node's actual seq is its position in its writer's
-    // core. seen/<W> becomes the last position plus one, for EVERY node
-    // regardless of disposition.
+    // seq is the node's position (SPEC §3). seen/<W> becomes seq + 1
+    // for EVERY node, accepted or rejected.
     const seq = positionOf(node)
     this.put(K.seen(W), seq + 1)
 
-    // §3 fixed-order checks; the FIRST violated records the single reason.
+    // Fixed check order (SPEC §3). The first failed check records the only
+    // reason.
     if (raw.length > this.cfg.limits.maxOpBytes) return this.reject(W, seq, 'oversize-op')
     const dec = decodeOp(raw)
     if (!dec.ok) return this.reject(W, seq, dec.reason) // unknown-msgid | undecodable
@@ -365,16 +330,14 @@ class Applier {
     const type = dec.type
     this.at = atOf(op)
 
-    // §8 (AD7): every AddWriter op that core folds grants its key at the
-    // substrate, whether core accepts or rejects the op below. The grant
-    // comes right after the decode and before every check that can reject
-    // the op, because those checks read the op's linearized position, and
-    // a reorder can flip their outcome (G9b). The grant reads the op bytes
-    // alone, so it is the same on every peer in every order, and a reorder
-    // can never undo it. okf membership still comes only from gov/.
+    // Every AddWriter grants its key at the substrate, accepted or rejected
+    // (SPEC §8). The grant comes before every check that can reject the
+    // op, because those checks read the linearized position and a reorder
+    // can flip them. The grant reads the op bytes alone, so it is the same
+    // on every peer. Membership still comes only from gov/.
     if (type === 'add-writer') await this.grant(op.key)
 
-    // §3 post-decode limits, fixed order: path bytes, then depth.
+    // Post-decode limits, fixed order: path bytes, then depth (SPEC §3).
     if (typeof op.path === 'string') {
       if (Buffer.byteLength(op.path, 'utf8') > this.cfg.limits.maxPathBytes) {
         return this.reject(W, seq, 'oversize-path')
@@ -384,18 +347,14 @@ class Applier {
       }
     }
 
-    // §8: every op carries its writer's observed clock; the claimed
-    // self-entry must equal the actual seq, the node's unforgeable
-    // position (§3). A clock carries self and the writers with a
-    // gov/writer record in its issuer's view (§8, T12). No rule here needs
-    // an entry for any other writer.
+    // The self entry of the clock must equal seq, the node's position
+    // (SPEC §8). No rule here needs an entry for any other writer.
     const clock = normalizeClock(op.clock)
     if (!clock || (clock[W] ?? -1) !== seq) return this.reject(W, seq, 'forged-clock')
 
-    // §8 causal revocation, never positional. The strict-precedence test
-    // compares every entry. A writer that the op's clock cites and the
-    // revocation clock omits fails it, so two views that disagree on an
-    // admission can reject an op in the window, never admit one.
+    // Revocation is causal, never positional (SPEC §8). The strict
+    // precedence test compares every entry. So two views that disagree on
+    // an admission can reject an op in the window, but never admit one.
     const removed = await this.val(K.govRemoved(W))
     if (removed !== undefined) {
       if (seq > removed.seqAtRemoval) return this.reject(W, seq, 'revoked')
@@ -405,9 +364,9 @@ class Applier {
     const writerRec = await this.val(K.govWriter(W))
 
     if (GOVERNANCE_OPS.has(type)) {
-      // §8: governance requires an indexer issuer at the op's linearized
-      // position. The AddWriter grant above does not depend on it, and
-      // host.removeWriter is never called.
+      // Governance needs an indexer issuer at the linearized position of
+      // the op (SPEC §8). The grant above does not depend on it. apply
+      // never calls host.removeWriter.
       if (!writerRec || writerRec.indexer !== true) {
         return this.reject(W, seq, 'policy-governance')
       }
@@ -418,11 +377,11 @@ class Applier {
       return this.writeLog(this.pos)
     }
 
-    // §8: a writer's ops take effect only once an indexer's AddWriter has
-    // admitted it. A content op from a key with no gov/writer record is
-    // rejected here. It never reaches the content pipeline, and it takes no
-    // rate token. The governance branch above runs first, so a governance
-    // op from such a key keeps the reason 'policy-governance'.
+    // The ops of a writer take effect only after the AddWriter of an
+    // indexer admits it (SPEC §8). A content op from a key with no
+    // gov/writer record takes no rate token. The governance branch runs
+    // first, so a governance op from such a key keeps the reason
+    // 'policy-governance'.
     if (!writerRec) return this.reject(W, seq, 'not-a-writer')
 
     if (!(await this.takeToken(W, writerRec))) return this.reject(W, seq, 'policy-rate')
@@ -433,13 +392,11 @@ class Applier {
   }
 
   /**
-   * §8 (AD7): the substrate grant of an AddWriter op. The weight is an
-   * explicit 0, so autobee's `isIndexer ? 2 : 1` default never applies
-   * (lib/apply-calls.js:33), and isIndexer is not passed: it only selects
-   * that default. Only a 32-byte key is granted. autobee copies the key
-   * into a fixed 34-byte system key (lib/encoding.js:64-69), so a shorter
-   * key would leave uninitialized bytes there, and a longer one throws.
-   * The check reads the op bytes alone, so it is the same on every peer.
+   * The substrate grant of an AddWriter (SPEC §8). The weight is an
+   * explicit 0, because the autobee default is not 0, and isIndexer only
+   * selects that default. Only a 32-byte key is granted: autobee writes
+   * the key into a fixed-size system key, so another length corrupts it
+   * or throws. See DEVIATIONS.md, "Substrate behaviour that okf relies on".
    */
   async grant(key) {
     if (!this.host || !this.host.addWriter) return
@@ -448,18 +405,16 @@ class Applier {
   }
 
   async reject(W, seq, reason) {
-    // §3: rejections land in flag/rejected/<writerKey>/<seq>, never throw,
-    // and never mutate c/ (I10).
+    // A rejection lands in flag/rejected/<writerKey>/<seq>. It never
+    // throws and never changes c/ (SPEC §3, I10).
     this.put(K.flagRejected(W, seq), { reason })
   }
 
   /**
-   * §3 last-resort containment: an op whose handling threw is reduced to a
-   * deterministic rejection. Re-derives the per-node ord from the
-   * (unmutated, because the throwing tx was discarded) view so ordinals stay
-   * monotone and identical on every peer, takes the seq from the node's
-   * position (AD4), then records flag/rejected. Pure over the linearized
-   * prefix — no clock, no randomness (I1).
+   * Last-resort containment (SPEC §3): an op whose handler threw becomes
+   * a deterministic rejection. The throwing tx was discarded, so the view
+   * is unchanged. The ord is derived again from it, so ordinals stay
+   * monotone and the same on every peer.
    */
   async containThrow(node) {
     const W = keyHex(node.key)
@@ -471,9 +426,8 @@ class Applier {
   }
 
   async accepted(W) {
-    // §8: every writer's bucket gains 1 token per accepted op authored by
-    // any (live) indexer — tracked as a global counter, folded into each
-    // bucket lazily by takeToken.
+    // Every bucket gains one token per accepted op of a live indexer
+    // (SPEC §8). The count is global. takeToken folds it into each bucket.
     const rec = await this.val(K.govWriter(W))
     if (rec && rec.indexer === true && (await this.val(K.govRemoved(W))) === undefined) {
       const n = (await this.val(K.rateIndexerOps())) ?? 0
@@ -496,8 +450,8 @@ class Applier {
   async takeToken(W, writerRec) {
     const cap = this.capacityFor(writerRec)
     const indexerOps = (await this.val(K.rateIndexerOps())) ?? 0
-    // §8: buckets start full: at admission (opAddWriter writes the
-    // record), and for the genesis indexer at its first op.
+    // A bucket starts full: at admission in opAddWriter, and for genesis
+    // at its first op (SPEC §8).
     const rec = (await this.val(K.rate(W))) ?? { tokens: cap, seenIndexerOps: indexerOps }
     const delta = indexerOps - (rec.seenIndexerOps ?? 0)
     rec.tokens = Math.min(cap, (rec.tokens ?? cap) + delta)
@@ -524,11 +478,11 @@ class Applier {
   }
 
   /**
-   * §8: true when `target`, whose gov/writer record is `rec`, is the last
-   * live indexer: its record says indexer, it has no gov/removed record,
-   * and no other writer is a live indexer. A governance op that would take
-   * its indexer role away is rejected, so a vault can never become
-   * permanently ungovernable.
+   * True when `target`, with gov/writer record `rec`, is the last live
+   * indexer: its record says indexer, it has no gov/removed record, and no
+   * other writer is a live indexer. apply rejects a governance op that
+   * takes its indexer role, so a vault can never become ungovernable
+   * (SPEC §8).
    */
   async isLastLiveIndexer(target, rec) {
     if (!rec || rec.indexer !== true) return false
@@ -542,14 +496,11 @@ class Applier {
   }
 
   /**
-   * §8 admission. A writer key that is not 32 bytes rejects the op
-   * 'bad-writer-key' before it writes a gov/ key (D-047 F18): grant() does
-   * not grant such a key, and its record would count as an indexer that no
-   * writer can be. The optional swarm key (T25) is the writer's 32-byte
-   * hyperswarm public key. A key of any other length rejects the op
-   * 'bad-swarm-key' before it writes a gov/ key. The record stores the key
-   * hex. An op without one keeps the key that the record already holds, as
-   * it keeps the policy fields.
+   * Admission (SPEC §8). A writer key that is not 32 bytes rejects the op
+   * 'bad-writer-key' before any gov/ write. grant() did not grant such a
+   * key, so its record is a member that can never write. A swarmKey of
+   * any length other than 32 bytes rejects the op 'bad-swarm-key'. An op
+   * without a swarmKey keeps the stored one.
    */
   async opAddWriter(op) {
     if (!(op.key instanceof Uint8Array && op.key.byteLength === 32)) {
@@ -561,8 +512,8 @@ class Applier {
     }
     const existing = await this.val(K.govWriter(target))
     if (op.indexer !== true && (await this.isLastLiveIndexer(target, existing))) {
-      // §8 (D-047 F19): an AddWriter that would demote the last live
-      // indexer is rejected, as a RemoveWriter that would remove it is.
+      // apply rejects an AddWriter that demotes the last live indexer, as
+      // it rejects the RemoveWriter that removes it (SPEC §8).
       return { rejected: true, reason: 'policy-governance' }
     }
     const rec = {
@@ -573,15 +524,13 @@ class Applier {
     const swarmKey = op.swarmKey != null ? keyHex(op.swarmKey) : existing && existing.swarmKey
     if (swarmKey !== undefined) rec.swarmKey = swarmKey
     this.put(K.govWriter(target), rec)
-    // Re-admission clears a prior revocation record so the writer's new
-    // ops pass the §8 clock rule (resolution where the spec is silent;
-    // vault-ld ancestry).
+    // Re-admission clears a prior revocation record, so the new ops of
+    // the writer pass the clock rule (SPEC §8).
     if ((await this.val(K.govRemoved(target))) !== undefined) {
       this.delKey(K.govRemoved(target))
     }
-    // The substrate grant already happened in applyNode (AD7), before any
-    // check that can reject this op.
-    // §8: bucket starts full at admission.
+    // Do not grant here. applyNode made the substrate grant before any
+    // check that can reject this op. The bucket starts full (SPEC §8).
     const indexerOps = (await this.val(K.rateIndexerOps())) ?? 0
     this.put(K.rate(target), { tokens: this.capacityFor(rec), seenIndexerOps: indexerOps })
     return null
@@ -590,39 +539,33 @@ class Applier {
   async opRemoveWriter(op) {
     const target = keyHex(op.key)
     if (await this.isLastLiveIndexer(target, await this.val(K.govWriter(target)))) {
-      // §8: a RemoveWriter that would leave zero indexers is rejected — a
-      // vault can never become permanently ungovernable.
+      // SPEC §8: no RemoveWriter can leave zero indexers.
       return { rejected: true, reason: 'policy-governance' }
     }
     const clock = normalizeClock(op.clock) ?? {}
-    // §8: seqAtRemoval = the revocation clock's entry for the removed
-    // writer, the last position of it that the remover had folded (§3);
-    // absent entry → -1, so every target seq is post-revocation. The entry
-    // is absent when the remover folded none of the target's ops, or when
-    // the target had no gov/writer record in the remover's view (§8, T12).
-    // In the second case -1 rejects the same ops as the last folded
-    // position: each op of the target that the remover folded is a causal
-    // ancestor of this node and sorts before it, and each op of the target
-    // that sorts after it has a higher position.
+    // seqAtRemoval is the last position of the removed writer that the
+    // remover folded (SPEC §8). An absent entry gives -1, so every op of
+    // the target is after the revocation. That holds also when the remover
+    // has no gov/writer record of the target: its folded ops sort before
+    // this node, and a later op has a higher position.
     this.put(K.govRemoved(target), { clock, seqAtRemoval: clock[target] ?? -1 })
-    // §8 "causal, in-band, never positional": host.removeWriter is
-    // deliberately NOT called — every node must keep linearizing on every
-    // peer so the clock rule runs uniformly (vault-ld B1 ancestry).
+    // Do not call host.removeWriter. Every node must keep linearizing on
+    // every peer, so that the clock rule runs on each of them (SPEC §8).
     return null
   }
 
   async opSetWriterPolicy(op) {
     const target = keyHex(op.key)
     const existing = await this.val(K.govWriter(target))
-    // Policy on a non-writer would confirm an unadmitted key; reject
-    // (resolution where the spec is silent; vault-ld ancestry).
+    // apply rejects a policy on a key with no gov/writer record. The
+    // policy confirms an unadmitted key otherwise.
     if (!existing) return { rejected: true, reason: 'policy-governance' }
     const rec = {
       indexer: existing.indexer,
       namespacePrefixes: (op.namespacePrefixes || []).map(nfc),
       rateCeiling: op.rateCeiling
     }
-    if (existing.swarmKey !== undefined) rec.swarmKey = existing.swarmKey // T25: a policy keeps it
+    if (existing.swarmKey !== undefined) rec.swarmKey = existing.swarmKey // a policy keeps the swarm key
     this.put(K.govWriter(target), rec)
     return null
   }
@@ -654,15 +597,15 @@ class Applier {
   }
 
   /**
-   * §6 policy anchor: mutation ops are policy-checked against the
-   * concept's CURRENT path, never an op-claimed path. Returns a rejection
-   * or null, plus the concept meta via out-param convention.
+   * Policy anchor (SPEC §6): apply checks a mutation against the CURRENT
+   * path of the concept, never a path that the op claims. Returns a
+   * rejection, or { meta, pathRec }.
    */
   async requireConcept(op, writerRec) {
     const meta = await this.val(K.cMeta(op.id))
     if (meta === undefined) {
-      // Mutating an id the vault has never seen: rejected (reason is a
-      // resolution where the spec is silent — only CreateConcept creates).
+      // Only CreateConcept creates. apply rejects a mutation of an id that
+      // the vault has never seen.
       return { rejected: true, reason: 'unknown-id' }
     }
     const pathRec = await this.val(K.cPath(op.id))
@@ -672,7 +615,7 @@ class Applier {
     return { meta, pathRec }
   }
 
-  /** §8: a write landing on a tombstoned concept flags, never blocks (I4). */
+  /** A write on a tombstoned concept flags, never blocks (SPEC §8, I4). */
   writeAfterDelete(meta, id, tag) {
     if (meta.deleted != null) {
       this.put(K.flag('writeafterdelete', id, tag), { deletedBy: meta.deleted })
@@ -681,25 +624,27 @@ class Applier {
 
   async opCreateConcept(op, W, seq, writerRec) {
     const tag = makeTag(W, seq)
-    // Fixed intra-op check order (pinned here; §3 pins only the limits):
-    // empty-type → path validity → namespace policy → id rules.
+    // Fixed check order inside the op: empty type, path validity,
+    // namespace policy, id rules. SPEC §3 pins only the limits. This
+    // pins the rest.
     const type = op.type
     if (typeof type !== 'string' || type === '') {
-      // §5: an empty `type` state must be unreachable through accepted ops.
+      // SPEC §5: no accepted op makes `type` empty.
       return { rejected: true, reason: 'empty-type' }
     }
     const path = normalizePath(op.path)
     const bad = validatePath(path)
     if (bad) return { rejected: true, reason: bad }
-    // Creation has no current path yet; its claimed path becomes current
-    // at this position, so policy checks it (§6).
+    // A creation has no current path yet. Its claimed path becomes current
+    // at this position, so policy checks it (SPEC §6).
     if (!namespaceMatches(writerRec.namespacePrefixes, path)) {
       return { rejected: true, reason: 'policy-namespace' }
     }
 
     let id
     if (op.id == null) {
-      // §6 mint: the creating op's tag — or the squat-proof fallback.
+      // Mint (SPEC §6): the tag of the creating op, or the squat-proof
+      // fallback.
       id = tag
       if ((await this.val(K.cMeta(id))) !== undefined) {
         const squatted = id
@@ -715,16 +660,16 @@ class Applier {
             break
           }
         }
-        // §6 N1: creation by a genuine writer always succeeds; the squat is
-        // a permanent audit record.
+        // Creation by a genuine writer always succeeds (SPEC §6). The
+        // squat flag is a permanent audit record.
         this.put(K.flag('squat', squatted, tag), { minted: id })
       }
     } else {
-      // §6 adopt.
+      // Adopt (SPEC §6).
       id = op.id
       if (!ADOPTED_ID_RE.test(id)) return { rejected: true, reason: 'bad-id' }
       if ((await this.val(K.cMeta(id))) !== undefined) {
-        // §6 seen-id rule: creation never updates.
+        // Creation never updates (SPEC §6).
         return { rejected: true, reason: 'duplicate-id' }
       }
       const risk = await this.mintCollisionRisk(id)
@@ -732,8 +677,6 @@ class Applier {
     }
 
     this.put(K.cMeta(id), { type, created: tag })
-    // §5: CreateConcept.type seeds the c/<id>/f/type register at the
-    // create's linearized position.
     this.put(K.cField(id, 'type'), { values: [type], tag, writer: W })
     this.put(K.cPath(id), { path, tag, ord: this.pos })
     await this.enterClaim(id, path)
@@ -742,11 +685,11 @@ class Applier {
   }
 
   /**
-   * §6: mint ids are `writerKey || seq` (both public, hence predictable),
-   * so adopting an id shaped like a current/former/seen writer's future
-   * mint — or exactly equal to a 64-hex writer key — is rejected. seen/<W>
-   * is W's last folded position plus one (§3), so every future op of W, and
-   * so every future mint, has a seq at or above it.
+   * A mint id is `writerKey || seq`, both public, so predictable (SPEC
+   * §6). apply rejects an adopted id that equals a 64-hex writer key, or
+   * that is shaped like a future mint of a known writer. seen/<W> is the
+   * last folded position of W plus one, so every future mint of W has a
+   * seq at or above it.
    */
   async mintCollisionRisk(id) {
     if (id.length === 64) return this.writerKnown(id)
@@ -754,8 +697,8 @@ class Applier {
     const prefix = id.slice(0, 64)
     if (!(await this.writerKnown(prefix))) return false
     const suffix = id.slice(64)
-    // Mint-shaped = minimal lowercase hex (no leading zeros); a
-    // non-minimal suffix can never be produced by a mint.
+    // A mint suffix is minimal lowercase hex, no leading zeros. A
+    // non-minimal suffix can never come from a mint.
     if (!/^(0|[1-9a-f][0-9a-f]*)$/.test(suffix)) return false
     const seqVal = BigInt('0x' + suffix)
     const nextPosition = BigInt((await this.val(K.seen(prefix))) ?? 0)
@@ -775,13 +718,12 @@ class Applier {
     const tag = makeTag(W, seq)
     const key = op.key
     if (RESERVED_FIELD_KEYS.has(key)) {
-      // §5 (M4): tags mutate only via AddTag/RemTag; _id/_rev are never fields.
       return { rejected: true, reason: 'reserved-key' }
     }
-    // §5: SetField.value is wire type `json` (arbitrary JSON). Canonicalizing
-    // a typed literal with a bad lexical (e.g. { value: 'abc', datatype:
-    // 'xsd:integer' }) throws inside canonicalArray — contain it as a clean
-    // rejection so a crafted value can never halt apply (§3; I1/I10).
+    // SetField.value is any JSON (SPEC §5). canonicalArray throws on a
+    // typed literal with a bad lexical, such as { value: 'abc', datatype:
+    // 'xsd:integer' }. apply contains that as a rejection, so a crafted
+    // value can never halt apply (SPEC §3).
     let values
     try {
       values = canonicalArray(op.value)
@@ -789,21 +731,21 @@ class Applier {
       return { rejected: true, reason: 'bad-value' }
     }
     if (key === 'type' && (values.length === 0 || (values.length === 1 && values[0] === ''))) {
-      // §5 (N4): an empty type state is unreachable through accepted ops.
+      // SPEC §5: no accepted op makes `type` empty.
       return { rejected: true, reason: 'empty-type' }
     }
     this.writeAfterDelete(r.meta, op.id, tag)
     const rec = await this.val(K.cField(op.id, key))
     if (rec && rec.writer !== W && !arraysEq(rec.values, values)) {
-      // §5 / I4: a cross-writer supersession with a different value is
-      // auditable, never silent.
+      // A cross-writer supersession with a different value is audited,
+      // never silent (SPEC §5, I4).
       this.put(K.flag('clobber', op.id, key, tag), {
         superseded: { writer: rec.writer, tag: rec.tag, values: rec.values },
         by: tag
       })
     }
-    // LWW-array register under linearization (§5): empty array = empty
-    // state (key omitted at materialize), the register row remains.
+    // LWW array register (SPEC §5). An empty array is the empty state:
+    // materialize omits the key, but the register row remains.
     this.put(K.cField(op.id, key), { values, tag, writer: W })
     return null
   }
@@ -829,7 +771,7 @@ class Applier {
     rec.removed = rec.removed || {}
     for (const t of op.tags || []) {
       if (Object.prototype.hasOwnProperty.call(rec.els, t) && rec.els[t] === value) {
-        // §5 SU-Set: remove exactly the cited observed tokens.
+        // OR-set remove (SPEC §5): remove exactly the cited observed tags.
         delete rec.els[t]
         const set = rec.removed[value] || []
         if (!set.includes(t)) {
@@ -838,10 +780,11 @@ class Applier {
         }
         rec.removed[value] = set
       } else if ((rec.removed[value] || []).includes(t)) {
-        // §5: citing an already-removed token is a silent no-op (benign
-        // concurrent removes never flag).
+        // A cite of a tag that is already removed is a no-op. Concurrent
+        // removes never flag (SPEC §5).
       } else {
-        // §5: a never-observed citation is ignored for effect, audited once.
+        // A cite of a tag that was never observed has no effect. apply
+        // flags it once (SPEC §5).
         this.put(K.flag('staletag', op.id, value, t), { by: tag })
       }
     }
@@ -855,33 +798,33 @@ class Applier {
     const tag = makeTag(W, seq)
     let base = op.base == null ? null : String(op.base).toLowerCase()
     if (base !== null && !/^[0-9a-f]{64}$/.test(base)) {
-      // A base that is not even hash-shaped can never key a revision;
-      // rejected (resolution where §5 is silent — well-formed unknown
-      // hashes follow the fabricated-ancestry rule below).
+      // A base that is not hash-shaped can never key a revision, so apply
+      // rejects it. A well-formed unknown hash follows the fabricated
+      // ancestry rule below.
       return { rejected: true, reason: 'bad-base' }
     }
     this.writeAfterDelete(r.meta, op.id, tag)
     const head = await this.val(K.cBody(op.id))
-    // §5 base discipline: null base while a head exists cites that head —
-    // the only flag-free fresh start is the concept's first revision.
+    // Base discipline (SPEC §5): a null base with a head present cites the
+    // head. The only flag-free fresh start is the first revision.
     if (base === null && head !== undefined) base = head
     const baseKnown = base === null || (await this.val(K.cRev(op.id, base))) !== undefined
     const text = nfc(op.text)
     const rh = revHash(base, text)
     if ((await this.val(K.cRev(op.id, rh))) === undefined) {
-      // `at` in the rev record is the op's informational timestamp (§4).
       this.put(K.cRev(op.id, rh), { base, text, writer: W, at: this.at })
       if (base !== null) this.put(K.revByBase(op.id, base, rh), true)
     }
     if (!baseKnown) {
-      // §5 (M5): fabricated ancestry is stored, flagged against the head
-      // position, and never becomes head until ResolveConflict selects it.
+      // Fabricated ancestry (SPEC §5): the revision is stored and flagged
+      // against the head position. It never becomes head until a
+      // ResolveConflict selects it.
       this.put(K.flag('conflict', op.id, head === undefined ? '-' : head, rh), { base })
       return null
     }
     if (base !== null) {
-      // §5: same-non-null-base siblings — both retained, exactly one flag
-      // per pair, found via revbybase/ in O(matches) (M1 ancestry).
+      // Siblings on the same non-null base (SPEC §5): both stay, one flag
+      // per pair. revbybase/ finds them in O(matches).
       for (const { key } of await this.scanAll(K.revByBasePrefix(op.id, base))) {
         const sib = K.parseKey(key)[3]
         if (sib === rh) continue
@@ -890,7 +833,7 @@ class Applier {
       }
     }
     if (head !== rh) {
-      this.put(K.cBody(op.id), rh) // head pointer is LWW under linearization
+      this.put(K.cBody(op.id), rh) // the head pointer is LWW under linearization
       await this.recomputeOutbound(op.id)
     }
     return null
@@ -912,9 +855,9 @@ class Applier {
       }
       cited.add(s)
     }
-    // §5: valid only while at least one cited flag is open — replayed or
-    // racing resolves reject; the first valid resolve wins by
-    // linearization.
+    // Valid only while at least one cited flag is open (SPEC §5). apply
+    // rejects a replayed or racing resolve. The first valid resolve wins
+    // by linearization.
     const openCited = []
     for (const { key } of await this.scanAll(K.flagPrefix('conflict', op.id))) {
       const segs = K.parseKey(key)
@@ -927,15 +870,15 @@ class Applier {
     this.writeAfterDelete(r.meta, op.id, tag)
     let newHead = keep
     if (op.text != null) {
-      // §5: apply synthesizes one revision with base = keep.
+      // apply synthesizes one revision with base = keep (SPEC §5).
       const text = nfc(op.text)
       const rh = revHash(keep, text)
       if ((await this.val(K.cRev(op.id, rh))) === undefined) {
         this.put(K.cRev(op.id, rh), { base: keep, text, writer: W, at: this.at })
         this.put(K.revByBase(op.id, keep, rh), true)
       }
-      // The synthesized revision is an ordinary §5 revision: a concurrent
-      // edit already citing `keep` is a true sibling of it and flags.
+      // The synthesized revision is an ordinary revision: a concurrent
+      // edit that cites `keep` is a true sibling of it and flags.
       for (const { key } of await this.scanAll(K.revByBasePrefix(op.id, keep))) {
         const sib = K.parseKey(key)[3]
         if (sib === rh) continue
@@ -967,9 +910,9 @@ class Applier {
         curWriter = parseTag(cur.tag).writer
       } catch {}
       if (curWriter !== W) {
-        // §7: rename + concurrent rename → linearization winner, loser
-        // recorded (the <tag> component keeps this key unique even against
-        // a frontmatter field literally named 'path').
+        // Concurrent renames (SPEC §7): the linearization winner holds,
+        // and the loser is recorded. The <tag> component keeps this key
+        // unique, also against a frontmatter field named 'path'.
         this.put(K.flag('clobber', op.id, 'path', tag), {
           superseded: { tag: cur.tag, path: cur.path },
           by: tag
@@ -984,8 +927,8 @@ class Applier {
       if (cur && cur.path !== path) {
         this.events.push({ kind: 'rename', id: op.id, from: cur.path, to: path })
       }
-      // §9: a SetPath re-runs resolution of the concept's own
-      // relative-form edges.
+      // A SetPath resolves the relative links of the concept again
+      // (SPEC §9).
       await this.recomputeOutbound(op.id)
     }
     return null
@@ -999,8 +942,8 @@ class Applier {
     if (meta.deleted != null) return null // already tombstoned: idempotent
     meta.deleted = tag
     this.put(K.cMeta(op.id), meta)
-    // §8: the concept disappears from path/ (and materialize); bytes and
-    // _id remain.
+    // The concept leaves path/ and materialize. Its bytes and _id remain
+    // (SPEC §8).
     if (r.pathRec) await this.dropClaim(op.id, r.pathRec.path)
     await this.recomputeOutbound(op.id)
     this.events.push({ kind: 'delete', id: op.id })
@@ -1011,17 +954,16 @@ class Applier {
     const r = await this.requireConcept(op, writerRec)
     if (r.rejected) return r
     const tag = makeTag(W, seq)
-    // §8: permanent audit record.
+    // A permanent audit record (SPEC §8).
     this.put(K.flag('undelete', op.id, tag), {})
     const meta = r.meta
     if (meta.deleted == null) return null
     delete meta.deleted
     this.put(K.cMeta(op.id), meta)
     if (r.pathRec) {
-      // The restored claim re-enters at THIS position (fresh ord): a
-      // concept that vacated by deletion cannot evict an interim holder
-      // (§7 first-wins; resolution where the spec is silent on undelete
-      // ordinal semantics).
+      // The restored claim re-enters at THIS position, with a fresh ord.
+      // A concept that left by deletion cannot evict an interim holder
+      // (SPEC §7, first wins).
       this.put(K.cPath(op.id), { path: r.pathRec.path, tag: r.pathRec.tag, ord: this.pos })
       await this.enterClaim(op.id, r.pathRec.path)
     }
@@ -1043,11 +985,11 @@ class Applier {
   }
 
   /**
-   * §7 collision recompute for one casefold group: for every exact path,
-   * the live claim with the lowest ord holds path/<p> (first-wins — a
-   * squatter cannot evict); across the whole casefold group, every claim
-   * but the group winner carries flag/pathcollision/<its path>/<id>,
-   * cleared here the moment its claim ceases to collide.
+   * Collision recompute for one casefold group (SPEC §7). For every exact
+   * path, the live claim with the lowest ord holds path/<p>: first wins,
+   * so a squatter cannot evict. Across the group, every claim but the
+   * group winner carries flag/pathcollision/<path>/<id>. The flag clears
+   * here when the claim stops colliding.
    */
   async recomputeGroup(cf, touchedExactPaths = []) {
     const claims = []
@@ -1085,9 +1027,9 @@ class Applier {
   }
 
   /**
-   * Maintain path/<p> plus the §9 late-binding link resolution: edges into
-   * a vacated path demote from bl/ back to wanted/; edges into a newly
-   * occupied path promote (I8 is the definition).
+   * Maintain path/<p> and the late-binding link resolution of SPEC §9.
+   * Edges into a vacated path demote from bl/ to wanted/. Edges into a
+   * newly occupied path promote. I8 is the definition.
    */
   async setExactHolder(p, newId) {
     const cur = await this.val(K.path(p))
@@ -1118,9 +1060,9 @@ class Applier {
 
   // ---------- link graph maintenance (§9 apply-time, I8) ----------
   /**
-   * Recompute one concept's outbound edges from its current head text and
-   * path: link/ rows, bl/ for resolved targets, wanted/ (+ rank) for
-   * unresolved ones. A dead or pathless or bodyless concept has no edges.
+   * Recompute the outbound edges of one concept from its head text and
+   * path: link/ rows, bl/ for resolved targets, wanted/ and its rank for
+   * unresolved ones. A dead, pathless or bodyless concept has no edges.
    */
   async recomputeOutbound(id) {
     const meta = await this.val(K.cMeta(id))
@@ -1155,8 +1097,8 @@ class Applier {
       if (holder !== undefined) {
         this.put(K.bl(holder, id), true)
       } else {
-        // §9: an unresolved target goes to wanted/ — the ranked demand
-        // index — and NEVER to flag/ (I4: demand is not loss).
+        // An unresolved target goes to wanted/, never to flag/ (SPEC §9,
+        // I4). Demand is not loss.
         await this.addWanted(t, id)
       }
     }
@@ -1180,7 +1122,7 @@ class Applier {
     this.updateRank(p, before, before - 1)
   }
 
-  /** §4: wantedrank/ is rewritten on referrer-count change. */
+  /** wantedrank/ is rewritten when the referrer count changes (SPEC §4). */
   updateRank(p, oldCount, newCount) {
     if (oldCount > 0) this.delKey(K.wantedRank(oldCount, p))
     if (newCount > 0) this.put(K.wantedRank(newCount, p), newCount)

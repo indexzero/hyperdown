@@ -1,9 +1,8 @@
-// Pure markdown link extraction + target resolution (okf SPEC §9,
-// "Extraction, normative"). Runs inside apply on every body-head change so
-// link/, bl/ and wanted/ are identical on every peer (I2, I8): CommonMark
-// inline and reference links only — no autolinks, no images — skipping
-// fenced/indented code blocks and inline code spans. Everything here is a
-// pure function of (text, sourceDir): no clock, no randomness (I1).
+// Markdown link extraction and target resolution (SPEC §9, "Extraction,
+// normative"). apply runs it on every head change, so link/, bl/ and
+// wanted/ are the same on every peer (I2, I8). CommonMark inline and
+// reference links only: no autolinks, no images. Code blocks and code
+// spans are skipped. Every function is pure over (text, sourceDir) (I1).
 import { nfc } from './canonical.js'
 
 const SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/
@@ -14,9 +13,9 @@ function normLabel(label) {
 }
 
 /**
- * Resolve `..`/`.` segments of `target` against `baseDir` ('' = bundle
- * root). Returns the normalized bundle-relative path, or null when the
- * resolution escapes the bundle root (§9: ignored).
+ * Resolve the `..` and `.` segments of `target` against `baseDir` ('' is
+ * the bundle root). Returns the bundle-relative path, or null when the
+ * resolution escapes the bundle root (SPEC §9: ignored).
  */
 export function resolveTarget(target, baseDir) {
   const segs = (baseDir ? baseDir.split('/') : []).concat(String(target).split('/'))
@@ -34,20 +33,20 @@ export function resolveTarget(target, baseDir) {
 }
 
 /**
- * Normalize one raw link destination per §9. Returns the bundle-relative
- * path that keys `link/`, or null when the target is a citation (URI
- * scheme / protocol-relative), escapes the root, or normalizes to nothing.
+ * Normalize one raw link destination (SPEC §9). Returns the bundle-relative
+ * path that keys `link/`, or null when the target is a citation (a URI
+ * scheme or protocol-relative), escapes the root, or normalizes to nothing.
  */
 export function normalizeLinkTarget(raw, sourceDir) {
   let t = String(raw)
   if (t.startsWith('<') && t.endsWith('>')) t = t.slice(1, -1) // CommonMark <dest>
-  if (SCHEME_RE.test(t)) return null // URI scheme → citation, ignored
-  if (t.startsWith('//')) return null // protocol-relative → citation
+  if (SCHEME_RE.test(t)) return null // a URI scheme is a citation, ignored
+  if (t.startsWith('//')) return null // protocol-relative is a citation
   t = t.split('#')[0] // strip any fragment
   if (t === '') return null
   const resolved = t.startsWith('/')
-    ? resolveTarget(t.slice(1), '') // '/'-prefixed = bundle-relative
-    : resolveTarget(t, sourceDir) // else relative to the source's directory
+    ? resolveTarget(t.slice(1), '') // a '/' prefix is bundle-relative
+    : resolveTarget(t, sourceDir) // else relative to the directory of the source
   if (resolved === null || resolved === '') return null
   // strip one trailing '.md' (materialize emits `<path>.md`)
   const stripped = resolved.replace(/\.md$/i, '')
@@ -56,15 +55,15 @@ export function normalizeLinkTarget(raw, sourceDir) {
 }
 
 /**
- * Extract the set of resolved bundle-relative link-target paths from a
- * markdown body. `sourceDir` is the directory of the source concept's
- * current path ('' at the bundle root).
+ * Extract the set of resolved bundle-relative link targets from a
+ * markdown body. `sourceDir` is the directory of the current path of the
+ * source concept ('' at the bundle root).
  */
 export function extractLinks(text, sourceDir = '') {
   const targets = new Set()
   if (!text) return targets
 
-  // 1. drop fenced code blocks (``` / ~~~) and indented code lines
+  // 1. drop fenced code blocks (``` or ~~~) and indented code lines
   const kept = []
   let fence = null
   for (const line of String(text).split('\n')) {
@@ -86,8 +85,8 @@ export function extractLinks(text, sourceDir = '') {
   // 2. blank inline code spans (matched backtick runs)
   body = body.replace(/(`+)[^`]*?\1/g, ' ')
 
-  // 3. collect reference definitions, then blank the definition lines so
-  //    they are not re-read as shortcut references
+  // 3. collect reference definitions, then blank the definition lines, so
+  //    that step 6 does not read them as shortcut references
   const defs = new Map()
   for (const m of body.matchAll(/^ {0,3}\[([^\]]+)\]:[ \t]*(\S+)/gm)) {
     const label = normLabel(m[1])
@@ -100,7 +99,7 @@ export function extractLinks(text, sourceDir = '') {
     if (t !== null) targets.add(t)
   }
 
-  // 4. inline links [text](dest "title") — images (![) are skipped
+  // 4. inline links [text](dest "title"). An image (![) is skipped.
   for (const m of body.matchAll(/(!?)\[([^\]]*)\]\(([^()\s]+)(?:[ \t]+"[^"]*")?\)/g)) {
     if (m[1] !== '!') add(m[3])
   }
@@ -114,7 +113,7 @@ export function extractLinks(text, sourceDir = '') {
   }
   body = body.replace(/!?\[[^\]]*\]\[[^\]]*\]/g, ' ')
 
-  // 6. shortcut [label] references (only when a definition exists)
+  // 6. shortcut [label] references, only when a definition exists
   for (const m of body.matchAll(/(!?)\[([^\]]+)\]/g)) {
     if (m[1] === '!') continue
     const t = defs.get(normLabel(m[2]))

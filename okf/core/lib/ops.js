@@ -1,20 +1,16 @@
-// Op encode/decode wrapper over the generated hyperdispatch codec (okf
-// SPEC §3). Pattern ancestor: vault-ld/core/lib/ops.js (patterns only, no
-// code path shared — SPEC §0 copy-don't-depend).
+// Op encode and decode over the generated hyperdispatch codec (SPEC §3).
 //
-// Sources verified against the installed packages (2026-07-13):
-// - hyperdispatch@1.6 example.js + lib/codegen.js: the generated
-//   spec/hyperdispatch exports `encode(name, message)` and `decode(buffer)`
-//   returning { id, name, value }; unknown command ids throw
-//   DispatchError.HANDLER_NOT_FOUND_BY_ID.
-// - hyperschema@1.21 README: optional fields decode as null and must be
-//   present (possibly null) at encode time.
+// The generated spec/hyperdispatch exports `encode(name, message)` and
+// `decode(buffer)`, which returns { id, name, value }. An unknown command
+// id throws DispatchError.HANDLER_NOT_FOUND_BY_ID. hyperschema decodes an
+// optional field as null, and encode needs every optional field present,
+// null or not.
 import { encode as hdEncode, decode as hdDecode } from '../spec/hyperdispatch/index.js'
 import { nfc } from './canonical.js'
 
 const NS = '@okf/'
 
-// The 12 ops of SPEC §3, in wire-id order (append-only).
+// The 12 ops of SPEC §3, in wire-id order. Append only.
 export const OP_TYPES = [
   'create-concept',
   'set-field',
@@ -32,9 +28,8 @@ export const OP_TYPES = [
 
 export const GOVERNANCE_OPS = new Set(['add-writer', 'remove-writer', 'set-writer-policy'])
 
-// Optional wire fields per struct (hyperschema optionals decode as null and
-// must be present — possibly null — at encode time). `clock` and `at` are
-// on every op (§3).
+// The optional wire fields of each struct. `clock` and `at` are on every
+// op (SPEC §3).
 const OPTIONALS = {
   'create-concept': ['id', 'clock', 'at'],
   'set-field': ['clock', 'at'],
@@ -51,9 +46,9 @@ const OPTIONALS = {
 }
 
 /**
- * opId tag (§3, §6): `writerKeyHex || seqHex` where seqHex is minimal
- * lowercase hex, no leading zeros, '0' for seq 0. This is also the §6 mint
- * id form. Derived by apply from the node, never read from the payload.
+ * The tag (opId) of SPEC §3 and §6: `writerKeyHex || seqHex`, where seqHex
+ * is minimal lowercase hex, no leading zeros, '0' for seq 0. It is also
+ * the mint id form. apply derives it from the node, never from the payload.
  */
 export function makeTag(writerKey, seq) {
   const w =
@@ -61,14 +56,14 @@ export function makeTag(writerKey, seq) {
   return w + Number(seq).toString(16)
 }
 
-/** Inverse of makeTag: writer keys are 32 bytes = 64 hex chars. */
+/** Inverse of makeTag. A writer key is 32 bytes, so 64 hex chars. */
 export function parseTag(tag) {
   const t = String(tag)
   if (!/^[0-9a-f]{65,}$/.test(t)) throw new TypeError('not a tag: ' + tag)
   return { writer: t.slice(0, 64), seq: parseInt(t.slice(64), 16) }
 }
 
-/** Encode an op for appending to the writer's core. */
+/** Encode an op for append to a writer's core. */
 export function encodeOp(type, payload) {
   if (!OP_TYPES.includes(type)) throw new TypeError('unknown op type: ' + type)
   const msg = { ...payload }
@@ -79,10 +74,10 @@ export function encodeOp(type, payload) {
 }
 
 /**
- * Decode a raw op buffer. NEVER throws (§3: "apply MUST NOT throw"):
- * returns { ok: true, type, op } or { ok: false, reason } with reason
- * 'unknown-msgid' (unregistered command id) or 'undecodable' (garbage
- * bytes). The recorded reason is view-observable, so the mapping is fixed.
+ * Decode a raw op buffer. Never throws (SPEC §3). Returns
+ * { ok: true, type, op }, or { ok: false, reason } with 'unknown-msgid'
+ * for an unregistered command id or 'undecodable' for garbage bytes. The
+ * reason is in the view, so the mapping is fixed.
  */
 export function decodeOp(buf) {
   let decoded
@@ -100,9 +95,10 @@ export function decodeOp(buf) {
 }
 
 /**
- * Normalize an op-carried vector clock ([[writerHex, seq], ...] or
- * [{ writerKey, seq }, ...]) into { writerHex: seq }. Returns null for a
- * missing or malformed clock (§8: apply rejects it as 'forged-clock').
+ * Normalize an op clock, [[writerHex, seq], ...] or
+ * [{ writerKey, seq }, ...], into { writerHex: seq }. Returns null for a
+ * missing or malformed clock. apply rejects that as 'forged-clock'
+ * (SPEC §8).
  */
 export function normalizeClock(clock) {
   if (!Array.isArray(clock)) return null
@@ -124,7 +120,7 @@ export function normalizeClock(clock) {
   return out
 }
 
-/** NFC-normalize the user-string fields of a decoded op (§3). */
+/** NFC the user string fields of a decoded op (SPEC §3). */
 export function normalizeOpStrings(op) {
   const out = { ...op }
   for (const f of ['id', 'key', 'path', 'type', 'value', 'text', 'base', 'keep']) {

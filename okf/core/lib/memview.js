@@ -1,22 +1,8 @@
-// In-memory view implementing the hyperbee2 surface `apply` uses (okf SPEC
-// §1): get / write() batches with tryPut+tryDelete+flush / createReadStream.
-// Pattern ancestor: vault-ld/core/lib/memview.js (classic-hyperbee surface);
-// rewritten here for hyperbee2 (SPEC §0 copy-don't-depend).
-//
-// API shape verified against the installed hyperbee2@2.10.3 sources:
-// - index.js: `async get(key)` returns a finalized key pointer ({ key,
-//   value, ... }) or null; `write(opts)` returns a WriteBatch;
-//   `createReadStream(options)` returns a RangeStream.
-// - lib/write.js: WriteBatch has `tryPut(key, value)`, `tryDelete(key)`,
-//   `async flush()`.
-// - lib/ranges.js: range options are { gt, gte, lt, lte, reverse = false,
-//   limit = -1 }; the stream yields entries with .key/.value.
-//
-// Keys sort in UTF-8 byte order (hyperbee2 compares keys with b4a.compare
-// over the binary key encoding), not UTF-16 code-unit order, so ordering
-// here matches a hyperbee2 view with utf-8 keys. Values are stored
-// verbatim as strings (apply writes JSON strings; a real store would see
-// utf-8 buffers holding the same bytes).
+// In-memory view with the hyperbee2 surface that apply uses (SPEC §1):
+// `get(key)` returns { key, value } or null, `write()` returns a batch
+// with `tryPut`, `tryDelete` and `flush`, and `createReadStream` takes
+// { gt, gte, lt, lte, reverse, limit }. Keys sort in UTF-8 byte order, as
+// in hyperbee2, not in UTF-16 code unit order. Values are strings.
 import { createHash } from 'node:crypto'
 
 function byteCompare(a, b) {
@@ -95,7 +81,7 @@ export class MemView {
     })()
   }
 
-  /** I2/I3 verification: hash of a full range scan. */
+  /** Hash of a full range scan, for the I2 and I3 checks. */
   hash() {
     const h = createHash('sha256')
     for (const k of this.sortedKeys()) {
@@ -107,7 +93,7 @@ export class MemView {
     return h.digest('hex')
   }
 
-  /** Plain object dump with JSON-decoded values (test aid). */
+  /** Plain object dump with JSON-decoded values, a test aid. */
   dump(prefix = '') {
     const out = {}
     for (const k of this.sortedKeys()) {

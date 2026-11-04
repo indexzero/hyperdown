@@ -1,35 +1,33 @@
-// Copied from vault-ld/core/lib/canonical.js at 046d37f; diverges freely —
-// see okf/SPEC.md §0 copy-don't-depend. Section references below are to the
-// vault-ld SPEC-FINAL the module was written against; the parts auto-okf
-// relies on are nfc(), stableStringify(), byteForm(), valuesEqual(),
-// sortValues(), canonicalArray() and valueDepth() (okf SPEC §3, §5).
-// Canonical string and literal forms (SPEC-FINAL §3.1, §10.2).
+// Copied from vault-ld/core/lib/canonical.js at 046d37f. It diverges
+// freely (SPEC §0, copy-don't-depend). okf uses nfc(), stableStringify(),
+// byteForm(), valuesEqual(), sortValues(), canonicalArray() and
+// valueDepth() (SPEC §3, §5).
 //
-// Everything here is a pure function: no wall clock, no randomness, no
-// locale-dependent formatting (I1). Literal canonicalization follows the XSD
-// canonical lexical mappings, never platform toString defaults (§10.2).
+// Every function here is pure: no wall clock, no randomness, no
+// locale-dependent formatting (I1). Literal canonicalization follows the
+// XSD canonical lexical mappings, never a platform toString default.
 
-/** Unicode NFC normalization (§3.1). Applied before any key/IRI/hash use. */
+/** Unicode NFC normalization. Applied before any key or hash use. */
 export function nfc(s) {
   return String(s).normalize('NFC')
 }
 
-/** UTF-8 byte length of the NFC form (used by the §8.4 oversize-subject limit). */
+/** UTF-8 byte length of the NFC form. */
 export function nfcByteLength(s) {
   return Buffer.byteLength(nfc(s), 'utf8')
 }
 
 /**
- * Canonical xsd:double lexical form per the XSD canonical mapping
- * (https://www.w3.org/TR/xmlschema11-2/#double): mantissa in [1,10) with at
- * least one fractional digit, 'E', exponent with no leading zeros.
+ * Canonical xsd:double lexical form
+ * (https://www.w3.org/TR/xmlschema11-2/#double): mantissa in [1,10) with
+ * at least one fractional digit, 'E', exponent with no leading zeros.
  */
 export function canonicalDouble(n) {
   if (Number.isNaN(n)) return 'NaN'
   if (n === Infinity) return 'INF'
   if (n === -Infinity) return '-INF'
   if (n === 0) return Object.is(n, -0) ? '-0.0E0' : '0.0E0'
-  // toExponential() with no argument is exact & deterministic per ECMA-262.
+  // toExponential() with no argument is exact and deterministic per ECMA-262.
   const m = /^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/.exec(n.toExponential())
   const sign = m[1]
   const int = m[2]
@@ -41,7 +39,7 @@ export function canonicalDouble(n) {
 
 /**
  * Canonical xsd:integer lexical form: no decimal point, no leading zeros,
- * no '+' sign (§10.2).
+ * no '+' sign.
  */
 export function canonicalInteger(v) {
   const s = typeof v === 'bigint' ? v.toString(10) : String(v)
@@ -52,8 +50,8 @@ export function canonicalInteger(v) {
 }
 
 /**
- * Canonical xsd:decimal lexical form: '.' required, no leading/trailing
- * zeros except a single guard zero on each side (§10.2).
+ * Canonical xsd:decimal lexical form: '.' required, no leading or trailing
+ * zeros except one guard zero on each side.
  */
 export function canonicalDecimal(v) {
   const s = String(v)
@@ -70,9 +68,9 @@ export function canonicalDecimal(v) {
 }
 
 /**
- * Canonical xsd:dateTime: ISO-8601 with explicit 'Z', milliseconds omitted
- * when zero (§10.2). Date parsing of ISO strings is defined by ECMA-262 and
- * deterministic across platforms.
+ * Canonical xsd:dateTime: ISO-8601 with 'Z', milliseconds omitted when
+ * zero. ECMA-262 defines the parse of an ISO string, so it is the same on
+ * every platform.
  */
 export function canonicalDateTime(v) {
   const d = v instanceof Date ? v : new Date(String(v))
@@ -80,19 +78,19 @@ export function canonicalDateTime(v) {
   return d.toISOString().replace(/\.000Z$/, 'Z')
 }
 
-/** Canonical xsd:date: YYYY-MM-DD (§10.2). */
+/** Canonical xsd:date: YYYY-MM-DD. */
 export function canonicalDate(v) {
   return canonicalDateTime(v).slice(0, 10)
 }
 
-/** Language tags are lowercased (§10.2). */
+/** A language tag is lowercase. */
 export function canonicalLang(tag) {
   return String(tag).toLowerCase()
 }
 
 const XSD = 'http://www.w3.org/2001/XMLSchema#'
 
-/** Canonical lexical form for a typed-literal value object (§10.2). */
+/** Canonical lexical form of a typed literal. */
 export function canonicalLexical(value, datatype) {
   switch (datatype) {
     case XSD + 'integer':
@@ -120,7 +118,7 @@ export function canonicalLexical(value, datatype) {
   }
 }
 
-/** JSON stringify with sorted keys — deterministic (I1). */
+/** JSON with sorted keys, so the output is deterministic (I1). */
 export function stableStringify(v) {
   if (v === null || typeof v !== 'object') return JSON.stringify(v)
   if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']'
@@ -129,13 +127,13 @@ export function stableStringify(v) {
 }
 
 /**
- * Normalize an op value into its canonical stored form (§3.1, §10.2):
- * - strings are NFC-normalized
- * - `{ ref }` wiki-link references get an NFC-normalized target
- * - `{ value, datatype?, lang? }` typed literals get canonical lexicals and
- *   lowercased language tags
- * - plain numbers/booleans/null pass through (JSON round-trip of numbers is
- *   deterministic per ECMA-262)
+ * Normalize an op value into its canonical stored form:
+ * - a string becomes NFC
+ * - a `{ ref }` reference gets an NFC target
+ * - a `{ value, datatype?, lang? }` typed literal gets a canonical lexical
+ *   and a lowercase language tag
+ * - a number, a boolean or null passes through (the JSON round trip of a
+ *   number is deterministic per ECMA-262)
  */
 export function canonicalValue(v) {
   if (v === null || v === undefined) return null
@@ -154,9 +152,9 @@ export function canonicalValue(v) {
 }
 
 /**
- * The §10.2 byte form of a value: a total-order sort key (type discriminator
- * + canonical lexical). Register arrays and or-set/unmapped listings are
- * ordered by this form; equality of byte forms is value identity (§3.1).
+ * The byte form of a value: a total-order sort key, type discriminator
+ * plus canonical lexical. Register arrays sort by it. Two values with the
+ * same byte form are the same value.
  */
 export function byteForm(v) {
   const c = canonicalValue(v)
@@ -177,7 +175,7 @@ export function valuesEqual(a, b) {
   return byteForm(a) === byteForm(b)
 }
 
-/** Sort values ascending by their §10.2 byte form (UTF-8 byte order). */
+/** Sort values ascending by byte form, in UTF-8 byte order. */
 export function sortValues(values) {
   return [...values].sort((a, b) => {
     const x = Buffer.from(byteForm(a), 'utf8')
@@ -186,7 +184,7 @@ export function sortValues(values) {
   })
 }
 
-/** Canonical register array (§5.1): sorted by byte form, deduplicated. */
+/** Canonical register array (SPEC §5): sorted by byte form, deduplicated. */
 export function canonicalArray(o) {
   const arr = Array.isArray(o) ? o : [o]
   const seen = new Set()
@@ -200,7 +198,7 @@ export function canonicalArray(o) {
   return out
 }
 
-/** Literal nesting depth for the §8.4 depth-exceeded limit. */
+/** Literal nesting depth, for the depth limit. */
 export function valueDepth(v, d = 1) {
   if (v === null || typeof v !== 'object') return d
   let max = d
@@ -208,7 +206,7 @@ export function valueDepth(v, d = 1) {
   for (const c of children) {
     const cd = valueDepth(c, d + 1)
     if (cd > max) max = cd
-    if (max > 512) return max // hard stop; limit is 64 anyway
+    if (max > 512) return max // hard stop, the limit is 64
   }
   return max
 }

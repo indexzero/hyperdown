@@ -1,73 +1,29 @@
-// Store scope (T5, T7): the substrate attacks that the product
-// configuration closes, adopted from the T1 spike (D-003) as assertions.
-// The one product configuration: optimistic: false, bootstrapWeight: 0,
-// and every okf grant at weight 0.
+// The substrate attacks that the product configuration closes, as
+// assertions, and the residuals that it does not close, as measurements.
+// The configuration is optimistic: false, bootstrapWeight: 0, and every okf
+// grant at weight 0. DEVIATIONS.md "Substrate behaviour that okf relies on"
+// states what each setting closes and why.
 //
-// Weight 0 (T5). With nobody at a weight above 0, nobody has standing. No
-// peer collects an approval (autobee index.js:1254-1255), no claim above 0
-// verifies (lib/witness.js:33-51), and so no resolved weight can depend on
-// a node's own position, which is the livelock's mechanism.
-// - A2, G4: a key that a member names in a forged approval stays at 0.
-// - A3, G1: a forged approval plus a forged witness, driven by a member
-//   (s4). Every peer folds within its deadline.
-// - G35: no peer collects an approval, with more than 32 promotions
-//   pending.
-// - G50: no writer climbs, also when a member forges a higher-tier
-//   approval for another member.
+// Rules that every test here follows:
+// - The honest ops run before the attack, so the hash before the attack is
+//   the hash that must stay.
+// - The positive control comes first (deliveredTo): every peer holds every
+//   attack block. No effect on a peer that never got the node proves
+//   nothing.
+// - A residual test passes because the effect is the one that
+//   SECURITY_MODEL.md names. It never asserts a residual away.
+// - Every wait has a deadline: each poll runs under until(), and each close
+//   and each fold after a heal under timed(). A stall fails an assertion
+//   and never hangs the run.
 //
-// optimistic: false (T7). autobee drops every node of a writer it has not
-// added before _applyBatch (index.js:1357-1364), so an outsider puts no op
-// and no approval into apply. Each outsider test sends its forged node,
-// announces the outsider's core so that each peer fetches it, and then
-// asserts on every peer. First the positive control (deliveredTo): the
-// peer holds every attack block, because no effect on a peer that never
-// got the node proves nothing. Then three things: no outsider node reaches
-// okf's apply, update() returns within its deadline, and the view hash
-// does not change. Every honest op runs before the attack, so the hash
-// before the attack is the hash that must stay.
-// - A1, G3: a stranger's approval that names itself (s1).
-// - A4, G1: the livelock driven by strangers only (s5).
-// - A5, G2: an outsider's approval at weight 1e9, in a child process.
-// - A6, G43: an outsider's forged witness that cites a present length.
-// - A7, G5: an outsider's backdated node that links one side of a
-//   concurrent pair.
+// Not here: the member arm of the forged witness. A claim needs an approver
+// whose standing is at least the claimed weight (autobee
+// `approverQualified`), and at weight 0 nobody qualifies.
 //
-// The residuals (T11). The last four tests measure what the product
-// configuration does NOT close, so SECURITY_MODEL can state it. A residual
-// test passes because the effect is the one the document names. It never
-// asserts a residual away.
-// - A5b, G2: a member's approval at weight 1e9 kills the SENDER that folds
-//   it first, in a child process. That is the sender's drain order, not a
-//   bound on the attack.
-// - A5c, G2: the same approval from a client that folds nothing. The block
-//   is durable in the attacker's core, the victim holds it (proved), and
-//   the victim dies folding it. In a child process.
-// - A7b, G5: a member's backdated node flips the winner on every peer.
-// - A8, G44: an outsider wakeup flood opens one writer core per announced
-//   key, past autobee's untrusted cap, and the bytes persist.
-// - G32: a key that a member approves costs one flag per op, takes no rate
-//   token, and can grant more autobee writers.
-//
-// Not here: the member arm of A6 (G43). The forged witness is inert in
-// every arm, because a claim needs an approver with standing at least the
-// claimed weight (lib/witness.js:38-50), and at weight 0 nobody qualifies
-// (genesis only up to bootstrapWeight, lib/witness.js:47). A3 sends a
-// member's forged witness, and its claimant stays at 0 (D-047 F13). A2 and
-// G50 prove that no key a member names in an approval rises above 0.
-//
-// Also not here: the A9 missing-link variant of G44. autobee's own local
-// flush gate refuses to flush a node whose links are missing
-// (lib/writers.js:641-664), so a wrapped appendLocal cannot send that
-// dependency graph. forgeRawNode can (the D-003 spike measured it that
-// way), and SECURITY_MODEL states the trigger and its retained waits from
-// the source (lib/writers.js:603-615, :673-678, :706, :719). A8 measures
-// the announce cost of G44 through the documented wakeup protocol.
-//
-// Every wait has a deadline. Each test has a timeout. Each poll runs under
-// until(), each close under timed(), and every fold after the livelock
-// heal, where a livelock stalls, runs under timed(). A stall therefore
-// fails an assertion and never hangs the run. At weight 2 the A3 fold gave
-// TIMEOUT.
+// Also not here: a node whose links are missing. The local flush gate of
+// autobee refuses to flush it (`Writer._next`), and only forgeRawNode can
+// send it. SECURITY_MODEL.md "What the substrate decides, and what okf
+// decides", point (b), states that trigger and its cost.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomBytes } from 'node:crypto'
@@ -118,9 +74,10 @@ async function carrierRows(v) {
 
 /**
  * Read the outsider claims on each peer `[name, vault, appliedSet]`, each
- * step under a deadline: does update() return, is the view hash still
- * `hash0`, which outsider keys reached okf's apply (watchApply), which
- * have a seen/ entry, and which does autobee's system record.
+ * step under a deadline. Two claims are per peer: update() returns, and the
+ * view hash is still `hash0`. Three are per outsider key: it reached the
+ * apply of okf (watchApply), it has a seen/ entry, autobee's system
+ * records it.
  */
 async function outsiderRows(peers, outsiders, hash0) {
   const rows = {}
@@ -156,10 +113,9 @@ function assertOutsiderShut(rows) {
 }
 
 // ---------------------------------------------------------------------------
-// G3 (ab2-review/scratch-B/s1-stranger-self-admit.mjs): a stranger sends one
-// optimistic node whose approvals name itself. With optimistic: true that
-// node reached apply, its approval added the stranger to autobee's system,
-// and the stranger became writable.
+// A stranger sends one optimistic node whose approvals name itself. With
+// optimistic: true the node reaches apply, its approval adds the stranger
+// to autobee's system, and the stranger becomes writable.
 // ---------------------------------------------------------------------------
 test('A1 G3: a stranger cannot admit itself with a forged approval (s1)', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a1-a')))
@@ -190,7 +146,7 @@ test('A1 G3: a stranger cannot admit itself with a forged approval (s1)', { time
   out.forged = forged.status === 'ok' && forged.value === true ? 'ok' : forged.status
   out.delivered = await deliveredTo(peers, [{ key: s.localKey, length: attackLen }])
   out.strangerWritable = await until(async () => (await s.update(), s.writable), 3000)
-  // the stranger's next append, through its Bundle
+  // the next append of the stranger, through its Bundle
   const plain = await timed(() => s.createConcept('from-s-plain', 'note'), 20000)
   out.plainAppend = plain.status
   out.plainError = plain.error ?? null
@@ -212,9 +168,9 @@ test('A1 G3: a stranger cannot admit itself with a forged approval (s1)', { time
 })
 
 // ---------------------------------------------------------------------------
-// G4 (ab2-review/scratch-B/s2-weight0-approval-climbs.mjs): a member's
-// forged approval names a key nobody admitted. At weight 2 genesis's next
-// honest append approved that key, and the key climbed to 2.
+// The forged approval of a member names a key that nobody admitted. At
+// weight 2 the next honest append of genesis approves that key, and the key
+// climbs to 2.
 // ---------------------------------------------------------------------------
 test('A2 G4: a key that a member names in a forged approval stays at weight 0', { timeout: TIMEOUT }, async (t) => {
   const aDir = await tmpDir('a2-a')
@@ -237,7 +193,7 @@ test('A2 G4: a key that a member names in a forged approval stays at weight 0', 
   await a.writers.add(b.localKey, { indexer: false })
   assert.ok(await until(async () => (await b.update(), b.writable), 20000), 'b becomes writable')
 
-  // the attack: b's next node approves s at the indexer tier
+  // the attack: the next node of b approves s at the indexer tier
   forgeNext(b, { approvals: [{ key: s.localKey, weight: TIER }] })
   out.carrierAppend = (await timed(() => b.createConcept('carrier', 'note'), 20000)).status
   out.admittedOnA = await until(async () => {
@@ -247,8 +203,9 @@ test('A2 G4: a key that a member names in a forged approval stays at weight 0', 
   out.pendingOnA = await a.db.system.pendingPromotion(s.localKey)
   out.strangerWritable = await until(async () => (await s.update(), s.writable), 20000)
 
-  // genesis's honest next append (at weight 2 it approved s), then s's
-  // plain append (at weight 2 it cited that approval as a witness)
+  // the honest next append of genesis, then the plain append of s. At
+  // weight 2 the first approves s, and the second cites that approval as a
+  // witness.
   await a.createConcept('a-next', 'note')
   out.plainAppend = (await timed(() => s.createConcept('s-plain', 'note'), 20000)).status
   out.converged = (await converged([a, b, s], 25000)) !== null
@@ -281,11 +238,10 @@ test('A2 G4: a key that a member names in a forged approval stays at weight 0', 
 })
 
 // ---------------------------------------------------------------------------
-// G1, the livelock (ab2-review/scratch-B/s4-witness-oscillation.mjs and
-// s5-stranger-livelock.mjs). A forged approval plus a forged witness gives
-// the claimant's node N a weight that depends on its own position: at
-// weight 2, N resolved to 2 only if the carrier's climb k sorted before it,
-// and N at 2 sorted before k. No fixpoint, so apply never returned.
+// The livelock. A forged approval plus a forged witness gives the node N of
+// the claimant a weight that depends on its own position. At weight 2, N
+// resolves to 2 only if the climb k of the carrier sorts before it, and N
+// at 2 sorts before k. No fixpoint, so apply never returns.
 // ---------------------------------------------------------------------------
 async function livelock(t) {
   const driver = 'member'
@@ -311,7 +267,7 @@ async function livelock(t) {
   await a.writers.add(c1.localKey, { indexer: false })
   out.carrierWritable = await until(async () => (await c1.update(), c1.writable), 20000)
 
-  // j: the carrier's node whose approvals name the claimant
+  // j: the node of the carrier whose approvals name the claimant
   forgeNext(c1, { approvals: [{ key: c2.localKey, weight: TIER }] })
   out.carrierAppend = (await timed(() => c1.createConcept('carrier-j', 'note'), 20000)).status
   const jLen = c1.db.local.length
@@ -323,18 +279,18 @@ async function livelock(t) {
     return (await a.db.system.get(c2.localKey)) !== null
   }, 20000)
 
-  // g: genesis's honest append. At weight 2 it approved the carrier and
-  // the claimant.
+  // g: the honest append of genesis. At weight 2 it approves the carrier
+  // and the claimant.
   const g = await a.createConcept('g', 'note')
   out.carrierSawG = await until(async () => (await c1.update(), (await c1.val(K.seen(hex(a.localKey)))) > g.seq), 20000)
 
-  // N: the claimant's node, with a forged witness citing (carrier, j)
+  // N: the node of the claimant, with a forged witness that cites (carrier, j)
   forgeNext(c2, { witness: { weight: TIER, link: { key: c1.localKey, length: jLen } } })
   out.claimantAppend = (await timed(() => c2.createConcept('N', 'note'), 20000)).status
   const nLen = c2.db.local.length
   await sleep(150) // tN < tk
-  // k: the carrier's plain append. At weight 2 it cited g's approval and
-  // climbed.
+  // k: the plain append of the carrier. At weight 2 it cites the approval
+  // in g and climbs.
   out.carrierSecondAppend = (await timed(() => c1.createConcept('k', 'note'), 20000)).status
   const kLen = c1.db.local.length
 
@@ -370,8 +326,8 @@ async function livelock(t) {
   out.updateGenesisAgain = (await timed(() => a.update(), 8000)).status
   out.undoDelta = coreStats(a).undos - before.undos
 
-  // These reads fold first (sys and linearized call update), so they also
-  // run under a deadline: a stalled peer gives TIMEOUT, not a hung test.
+  // These reads fold first (sys and linearized call update), so they run
+  // under a deadline too: a stalled peer gives TIMEOUT, not a hung test.
   const state = await timed(async () => {
     const carrier = await sys(a, c1.localKey)
     const claimant = await sys(a, c2.localKey)
@@ -419,17 +375,14 @@ test('A3 G1: no livelock driven by a member (s4)', { timeout: 2 * TIMEOUT }, asy
   assert.equal(out.updateCarrier, 'ok', 'no livelock: the carrier update returns within the deadline')
 })
 
-// G1 driven by strangers only (ab2-review/scratch-B/s5-stranger-livelock.mjs).
-// Two keys of one outsider: the carrier's node j approves both keys, the
-// claimant's node N cites j as a witness, and the carrier's node k follows.
-// With optimistic: true, j reached apply and admitted both keys, which set
-// up the livelock. Now no node of either key reaches apply.
+// The livelock driven by strangers only. The node j of the carrier approves
+// both keys. The node N of the claimant cites j as a witness, and the node
+// k of the carrier follows. With optimistic: true, j reaches apply and
+// admits both keys, which sets up the livelock.
 //
-// A Bundle outsider can write j only. N and k never get to a core: no
-// peer applies j, so N's witness link to j is in no system, and the
-// carrier's autobee never gets past j to k (attack-helpers.js
-// outsiderAppend). Thus the test sends j, proves that every peer holds it,
-// and asserts no effect on every peer.
+// A Bundle outsider can write j only. No peer applies j, so the witness
+// link of N is in no system. The autobee of the carrier never gets past j
+// (attack-helpers.js outsiderAppend). So the test sends j alone.
 test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a4-a'))) // genesis
   const c1 = quiet(await Bundle.join(await tmpDir('a4-c1'), a.key)) // the carrier, never admitted
@@ -444,9 +397,9 @@ test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', 
   })
   const out = { trigger: 'outsider' }
 
-  // The honest ops come first: the seed, and g, the genesis append that
-  // approved both keys at weight 2. At weight 0 no honest append carries
-  // an approval (G35), so the place of g changes nothing.
+  // The honest ops come first: the seed, and g, the genesis append that at
+  // weight 2 approves both keys. At weight 0 no honest append carries an
+  // approval, so the place of g changes nothing.
   await a.createConcept('seed', 'note')
   await a.createConcept('g', 'note')
   const hash0 = await converged([a, c1, c2], 20000)
@@ -456,7 +409,7 @@ test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', 
     ['c2', c2, applied.c2]
   ]
 
-  // j: the carrier's node, whose approvals name both keys
+  // j: the node of the carrier, whose approvals name both keys
   const before = coreStats(a)
   let jLen = 0
   const j = await timed(async () => {
@@ -487,13 +440,11 @@ test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', 
 })
 
 // ---------------------------------------------------------------------------
-// G2 (ab2-review/codex-B.out #1): an approval's weight is unbounded. The
-// peer that applies an approval at weight 1e9 walks one tier per unit of
-// weight (lib/promotions.js:137, :144) until its heap runs out. With
-// optimistic: true an outsider's optimistic node carried it into apply.
-// Now autobee drops the node before _applyBatch, where approvals are read
-// (index.js:1432-1441). It runs in a child process: a heap it exhausts
-// must not take the test runner with it.
+// The peer that applies an approval at weight 1e9 walks one tier per unit
+// of weight (autobee `Promotions.flushPending`) until its heap runs out.
+// With optimistic: true the node of an outsider carries it into apply.
+// autobee drops the node before `_applyBatch`, which reads the approvals.
+// A child process runs it, so an exhausted heap spares the test runner.
 // ---------------------------------------------------------------------------
 test('A5 G2: an outsider approval at weight 1e9 reaches no apply (child process)', { timeout: 2 * TIMEOUT }, async (t) => {
   const run = await runChild(['huge-approval', 'outsider', '1000000000'], 180000)
@@ -526,11 +477,10 @@ test('A5 G2: an outsider approval at weight 1e9 reaches no apply (child process)
 })
 
 // ---------------------------------------------------------------------------
-// G43, the reachable variant (D-003 A6): a forged witness whose link cites
-// a writer length that is present in the system. An outsider sends it.
-// autobee still resolves the node's weight before the drop
-// (lib/writers.js:195), so update() returning also shows that this
-// resolution ends.
+// The reachable variant of the forged witness: the link cites a writer
+// length that is present in the system. An outsider sends it. autobee still
+// resolves the weight of the node before the drop (`nextPendingNode`), so a
+// returning update() also shows that this resolution ends.
 // ---------------------------------------------------------------------------
 test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a6-a')))
@@ -539,8 +489,8 @@ test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }
   const applied = { a: watchApply(a), b: watchApply(b), s: watchApply(s) }
   const unpairAB = pair(a, b)
   const unpairAS = pair(a, s)
-  // No peer relays the outsider's core (attack-helpers.js outsiderAppend),
-  // so b gets the forged node only from s itself.
+  // No peer relays the outsider's core (attack-helpers.js
+  // outsiderAppend), so b gets the forged node only from s itself.
   const unpairBS = pair(b, s)
   t.after(async () => {
     unpairAB()
@@ -591,11 +541,11 @@ test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }
 })
 
 // ---------------------------------------------------------------------------
-// G5 (ab2-review/codex-B.out #3, D-003 A7): one node, backdated below a
-// concurrent pair of member writes, linking only one side, with no system
-// hash, so a receiver sorts it into the middle (index.js:1377-1384). With
-// optimistic: true an outsider's node did this, and it flipped the LWW
-// winner on every peer. The member variant stays a residual (T11).
+// One node, backdated below a concurrent pair of member writes, links only
+// one side and carries no system hash. A receiver then sorts it into the
+// middle (autobee `prepareBatch`). With optimistic: true the node of an
+// outsider does this, and it flips the LWW winner on every peer. The member
+// variant is a residual, "A7b G5" below.
 // ---------------------------------------------------------------------------
 test('A7 G5: an outsider backdated node flips no winner', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a7-a')))
@@ -638,7 +588,7 @@ test('A7 G5: an outsider backdated node flips no winner', { timeout: TIMEOUT }, 
     ['s', s, applied.s]
   ]
 
-  // the attack: backdated below both writes, linking only b's write
+  // the attack: backdated below both writes, linking only the write of b
   let attackLen = 0
   const forged = await timed(async () => {
     attackLen = await outsiderAppend(s, 'attacker-node', {
@@ -675,9 +625,9 @@ test('A7 G5: an outsider backdated node flips no winner', { timeout: TIMEOUT }, 
 })
 
 // ---------------------------------------------------------------------------
-// G35 (ab2-review/codex-B.out #5): autobee collects at most 32 approvals per
-// append (index.js:1265-1268), so promotions stalled with more than 32
-// pending. At weight 0 no peer collects an approval at all.
+// autobee collects at most 32 approvals per append (`_collectApprovals`),
+// so promotions stall with more than 32 pending. At weight 0 no peer
+// collects an approval at all.
 // ---------------------------------------------------------------------------
 test('G35: no peer collects an approval, with more than 32 promotions pending', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('g35-a')))
@@ -693,7 +643,7 @@ test('G35: no peer collects an approval, with more than 32 promotions pending', 
   await a.writers.add(b.localKey, { indexer: true })
   assert.ok(await until(async () => (await b.update(), b.writable), 20000), 'b becomes writable')
 
-  // one node of b names 40 keys nobody admitted: 40 pending promotions
+  // one node of b names 40 keys that nobody admitted: 40 pending promotions
   const named = Array.from({ length: 40 }, () => ({ key: randomBytes(32), weight: TIER }))
   forgeNext(b, { approvals: named })
   out.carrierAppend = (await timed(() => b.createConcept('g35/carrier', 'note'), 20000)).status
@@ -705,8 +655,8 @@ test('G35: no peer collects an approval, with more than 32 promotions pending', 
   }
   out.pendingBefore = await pending(a)
 
-  // three honest appends from each peer: at weight 2 each of genesis's
-  // appends carried up to 32 approvals
+  // three honest appends from each peer: at weight 2 each append of
+  // genesis carries up to 32 approvals
   for (let i = 0; i < 3; i++) {
     await a.createConcept(`g35/a${i}`, 'note')
     await b.createConcept(`g35/b${i}`, 'note')
@@ -737,8 +687,8 @@ test('G35: no peer collects an approval, with more than 32 promotions pending', 
 })
 
 // ---------------------------------------------------------------------------
-// G50 (ab2-review/codex-B.out #4): a forged higher-tier approval suppressed
-// a member's climb. At weight 0 no writer climbs, with or without it.
+// A forged higher-tier approval suppresses the climb of a member. At weight
+// 0 no writer climbs, with or without it.
 // ---------------------------------------------------------------------------
 test('G50: no writer climbs, also when a member forges a higher-tier approval', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('g50-a')))
@@ -762,7 +712,7 @@ test('G50: no writer climbs, also when a member forges a higher-tier approval', 
   forgeNext(c, { approvals: [{ key: b.localKey, weight: TIER + 1 }] })
   out.forgedAppend = (await timed(() => c.createConcept('g50/forged', 'note'), 20000)).status
 
-  // honest rounds: at weight 2 genesis approved b and c, and each climbed
+  // honest rounds: at weight 2 genesis approves b and c, and each climbs
   // on its next append
   for (let i = 0; i < 3; i++) {
     for (const [name, v] of [['a', a], ['b', b], ['c', c]]) await v.createConcept(`g50/${name}${i}`, 'note')
@@ -790,18 +740,18 @@ test('G50: no writer climbs, also when a member forges a higher-tier approval', 
 })
 
 // ===========================================================================
-// The residuals (T11). Each test below measures an attack that the product
-// configuration does NOT close, and pins the effect that
-// okf/SECURITY_MODEL.md states. okf cannot close any of them without
-// changing autobee: the mechanism of each one runs before or outside okf's
-// apply (autobee index.js:1374 resolveWeight, :1430 addNode, :1432-1441
-// approvals, lib/writers.js:719 wakeup).
+// The residuals. Each test below measures an attack that the product
+// configuration does NOT close, and pins the effect that SECURITY_MODEL.md
+// states. okf cannot close any of them without a change to autobee. The
+// mechanism of each one runs before or outside okf's apply:
+// `resolveWeight`, `addNode` and the approvals in `_applyBatch`, and
+// `ActiveWriters.wakeup`.
 // ===========================================================================
 
 /**
  * Every view ENTRY under `prefix` on one peer, as `[key, value]`, ordered
- * by key. Keys alone would miss a changed value under a key that stays
- * (D-038 F02), so the no-c/-change criterion of T11 compares entries.
+ * by key. Keys alone miss a changed value under a key that stays, so the
+ * no-c/-change criterion of a residual compares entries.
  */
 async function viewEntries(v, prefix) {
   const out = []
@@ -824,23 +774,16 @@ async function rejectionsOf(v, w) {
 }
 
 // ---------------------------------------------------------------------------
-// G2, the member arm (D-003 A5, member). An approval's weight is unbounded.
-// The peer that folds an approval at weight W builds one Set entry and one
-// digest slot per tier (lib/promotions.js:137, :144), so the cost is linear
-// in the number the attacker writes, and at 1e9 the Set exceeds V8's limit.
-// A member's plain node is not dropped: autobee has added the writer
-// (index.js:1359), and it applies the approvals of every node of the batch
-// before apply runs (index.js:1432-1441). So okf cannot filter it.
+// The member arm of the unbounded approval. autobee does not drop the plain
+// node of a member, and it applies the approvals of every node of the batch
+// before apply runs (`_applyBatch`). So okf cannot filter it, and at 1e9
+// the tier walk exceeds the Set limit of V8.
 //
-// It runs in a child process: the heap this exhausts must not take the test
-// runner with it.
-//
-// This test covers the SENDER only. A member that appends through autobee
-// folds its own node before the drain flushes it to the local core
-// (index.js:818, then :824), so at 1e9 the attacker dies first and its node
-// never leaves its core. That is a property of the sender's drain order,
-// never a bound on the attack: "A5c G2" below sends the same approval from
-// a client that folds nothing, proves delivery, and measures the victim.
+// This test covers the SENDER only. A member folds its own node
+// (`_bumpPendingWriters`) before the drain flushes it (`_flushLocal`). At
+// 1e9 the attacker dies first, and its node never leaves its core. That is
+// the drain order of the sender, never a bound on the attack. "A5c G2"
+// below sends the same approval from a client that folds nothing.
 // ---------------------------------------------------------------------------
 test('A5b G2: a member approval at weight 1e9 kills the sender that folds it first (residual, child process)', { timeout: 2 * TIMEOUT }, async (t) => {
   const run = await runChild(['huge-approval', 'member', '1000000000'], 180000)
@@ -860,8 +803,8 @@ test('A5b G2: a member approval at weight 1e9 kills the sender that folds it fir
   assert.equal(r.synced, true, 'the member syncs the vault')
   assert.equal(r.memberWritable, true, 'an indexer admitted the member (positive control)')
   assert.ok(r.hash0, 'the peers converge before the attack')
-  // The measured effect: the peer that folds the forged approval dies with
-  // V8's Set limit, and its memory climbs while it builds the tiers.
+  // The measured effect: the peer that folds the forged approval dies at
+  // the Set limit of V8. Its memory climbs while it builds the tiers.
   assert.ok(
     r.crashed.length >= 1,
     `the forged approval kills the peer that folds it: crashed ${JSON.stringify(r.crashed)}, errors ${JSON.stringify(r.errors)}`
@@ -872,10 +815,9 @@ test('A5b G2: a member approval at weight 1e9 kills the sender that folds it fir
     `the cost is memory, linear in the weight (RSS ${r.rssStart} to ${r.rssEnd} MB)`
   )
 
-  // The second arm: a weight the attacker itself survives. It shows that
-  // okf cannot filter such an approval. autobee applies it in _applyBatch
-  // (index.js:1432-1441) and the key lands in every peer's system, and no
-  // okf apply ever sees it. Every peer pays the tier walk per fold.
+  // The second run: a weight that the attacker survives. The key lands in
+  // the system of every peer through `_applyBatch`, and no apply of okf
+  // ever sees it. Every peer pays the tier walk on each fold.
   const low = await runChild(['huge-approval', 'member', '1000000'], 180000)
   const l = low.result
   await record(t, 'A5b-G2-member-approval-below-the-set-limit', {
@@ -897,29 +839,15 @@ test('A5b G2: a member approval at weight 1e9 kills the sender that folds it fir
 })
 
 // ---------------------------------------------------------------------------
-// G2, the member arm through a client that folds nothing (D-038 F01). The
-// adversary of this model appends arbitrary bytes to its own core
-// (SECURITY_MODEL.md "The adversaries"). Such a client runs no part of
-// autobee's drain, so the order that saves the sender in "A5b G2" (fold at
-// index.js:818, flush at :824) does not apply to it: forgeRawNode writes
-// the approval block to the attacker's core, where it is durable at once
-// and replicates.
+// The member arm through a client that folds nothing: the adversary of
+// SECURITY_MODEL.md "The adversaries", who appends arbitrary bytes to the
+// core it owns. The order that saves the sender in "A5b G2" does not apply,
+// and the block replicates (attack-helpers.js forgeRawNode).
 //
-// The victim is genesis, on stock autobee. The arm proves DELIVERY first,
-// and only then states a failure: a victim that never got the block proves
-// nothing. The victim then folds the approval in _applyBatch
-// (index.js:1432-1441), system.flush walks one tier per unit of weight
-// (lib/system.js:424, lib/promotions.js:137, :144) and dies above V8's Set
-// limit. okf cannot filter any of it. okf's apply does run for that node,
-// whose block holds a create-concept value (attack-helpers.js
-// forgeRawNode), but _applyBatch calls system.flush after apply
-// (index.js:1447-1455, then :1462), and nothing that apply returns stops
-// the walk (D-047 F13).
-//
-// It runs in a child process. The reopen can die inside Bundle.open, where
-// the boot drain folds the stored block (index.js:620, then :818) before a
-// caller can attach an error listener, so the child reports that case
-// instead of losing the run.
+// okf cannot filter it. The apply of okf runs for that node, because its
+// block holds a create-concept value. But `_applyBatch` calls
+// `Systembee.flush` after apply, and nothing that apply returns stops the
+// tier walk (`Promotions.flushPending`).
 // ---------------------------------------------------------------------------
 test('A5c G2: a member client that folds nothing delivers the weight 1e9 approval, and the victim dies (residual, child process)', { timeout: 4 * TIMEOUT }, async (t) => {
   const run = await runChild(['huge-approval', 'member-raw', '1000000000'], 300000)
@@ -938,22 +866,22 @@ test('A5c G2: a member client that folds nothing delivers the weight 1e9 approva
   assert.equal(r.error ?? null, null, 'the child throws nothing')
   assert.equal(r.memberWritable, true, 'an indexer admitted the member (positive control)')
   assert.ok(r.hash0, 'the peers converge before the attack')
-  // The sender pays nothing for the write itself: the block is in its core
-  // before any fold.
+  // The sender pays nothing for the write: the block is in its core before
+  // any fold.
   assert.equal(r.rawAppend, 'ok', 'the raw block reaches the attacker core')
   assert.ok(r.memberCoreLength >= 1, `the attacker core holds the block (length ${r.memberCoreLength})`)
   // The positive control, before every claim below it.
   assert.deepEqual(r.delivered, { a: true }, 'the victim holds the attack block (positive control)')
-  // The measured effect on a delivered victim: it dies folding the
-  // approval, and it appends no more.
+  // The measured effect on a victim that holds the block: it dies when it
+  // folds the approval, and it appends no more.
   assert.deepEqual(r.crashed, ['victim'], `only the victim dies: errors ${JSON.stringify(r.errors)}`)
   assert.equal(r.victimCrashed, true, 'the victim dies with V8 Set maximum size exceeded')
   assert.equal(r.victimAppends, 'ERROR', 'the victim appends no more after the fold')
   assert.ok(r.rssAfterFold > r.rssStart, `the cost is memory (RSS ${r.rssStart} to ${r.rssAfterFold} MB)`)
-  // The reopen is no repair. Either the boot drain folds the stored block
-  // again and the peer dies inside open, or the peer reopens with the
-  // attack core still in its store. Both were measured, so neither branch
-  // is asserted away.
+  // The reopen is no repair. The boot drain can fold the stored block
+  // again, and the peer dies inside open. Or the peer reopens, with the
+  // attack core still in its store. Both outcomes occur, so the assertion
+  // accepts both.
   assert.ok(
     r.reopen && (r.reopen.verdict === 'CRASH-ON-OPEN' || r.reopen.attackCoreStored === true),
     `the attack survives the reopen: ${JSON.stringify(r.reopen)}`
@@ -961,14 +889,11 @@ test('A5c G2: a member client that folds nothing delivers the weight 1e9 approva
 })
 
 // ---------------------------------------------------------------------------
-// G5, the member arm (ab2-review/codex-B.out #3, D-003 A7b). One node,
-// backdated below a concurrent pair, linking only one side, with no system
-// hash, so every receiver sorts it into the middle (index.js:1377-1386,
-// lib/topo.js:168-179). Timestamps are the attacker's to choose: autobee
-// bounds only the future (MAX_FORWARD_TIME_DRIFT, lib/writers.js:15, :595),
-// never the past. okf's LWW register takes the last write in linearization
-// order, so the reorder picks the winner. The reorder is uniform, so the
-// peers still converge: it is a consistent rewrite, never a split.
+// The member arm of the backdated node. The attacker chooses the timestamp:
+// autobee bounds only the future (MAX_FORWARD_TIME_DRIFT in `Writer._next`),
+// never the past. The LWW register of okf takes the last write in
+// linearization order, so the reorder picks the winner. The reorder is
+// uniform, so the peers still converge.
 // ---------------------------------------------------------------------------
 test('A7b G5: a member backdated node flips the winner on every peer (residual)', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a7b-a')))
@@ -1015,7 +940,7 @@ test('A7b G5: a member backdated node flips the winner on every peer (residual)'
   const w0 = hash0 ? await a.val(K.cField(id, 'status')) : null
   out.winnerBefore = w0 ? w0.values : null
 
-  // the attack: backdated below both writes, linking only b's write
+  // the attack: backdated below both writes, linking only the write of b
   const before = coreStats(a)
   forgeNext(s, {
     timestamp: Date.now() - 3600 * 1000,
@@ -1049,8 +974,8 @@ test('A7b G5: a member backdated node flips the winner on every peer (residual)'
   assert.ok(out.winnerBefore, 'the concurrent pair has a winner')
   assert.equal(out.forgedAppend, 'ok')
   assert.deepEqual(out.delivered, { a: true, b: true, s: true }, 'every peer holds the backdated node (positive control)')
-  // The measured effect: the member's node reaches apply on every peer,
-  // the reorder flips the winner there, and the peers still agree.
+  // The measured effect: the node of the member reaches apply on every
+  // peer, the reorder flips the winner there, and the peers still agree.
   for (const name of ['a', 'b', 's']) {
     assert.equal(out.applied[name], true, `${name}: a member's node reaches okf's apply`)
     assert.notDeepEqual(
@@ -1066,25 +991,21 @@ test('A7b G5: a member backdated node flips the winner on every peer (residual)'
 })
 
 // ---------------------------------------------------------------------------
-// G44, owner-accepted at G1 (D-003 A8). An outsider that holds the vault
-// key announces N fresh writer keys over the wakeup protocol. A receiver
-// hints every announced key (autobee-wakeup/index.js:24-26), and each hint
-// opens and persists a writer core (index.js:878-893, lib/writers.js:67-89,
-// :239-294). autobee's untrusted cap does not apply: it is skipped while
-// the local writer is trusted (lib/writers.js:262), and with no isTrusted
-// or mostRecentTrusted hook every key is trusted (lib/trusted.js:30-32).
-// The announce runs before, and independently of, the optimistic filter, so
-// `optimistic: false` does not stop it.
+// The wakeup flood. An outsider that holds the vault key announces N fresh
+// writer keys. The receiver opens and persists one writer core per key
+// (autobee-wakeup `onannounce`, `ActiveWriters.wakeup`). The untrusted cap
+// does not apply: with no isTrusted hook every key is trusted
+// (`TrustedPeers.isTrusted`). SECURITY_MODEL.md "What the substrate
+// decides, and what okf decides", point (b), holds the mechanism.
 //
-// Since T25 the firewall of swarm() gives an outsider no connection, so G44
-// is closed for an outsider on swarm(). This test pairs the peers with a
-// direct stream (pair(), Bundle.replicate()), which passes no firewall. So
-// it measures what a flood costs from any connected peer, a member too
-// (SECURITY_MODEL.md, point (b)).
+// The firewall of swarm() gives an outsider no connection. This test pairs
+// the peers with a direct stream (pair(), Bundle.replicate()), which passes
+// no firewall. So it measures the cost of a flood from any connected peer,
+// a member too.
 // ---------------------------------------------------------------------------
 test('A8 G44: an outsider wakeup flood opens one writer core per announced key (residual)', { timeout: 4 * TIMEOUT }, async (t) => {
   const N = Number(process.env.OKF_FLOOD_N || 200)
-  const CAP = 128 // autobee's DEFAULT_MAX_UNTRUSTED_WRITERS (lib/writers.js:13)
+  const CAP = 128 // DEFAULT_MAX_UNTRUSTED_WRITERS in autobee lib/writers.js
   const aDir = await tmpDir('a8-a')
   const a = quiet(await Bundle.init(aDir))
   const s = quiet(await Bundle.join(await tmpDir('a8-s'), a.key)) // holds the vault key only
@@ -1138,9 +1059,9 @@ test('A8 G44: an outsider wakeup flood opens one writer core per announced key (
       ? Number((out.postAppendMs / out.baselineAppendMs).toFixed(2))
       : null
 
-  // The reopen: no brick, and the flood's cores are still in the store. A
-  // sample of the announced keys is probed, because a key nobody announced
-  // is not stored at all (storedCore).
+  // The reopen: no brick, and the cores of the flood are still in the
+  // store. The probe reads a sample of the announced keys, because a key
+  // that nobody announced is not stored at all (storedCore).
   unpair()
   await closeAll(s)
   sClosed = true
@@ -1173,8 +1094,9 @@ test('A8 G44: an outsider wakeup flood opens one writer core per announced key (
   assert.ok(out.bytesDelta > 0, `the flood persists bytes (${out.bytesDelta})`)
   assert.equal(out.closed, 'ok', 'the victim closes')
   // The cores, not the byte count, are the persistence claim. The storage
-  // engine rewrites its own files on close, so `bytesAfterReopen` is
-  // recorded and never compared: it can be below the pre-flood count.
+  // engine rewrites its own files on close, so `bytesAfterReopen` can be
+  // below the count before the flood. The test records it and never
+  // compares it.
   assert.equal(out.reopen.stored, sample.length, 'every sampled core is still in the store after a reopen')
   // Storage and open cores, never a brick: the vault still appends, and it
   // still reopens and folds.
@@ -1184,16 +1106,13 @@ test('A8 G44: an outsider wakeup flood opens one writer core per announced key (
 })
 
 // ---------------------------------------------------------------------------
-// G32 (ab2-review/scratch-B/s8-unmetered-flags.mjs, ported to the store
-// with a key that a member approves). A member's forged approval makes any
-// key an autobee writer at weight 0 (index.js:1432-1441, lib/system.js:
-// 66-93). That key has no gov/writer record, so okf rejects every op of it
-// `not-a-writer` (§8) before the rate check, which means its ops take no
-// token: the growth is unmetered. Each op costs one flag/rejected entry on
-// every peer, and changes no c/ key.
+// A key that a member approves. The forged approval makes any key an
+// autobee writer at weight 0 (`_applyBatch`, `Systembee.addWriter`). The key
+// has no gov/writer record, so okf rejects every op of it `not-a-writer`
+// before the rate check. Its ops take no token, so the growth is unmetered.
 //
-// Its governance ops also grant: core calls host.addWriter for every
-// AddWriter op it folds, before any check that can reject it (AD7, §8), so
+// Its governance ops also grant. apply calls host.addWriter for every
+// AddWriter op it folds, before any check that can reject it (SPEC §8). So
 // a granted non-member can make more autobee writers at weight 0.
 // ---------------------------------------------------------------------------
 test('G32: a key that a member approves costs one flag per op, no rate token and no c/ change (residual)', { timeout: 2 * TIMEOUT }, async (t) => {
@@ -1218,17 +1137,16 @@ test('G32: a key that a member approves costs one flag per op, no rate token and
   await a.writers.add(b.localKey, { indexer: false })
   assert.ok(await until(async () => (await b.update(), b.writable), 20000), 'b becomes writable')
 
-  // the setup: b's next node approves s, and autobee adds s at weight 0
+  // the setup: the next node of b approves s, and autobee adds s at weight 0
   forgeNext(b, { approvals: [{ key: s.localKey, weight: TIER }] })
   out.carrierAppend = (await timed(() => b.createConcept('g32/carrier', 'note'), 20000)).status
   out.granted = await until(async () => (await s.update(), s.writable), 20000)
   out.hash0 = await converged([a, b, s], 25000)
-  // The c/ range before the attack, ENTRIES and not key names: the
-  // criterion is that no content key and no content value changes.
+  // the c/ range before the attack
   const cBefore = await viewEntries(a, K.cRoot())
 
-  // the attack: OPS content ops and GRANTS AddWriter ops from a key okf
-  // never admitted
+  // the attack: OPS content ops and GRANTS AddWriter ops from a key that
+  // okf never admitted
   for (let i = 0; i < OPS; i++) {
     await s.createConcept(`g32/junk/${i}`, 'note')
   }
@@ -1284,8 +1202,6 @@ test('G32: a key that a member approves costs one flag per op, no rate token and
     assert.equal(p.seen, OPS + GRANTS, `${name}: seen/ moves past every op`)
     assert.equal(p.rate, null, `${name}: the ops take no rate token, so the growth is unmetered`)
     assert.equal(p.govWriter, null, `${name}: okf membership comes only from gov/`)
-    // The whole c/ range, ordered, keys AND values. A changed value under
-    // a key that stays is the case that key names miss (D-038 F02).
     assert.deepEqual(cEntries[name], cBefore, `${name}: no c/ entry changes, key or value`)
     for (const g of p.granted) {
       assert.equal(g.system, true, `${name}: an AddWriter op of a non-member still grants its key`)

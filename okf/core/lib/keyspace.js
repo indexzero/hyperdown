@@ -1,29 +1,10 @@
-// Copied from vault-ld/core/lib/keyspace.js at 046d37f; diverges freely —
-// see okf/SPEC.md §0 copy-don't-depend. The escaping helpers (esc/unesc/
-// pad/parseKey/range) are verbatim; the key families are rewritten for the
-// auto-okf view keyspace (okf SPEC §4), which differs from vault-ld's.
+// Copied from vault-ld/core/lib/keyspace.js at 046d37f. It diverges freely
+// (SPEC §0, copy-don't-depend).
 //
-// View keyspace codec (okf SPEC §4). Escaping is mandatory: naive string
-// concatenation of user-controlled strings into keys is forbidden. Every
-// user-controlled component ('%' and '/' escaped) round-trips losslessly,
-// so a path named '../escape' or a field key named 'a/b' can never collide
-// with, or escape into, another key family. Callers pass NFC-normalized
-// strings (§3); this module does not normalize.
-//
-// Implementation resolutions where §4 is silent (code-comment scope per
-// SPEC §0 rule 4):
-// - `ord/global` holds the global apply ordinal (count of nodes linearized
-//   so far) that §4 requires for `c/<id>/path`.ord and `log/<ordinal>`.
-//   Bookkeeping like seen/: deterministic, in the I2 view hash, excluded
-//   from materialize.
-// - `pcl/<casefold(path)>/<id>` is the live path-claim index that lets
-//   apply run the §7 casefold-collision recompute without a full scan of
-//   c/. Like revbybase/ it is trivially co-derived from c/ (I8):
-//   one row per live concept, keyed by the casefolded NFC form of its
-//   current path.
-// - `rate/indexer-ops` is the global accepted-indexer-op counter backing
-//   the §8 token buckets; '-' cannot appear in a hex writer key, so the
-//   row can never collide with `rate/<writerKey>`.
+// Escaping is mandatory. Every user-controlled component round-trips with
+// '%' and '/' escaped, so a path named '../escape' or a field key named
+// 'a/b' can never collide with, or escape into, another key family.
+// Callers must pass NFC strings (SPEC §3). No function here normalizes.
 
 /** Escape one user-controlled key component. */
 export function esc(component) {
@@ -37,7 +18,7 @@ export function unesc(component) {
   )
 }
 
-/** Fixed-width ordinal so ascending key order == numeric order. */
+/** Fixed-width ordinal, so ascending key order is numeric order. */
 export function pad(ord) {
   return String(ord).padStart(12, '0')
 }
@@ -47,14 +28,14 @@ export function parseKey(key) {
   return key.split('/').map(unesc)
 }
 
-/** Inclusive prefix scan range. Works because escaped components contain no
- * raw '/'; '0' is the code point after '/'. */
+/** Inclusive prefix scan range. An escaped component holds no raw '/',
+ * and '0' is the code point after '/'. */
 export function range(prefix) {
   return { gte: prefix, lt: prefix.slice(0, -1) + '0' }
 }
 
-// --- c/ per-concept families (§4). Concept ids are lowercase hex (§6) and
-// never need escaping, but are escaped anyway (defense in depth).
+// --- c/ per-concept families (§4). A concept id is lowercase hex (§6) and
+// needs no escaping. It is escaped anyway, as defense in depth.
 export const cMeta = (id) => `c/${esc(id)}/meta`
 export const cField = (id, key) => `c/${esc(id)}/f/${esc(key)}`
 export const cFieldPrefix = (id) => `c/${esc(id)}/f/`
@@ -65,14 +46,17 @@ export const cRevPrefix = (id) => `c/${esc(id)}/rev/`
 export const cPrefix = (id) => `c/${esc(id)}/`
 export const cRoot = () => 'c/'
 
-// --- base-keyed revision index (§4, M1 ancestry): one row per revision
-// citing a non-null base, so same-base siblings are found in O(matches).
+// --- revisions by base (§4): one row per revision that cites a non-null
+// base, so same-base siblings are found in O(matches).
 export const revByBase = (id, base, rev) => `revbybase/${esc(id)}/${esc(base)}/${esc(rev)}`
 export const revByBasePrefix = (id, base) => `revbybase/${esc(id)}/${esc(base)}/`
 
 // --- path/ current-holder index and the pcl/ claim index (§4, §7) ---
 export const path = (p) => `path/${esc(p)}`
 export const pathPrefix = () => 'path/'
+// The live path-claim index of the §7 collision recompute, a key outside
+// §4. Derived from c/ (I8): one row per live concept, keyed by the
+// casefold of its current path.
 export const pcl = (cfPath, id) => `pcl/${esc(cfPath)}/${esc(id)}`
 export const pclPrefix = (cfPath) => `pcl/${esc(cfPath)}/`
 
@@ -85,9 +69,9 @@ export const wanted = (p, fromId) => `wanted/${esc(p)}/${esc(fromId)}`
 export const wantedPrefix = (p) => `wanted/${esc(p)}/`
 export const wantedRoot = () => 'wanted/'
 
-// wantedrank/<inv-count>/<path>: inv-count = (MAX - count) as a 16-digit
-// zero-padded decimal, MAX = 10^16 - 1, so an ascending scan yields
-// most-wanted first (§4).
+// wantedrank/<inv-count>/<path>: inv-count is MAX - count as a 16-digit
+// zero-padded decimal, MAX = 10^16 - 1, so an ascending scan yields the
+// most wanted first (§4).
 const WANTED_MAX = 10n ** 16n - 1n
 export function invCount(count) {
   return String(WANTED_MAX - BigInt(count)).padStart(16, '0')
@@ -109,7 +93,13 @@ export const flagRejected = (w, seq) => `flag/rejected/${w}/${pad(seq)}`
 export const seen = (w) => `seen/${w}`
 export const seenPrefix = () => 'seen/'
 export const rate = (w) => `rate/${w}`
+// The global accepted-indexer-op counter of the §8 token buckets. Not in
+// §4. '-' cannot appear in a hex writer key, so the row can never collide
+// with `rate/<writerKey>`.
 export const rateIndexerOps = () => 'rate/indexer-ops'
+// The global apply ordinal that §4 needs for `c/<id>/path`.ord and
+// `log/<ordinal>`. Not in §4. Like seen/, it is in the I2 view hash and
+// excluded from materialize.
 export const ordGlobal = () => 'ord/global'
 
 // --- governance (§4, §8) ---

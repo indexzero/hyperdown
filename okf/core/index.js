@@ -1,9 +1,7 @@
-// @auto-okf/core — auto-okf core package (okf SPEC §13): the 12-op wire
-// contract (hyperschema + hyperdispatch), the deterministic apply, the view
-// keyspace codec, canonical forms, revHash, and the MemView test double.
-// Pure: apply operates only on the view interface the substrate hands it;
-// no wall clock, no randomness (I1). Transport-agnostic: nothing in this
-// package imports autobee.
+// @auto-okf/core (SPEC §13): the 12-op wire contract, apply, the view
+// keyspace, canonical forms, revHash and the MemView test double. Nothing
+// in this package imports autobee. apply is pure over the view that it is
+// given (I1).
 export * as keyspace from './lib/keyspace.js'
 export * as canonical from './lib/canonical.js'
 export { revHash, rawHashHex } from './lib/revhash.js'

@@ -1,76 +1,13 @@
-// Bundle (okf SPEC §13 store deliverable): multiwriter vault lifecycle on
-// autobee — corestore in (writer cores derived under the §10 per-generation
-// namespace), Autobee up, @auto-okf/core's deterministic apply wired
-// through the ViewAdapter into autobee's apply — plus §8 governance op
-// emission, vault-metadata pinning (§8 append-only constant + §10 generation
-// chain), hyperswarm replication, and opt-in append backpressure.
-// Pattern ancestor: vault-ld/store/lib/vault.js (patterns only, no code
-// path shared — SPEC §0 copy-don't-depend).
-//
-// autobee contract, verified against the installed source of autobee@2.12.1
-// (index.js, lib/*) — a STANDALONE multiwriter Hyperbee on hyperbee2 2.20.1
-// and hypercore 11, with NO autobase dependency (package.json:25-40) — on
-// corestore 7.16.1 (the floor is 7.12.6, okf/DEVIATIONS.md):
-// - `new Autobee(store, key, { apply, open, close, update, encryptionKey,
-//   encrypted, keyPair, optimistic, fastForward, ackThreshold,
-//   bootstrapWeight, ... })`. `optimistic` defaults to true (index.js:95,
-//   README.md:81). `bootstrapWeight` defaults to 2 (index.js:49) and is not
-//   in the README. The Bundle sets `optimistic: false`, `fastForward:
-//   false` and `bootstrapWeight: 0` (see the constructor call).
-//   `ackThreshold` stays at its default of 32 (index.js:30, :134).
-// - apply receives `(nodes, view, host)`, and only nodes with a non-empty
-//   value (index.js _applyBatch); node = `{ key, value, length, optimistic,
-//   timestamp, links, weight, witness, approvals, ... }` (lib/writers.js
-//   createNode), where node.key is the WRITER core key — exactly the node
-//   shape core's apply documents, so nodes pass through UNWRAPPED.
-// - `view` is what the `open` handler returned: we return a ViewAdapter, so
-//   core's apply sees the hyperbee2-flavored string-key surface it expects.
-// - host (lib/apply-calls.js): `addWriter(key, { isIndexer = true, weight =
-//   isIndexer ? 2 : 1 })` / `removeWriter(key)` / `ackWriter()` (a
-//   deprecated no-op, README.md:224-227) / `removeable(key)` /
-//   `interrupt(reason)` / `createAnchor(key, length)` / `genesis` — adapted
-//   below (HostAdapter), which exposes only addWriter, and always at
-//   weight 0.
-// - instance: db.key, db.id, db.discoveryKey, db.local, db.view (read-only
-//   snapshot), db.writable, db.isIndexer, append(buf|[bufs]) (the Bundle
-//   never asks for an optimistic node), update()/updated()/flush(),
-//   replicate(isInitiator|stream). db.isIndexer means a ceiling (maxWeight)
-//   of 2 or more (lib/writers.js:352-354, :532), so it is always false
-//   here: Bundle.isIndexer reads gov/ instead.
-// - db.close() closes the corestore it was handed (index.js:442): we
-//   hand it the per-generation namespace SESSION; the root corestore is closed
-//   by Bundle.close() (corestore index.js _close: closing a session never
-//   closes the root; closing the root closes every session).
-// - genesis: autobee adds the bootstrap writer on its first node at
-//   `bootstrapWeight` (index.js:1411-1413). The Bundle passes 0, so genesis
-//   stands at weight 0 like every other writer (see HostAdapter). For a
-//   creator the vault key IS the creator's local writer key
-//   (lib/boot.js:65-89, :86), so metadata.genesisKey === db.key on every
-//   peer and core's §8 genesis indexer seeding agrees with autobee's.
-//
-// Admission comes before the first write. With `optimistic: false`,
-// autobee applies a node only from a writer it has added, or from a removed
-// writer that a later node still links (index.js:1357-1364). It drops any
-// other node before _applyBatch: the node reaches no apply, its approvals
-// add no writer (index.js:1432-1441), and the system records nothing. A
-// plain node from a writer autobee has not added stops earlier, in that
-// writer's _next (lib/writers.js:613-615). autobee still reads such a node,
-// checks its links and resolves its weight before the drop
-// (lib/writers.js:177-206, :547-618), and a connected peer reaches the
-// wakeup protocol (G44). swarm() connects only peers whose swarm key is in
-// its allowlist (T25), so an outsider with the vault key gets no
-// connection from it. A stream that a caller opens with replicate() passes
-// no such check: the caller chooses that peer.
-// So a joiner writes only after autobee adds its key, from any member's
-// AddWriter op or approval (D-047 F14, see below). Until then db.writable is
-// false (index.js:196-198, lib/writers.js:208-216), and append() refuses
-// with VAULT_NOT_WRITABLE (see _assertWritable). A key that autobee has
-// added can still have no gov/writer record: core grants the key of every
-// AddWriter op that it folds, one that it rejects too (AD7), and a member
-// can forge an approval that names a key (index.js:1432-1441). The nodes
-// of such a key reach apply, and core accepts none of its ops: the gov/
-// check rejects a content op 'not-a-writer' and a governance op
-// 'policy-governance' (core lib/apply.js).
+// Bundle: the lifecycle of one multiwriter vault on autobee. It wires the
+// apply of @auto-okf/core into autobee through the ViewAdapter and emits
+// the governance ops. It pins the vault metadata, replicates over
+// hyperswarm and offers opt-in append backpressure. See SPEC §8, §10, §13.
+
+// Nodes pass to core's apply unwrapped. An autobee node has the
+// `{ key, value, length }` shape that core documents, and node.key is the
+// writer core key. A grant gives no membership: only a gov/writer record
+// does. Why okf relies on each autobee behaviour, with the source:
+// okf/DEVIATIONS.md, "Substrate behaviour that okf relies on".
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
@@ -103,69 +40,47 @@ import {
   swarmKeyList
 } from './metadata.js'
 
-// §10: writer cores (and autobee's system/view cores) derive under this
-// prefix + metadata.generation, so a writer keypair can never recur across
-// generations even in a reused corestore directory.
+// Writer cores, and autobee's system and view cores, derive under this
+// prefix plus metadata.generation. So a writer key pair never recurs across
+// generations in a reused corestore directory. See SPEC §10.
 const GENERATION_NS = 'okf/generation/'
 
-// The swarm namespace of this protocol. swarm() announces a vault on
-// sha256(SWARM_NAMESPACE ‖ db.discoveryKey), never on the bare discovery
-// key, so a peer that announces on another topic never finds the vault.
+// swarm() announces a vault on sha256(SWARM_NAMESPACE ‖ db.discoveryKey),
+// never on the bare discovery key.
 const SWARM_NAMESPACE = 'auto-okf/2'
 
-// T25: the name of the swarm key pair. The Bundle derives it from its own
-// root store with corestore's documented createKeyPair (corestore
-// README.md:163, index.js:662-665, :806-815: a seed key pair from the
-// store's primary key), so a peer keeps one swarm key across restarts and
-// generations, apart from its writer keys.
+// The name of the swarm key pair. corestore's createKeyPair derives it
+// from the primary key of the root store. So a peer keeps one swarm key
+// across restarts and generations, apart from its writer keys.
 const SWARM_KEY_NAME = 'auto-okf/swarm'
 
-// G3-P9 F02: the most ban records that swarm() keeps for the keys that its
-// firewall rejected. hyperswarm bans each rejected key (index.js:315-319),
-// puts it in swarm.peers (:418-424) and never collects a banned record
-// (lib/peer-info.js:113-115), so a flood of fresh keys grows the swarm
-// without a bound. A ban changes no outcome: hyperswarm rejects a banned
-// key before the firewall runs (index.js:199-202, :312-313), and the
-// firewall rejects it again once the ban is gone (:204-208, :315-319). An
-// incoming attempt costs one handshake either way (hyperdht
-// lib/server.js:239-262). A ban serves one honest case: a joiner that dials
-// before its admission folds is unbanned at once when it comes in
-// (_allowPeer), so the bound needs room only for keys that come back soon.
-// 64 is hyperswarm's default maxPeers (index.js:13), its default bound on
-// connections: the table holds no more rejected peers than a swarm holds
-// admitted ones. Past the bound the oldest ban is lifted (_recordBan).
+// hyperswarm bans each key that the firewall rejects and never collects
+// the record, so a flood of fresh keys grows swarm.peers without a bound.
+// _recordBan lifts the oldest ban past this count, and the firewall
+// rejects that key again at its next attempt. 64 is hyperswarm's default
+// maxPeers, so the table holds no more rejected peers than admitted ones.
 const MAX_BANNED_PEERS = 64
 
-// Defaults for the opt-in append backpressure (vault-ld M2 ancestry, the
-// measured finding ported wholesale: a local-fold-only throttle is NOT
-// enough — a fast writer's own fold stays cheap precisely because the
-// drowning peers send little — hence the peer-ack watermark, which pins a
-// writer to the fold progress its peers demonstrate through the §3 clocks
-// their ops carry. ackTimeout bounds the wait so idle, silent or
-// partitioned peers degrade a backpressured writer to ~maxInflight ops per
-// ackTimeout instead of deadlocking it.
+// Defaults for the opt-in append backpressure (append()). A throttle on
+// the local fold alone is not enough, because the fold of a fast writer
+// stays cheap while the drowning peers send little. So the second gate
+// waits on the fold progress that peer clocks prove, at most ackTimeout
+// ms. A silent peer slows the writer but never deadlocks it.
 const DEFAULT_MAX_INFLIGHT = 1
 const DEFAULT_ACK_TIMEOUT = 1500
 
 export class Bundle extends EventEmitter {
   /**
-   * @param {string|Corestore} storage directory (preferred: metadata is
-   *   pinned to `<dir>/okf-vault.json`) or a dedicated Corestore the vault
-   *   takes ownership of (metadata then lives in memory / the invite).
+   * @param {string|Corestore} storage a directory, with the metadata pinned
+   *   to `<dir>/okf-vault.json`, or a Corestore that the vault owns, with
+   *   the metadata in memory
    * @param {object} [opts]
-   *   key            vault key to join (Buffer or hex); omit to create/open
-   *   metadata       invite metadata overrides (predecessorKey, limits,
-   *                  rate, schemaVersion, ...)
-   *   encryptionKey  32-byte key for private vaults (end to end: writer
-   *                  cores, system and view are encrypted at rest; autobee
-   *                  persists the key in the local core's userData —
-   *                  lib/boot.js — so a reopen needs no key)
-   *   keyPair        custom signing key pair for the local writer
-   *   backpressure   opt-in append admission control: `true` or
-   *                  `{ maxInflight, ackTimeout }` — every append() then
-   *                  self-throttles to this writer's own fold AND its
-   *                  peers' demonstrated fold progress (see append()).
-   *                  Default: off (append is fire-at-caller-rate).
+   *   key            the vault key to join (Buffer or hex). Omit it to create or open.
+   *   metadata       invite metadata overrides (predecessorKey, limits, rate, ...)
+   *   encryptionKey  32-byte key of a private vault. autobee persists it in
+   *                  the userData of the local core, so a reopen needs no key.
+   *   keyPair        the signing key pair of the local writer
+   *   backpressure   `true` or `{ maxInflight, ackTimeout }`, see append(). Default: off.
    */
   constructor(storage, opts = {}) {
     super()
@@ -174,37 +89,36 @@ export class Bundle extends EventEmitter {
     this.db = null
     this.metadata = null
     this.generation = null
-    this.swarmInstance = null // the Hyperswarm that swarm() makes and owns
-    this._swarmKeyPair = null // T25: see swarmKey
+    this.swarmInstance = null
+    this._swarmKeyPair = null
     this._swarmTopic = null
-    this._discovery = null // the topic session of swarm()
+    this._discovery = null
     this._onConnection = null
     this._onBan = null
-    this._banned = new Set() // G3-P9 F02: banned keys (hex), oldest first, at most MAX_BANNED_PEERS
-    this._allowed = new Set() // T25: the swarm keys the firewall admits (hex)
-    this._localAllow = new Set() // G3-P9 F03: swarm({ allow }), this peer only (hex)
-    this._revokedPeers = new Set() // T25: revokePeer() keys, out for the life of the Bundle
+    this._banned = new Set() // banned keys (hex), oldest first
+    this._allowed = new Set() // the swarm keys (hex) that the firewall admits
+    this._localAllow = new Set() // the keys (hex) of swarm({ allow }), this peer only
+    this._revokedPeers = new Set() // revokePeer() keys (hex), out for the life of the Bundle
     this._allowChain = Promise.resolve() // serializes _refreshAllowlist()
     this._opts = opts
     this._coreApply = null
     this._applyBarrier = new Promise((resolve) => {
       this._applyBarrierResolve = resolve
     })
-    this._nextSeq = 0 // §3 (AD4): the position of the next local node, see _nextPosition()
+    this._nextSeq = 0 // the position of the next local node, see _nextPosition()
     this._foldedSeq = 0
     this._appendChain = Promise.resolve()
-    this._appending = new Set() // every started append until it settles (see append())
+    this._appending = new Set() // every started append until it settles
     this._closedLength = null // see _lengthAfterClose()
     this._backpressure = normalizeBackpressure(opts.backpressure)
     this._trackAcks = !!this._backpressure
-    this._ackSeen = false // ever folded another writer's op (multiwriter)
-    this._bestAck = 0 // 1 + the highest position of ours that a peer op's clock has cited
+    this._ackSeen = false // true once an op of another writer folded
+    this._bestAck = 0 // one past the highest own position that a peer clock cited
     this._ackWaiters = new Set()
     this._closing = false
     this._readying = null
-    this._isIndexer = false // okf authority from gov/ (see isIndexer)
+    this._isIndexer = false // from gov/, see isIndexer
 
-    // §13 Vault API: writer governance namespace (thin over the §8 ops).
     this.writers = {
       add: (key, opts2) => this.addWriter(key, opts2),
       remove: (key) => this.removeWriter(key),
@@ -212,21 +126,21 @@ export class Bundle extends EventEmitter {
     }
   }
 
-  /** Create a brand-new vault (writes pinned metadata at init). */
+  /** Create a new vault and pin its metadata. */
   static async init(storage, opts = {}) {
     const vault = new Bundle(storage, opts)
     await vault.ready()
     return vault
   }
 
-  /** Open a vault previously initialized/joined at `storage`. */
+  /** Open a vault that init or join made at `storage`. */
   static async open(storage, opts = {}) {
     const vault = new Bundle(storage, opts)
     await vault.ready()
     return vault
   }
 
-  /** Join an existing vault by key (plus invite metadata/encryptionKey). */
+  /** Join a vault by key. opts carries the invite metadata and encryptionKey. */
   static async join(storage, key, opts = {}) {
     const vault = new Bundle(storage, { ...opts, key })
     await vault.ready()
@@ -234,12 +148,9 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * The swarm key (T25) of a storage directory, also before it holds a
-   * vault: a pre-provisioned fleet collects each peer's key before the
-   * creator writes the invite. It opens the directory's corestore (and
-   * creates it, with its primary key, when it is new), derives the key as
-   * an open Bundle does, and closes the store. Do not call it on a
-   * directory that an open Bundle holds.
+   * The swarm key of a storage directory, also before it holds a vault. So
+   * a fleet can collect each key before the creator writes the invite. Do
+   * not call it on a directory that an open Bundle holds.
    */
   static async readSwarmKey(dir) {
     const store = new Corestore(dir)
@@ -279,12 +190,11 @@ export class Bundle extends EventEmitter {
       )
     }
 
-    // Reopen-from-disk: the apply config is known before the Autobee is
-    // constructed, so replayed/reorged nodes fold under pinned metadata.
+    // Set the apply configuration before the Autobee exists, so replayed
+    // nodes fold under the pinned metadata.
     if (stored) this._setApply(stored)
 
-    // §10: the per-generation namespace is derivable before the Autobee exists —
-    // it is a pure function of the (stored or invited) predecessorKey.
+    // The generation is a function of predecessorKey alone. See SPEC §10.
     const predKey = stored
       ? stored.predecessorKey
       : (overrides && overrides.predecessorKey) ?? null
@@ -303,40 +213,27 @@ export class Bundle extends EventEmitter {
 
     this.db = new Autobee(session, bootKey, {
       apply: (nodes, view, host) => this._apply(nodes, view, host),
-      // Both the read snapshot (db.view) and apply's working view go
-      // through the adapter, so reads and apply share one surface.
+      // db.view and the working view of apply share one surface.
       open: (bee) => new ViewAdapter(bee),
-      // Called after apply once db.view holds the new state (README
-      // `update (view, changes)`; index.js:1051-1058), so isIndexer
-      // follows gov/ as closely as db.writable follows autobee, and the
-      // swarm firewall follows gov/writer (T25, see swarm()).
+      // Runs after apply, once db.view holds the new state, so isIndexer
+      // and the swarm firewall follow gov/.
       update: () => this._onViewUpdate(),
       encryptionKey: this._opts.encryptionKey || null,
       encrypted,
       keyPair: this._opts.keyPair,
-      // No optimistic nodes from writers autobee has not added. With this
-      // false (read at index.js:95, where the default is true), autobee
-      // drops such a node before _applyBatch (index.js:1357-1364), so an
-      // outsider puts no op and no approval into apply (AD2). A writer
-      // writes only after autobee has added it, such as when core grants
-      // the key of an AddWriter op (HostAdapter). See the header.
+      // The default is true. With false, autobee drops a node from a writer
+      // it has not added before apply, so an outsider puts nothing into apply.
       optimistic: false,
-      // Weight 0 for every writer: autobee adds genesis on its first node
-      // at this weight (index.js:1411-1413), not at the default 2
-      // (index.js:49). HostAdapter grants every other writer at 0.
+      // The default is 2. Genesis stands at 0 like every writer that
+      // HostAdapter grants.
       bootstrapWeight: 0,
-      // I2/I3: every peer folds every op through its own apply under the
-      // pinned config. autobee@2 would otherwise fast-forward onto a view
-      // head another writer stamped, trusting every writer by default
-      // (lib/trusted.js), and skip apply for the whole prefix.
+      // Every peer folds every op through its own apply (I2, I3). autobee
+      // otherwise adopts a view head that another writer stamped and skips
+      // apply for the whole prefix.
       fastForward: false
-      // ackThreshold stays at its default. A threshold ack needs a head
-      // that is not trusted (index.js:1303-1305), and with no isTrusted or
-      // mostRecentTrusted hook every key is trusted (lib/trusted.js:30-32),
-      // so autobee appends no ack at any threshold. An ack takes a
-      // position in the local core, so it shifts no seq (§3, AD4), unless
-      // it lands while _append waits between _nextPosition() and
-      // db.append. A trust hook would make that window real.
+      // ackThreshold stays at its default. Do not add an isTrusted or
+      // mostRecentTrusted hook. autobee then appends acks, and an ack takes
+      // a position in the local core between _nextPosition() and db.append.
     })
     this.db.on('error', (err) => this.emit('error', err))
 
@@ -345,13 +242,9 @@ export class Bundle extends EventEmitter {
     this._swarmKeyPair = await this.store.createKeyPair(SWARM_KEY_NAME)
 
     const vaultKeyHex = b4a.toString(this.db.key, 'hex')
-    // T25: the creator of a vault (its local writer key is the vault key,
-    // see the header) lists its own swarm key in metadata.swarm.allow. The
-    // invite then names one peer that every joiner admits and dials, so a
-    // joiner can reach the vault before it has folded any gov/writer record.
-    // D-060 F01: the creator also binds that key to genesisKey
-    // (metadata.swarm.genesis), so a folded RemoveWriter of the creator cuts
-    // it (_refreshAllowlistOnce).
+    // The vault key is the local writer key of the creator. The creator
+    // lists its own swarm key in metadata.swarm.allow, so a joiner can dial
+    // one peer before any fold, and binds it as swarm.genesis. See SPEC §8.
     const creator = b4a.equals(this.db.key, this.db.local.key)
     let meta = stored
     if (!meta) {
@@ -364,8 +257,7 @@ export class Bundle extends EventEmitter {
       )
       if (metaPath) await saveMetadata(metaPath, meta)
     } else if (overrides) {
-      // A re-supplied invite must agree with the pinned document (I2:
-      // metadata is convergence-relevant; silent divergence is the bug).
+      // A re-supplied invite must agree with the pinned document (I2).
       const invited = createMetadata(
         this._withOwnSwarmKey(creator, {
           ...overrides,
@@ -374,9 +266,9 @@ export class Bundle extends EventEmitter {
         })
       )
       if (metadataHash(invited) !== metadataHash(meta)) {
-        // D-060 F11: every creator binds its swarm key (swarm.genesis). A
-        // pinned document without the binding was made from the vault key
-        // alone, so it lacks the swarm group of the invite.
+        // Every creator binds its swarm key. A pinned document without the
+        // binding came from the vault key alone, so it lacks the swarm group
+        // of the invite.
         if (meta.swarm.genesis === null && invited.swarm.genesis !== null) {
           throw vaultError(
             'VAULT_JOINED_WITHOUT_INVITE',
@@ -399,37 +291,23 @@ export class Bundle extends EventEmitter {
     this.metadata = meta
     if (!this._coreApply) this._setApply(meta)
     await this._wakeWriters()
-    // Fold what the cores already hold, so the view is current when open
-    // resolves.
+    // Fold what the cores hold, so the view is current when open resolves.
     await this.db.update()
-    // §3, §8 forged-clock (AD4): the next op's seq is the position its node
-    // takes in the local core, which starts at the core's length. It does
-    // not depend on how far apply has folded the local core (G10).
+    // The seq of the next op is its node's position in the local core,
+    // not the fold progress of apply. See _nextPosition().
     this._nextSeq = this.db.local.length
     this._foldedSeq = this._nextSeq
-    // A reopen applies nothing, so the update handler has not run yet.
+    // A reopen applies nothing, so the update handler did not run.
     await this._refreshIndexer()
     return this
   }
 
   /**
-   * D-047 F02: wake the writer of each key with a gov/writer record in the
-   * view, with the documented db.wakeup (autobee README.md:165-167). At
-   * open, autobee restarts only the writers that are system heads, and the
-   * boot hints since the last drain that applied hints (index.js:605-618,
-   * :853-875, :877-892). A peer that closed during a heal can hold the new
-   * blocks of a writer that is no head, and that it has not folded. Its
-   * peers are caught up, so they announce no pending writer
-   * (autobee-wakeup index.js:19-23), and no new length reaches it. Without
-   * the wakeup, that peer stays behind until somebody writes. A revoked
-   * writer keeps its record, so it wakes too: every peer folds its later
-   * nodes, and core's §8 revocation check decides each op. It rejects an
-   * op that sorts after the removal, except an op in flight within the
-   * window of the removal, and an op that sorts before the removal takes
-   * effect. So revocation stops cooperating clients only
-   * (okf/SECURITY_MODEL.md, the trust model). A key that only seen/ holds
-   * wakes never: a member can make any number of such keys (G32), and
-   * each wakeup opens a core.
+   * Wake the writer of each gov/writer record. autobee restarts only the
+   * system heads, so a peer that closed mid-heal stays behind until
+   * somebody writes. A revoked writer wakes too: apply decides its later
+   * ops. A key that only seen/ holds never wakes, because each wakeup opens
+   * a core and a member can mint such keys without bound.
    */
   async _wakeWriters() {
     const self = b4a.toString(this.db.local.key, 'hex')
@@ -441,13 +319,7 @@ export class Bundle extends EventEmitter {
     await Promise.all(keys.map((key) => this.db.wakeup({ key, length: 0 })))
   }
 
-  /**
-   * isIndexer from okf authority: gov/writer/<self> with indexer: true and
-   * no gov/removed/<self> in db.view. That is how core apply tells a live
-   * indexer (core/lib/apply.js:477-478, :533-542). Only then does a new
-   * governance op from this writer pass the revocation check and the
-   * issuer check of core apply (core/lib/apply.js:399-403, :411-413).
-   */
+  /** Refresh isIndexer and the firewall allowlist from gov/ after every fold. */
   async _onViewUpdate() {
     await this._refreshIndexer()
     if (this.swarmInstance) await this._refreshAllowlist()
@@ -467,16 +339,9 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * The metadata input, with the creator's own swarm key in swarm.allow
-   * (T25) and in swarm.genesis (D-060 F01). A supplied list is validated
-   * first (G3-P9 F04): a value that is not an array, a bad key or a key
-   * listed twice fails VAULT_BAD_SWARM_ALLOW by name. The empty list
-   * applies only when allow is absent. The creator's key goes in once, also
-   * when the list names it. A supplied genesis that is not the creator's
-   * own key fails VAULT_BAD_SWARM_GENESIS by name: the binding names the
-   * swarm key of genesisKey, and only the creator holds it. A swarm that is
-   * not an object passes through to createMetadata, which refuses it by
-   * name.
+   * The metadata input with the creator's own swarm key in swarm.allow and
+   * as swarm.genesis. Only the creator holds the swarm key of genesisKey,
+   * so a supplied genesis that is another key fails VAULT_BAD_SWARM_GENESIS.
    */
   _withOwnSwarmKey(creator, input) {
     if (!creator) return input
@@ -505,29 +370,25 @@ export class Bundle extends EventEmitter {
     if (this._trackAcks) {
       for (const node of nodes) this._observeAck(node)
     }
-    // autobee nodes already have the { key, value, length } shape core's
-    // apply documents — no wrapping.
     await this._coreApply(nodes, view, new HostAdapter(host))
     this._wakeAckWaiters()
   }
 
   /**
-   * Backpressure bookkeeping: a folded remote op whose §3 clock cites OUR
-   * writer at seq s proves that peer had linearized us through op s when it
-   * appended — the peer-fold acknowledgment append()'s admission control
-   * waits on. Only runs once backpressure has been used (`_trackAcks`), so
-   * the default path never pays the extra decode. A peer's clock cites us
-   * only once our gov/writer record is in its view (see clock()).
+   * A folded remote op whose clock cites our writer at seq s proves that
+   * the peer folded us through s. That is the ack that the second gate of
+   * _admit() waits on. A peer cites us only once its view holds our
+   * gov/writer record.
    */
   _observeAck(node) {
     if (!this.db || !this.db.local || b4a.equals(node.key, this.db.local.key)) return
     this._ackSeen = true
     const dec = decodeOp(Buffer.isBuffer(node.value) ? node.value : Buffer.from(node.value || []))
-    if (!dec.ok || !dec.op) return // poison/undecodable ops carry no ack
+    if (!dec.ok || !dec.op) return // an undecodable op carries no ack
     const clock = normalizeClock(dec.op.clock)
     if (!clock) return
     const seq = clock[b4a.toString(this.db.local.key, 'hex')]
-    // okf clocks carry 0-based positions (§3); the watermark is the next one.
+    // the entry is a position, the watermark is one past it
     if (typeof seq === 'number' && seq + 1 > this._bestAck) this._bestAck = seq + 1
   }
 
@@ -555,15 +416,14 @@ export class Bundle extends EventEmitter {
     return this.db ? this.db.discoveryKey : null
   }
 
-  /** This peer's writer key (what an indexer passes to writers.add). */
+  /** The writer key of this peer, what an indexer passes to writers.add. */
   get localKey() {
     return this.db && this.db.local ? this.db.local.key : null
   }
 
   /**
-   * This peer's hyperswarm public key (T25), stable across restarts: what
-   * an indexer passes to writers.add as `swarmKey`, or lists in
-   * metadata.swarm.allow.
+   * The hyperswarm public key of this peer, stable across restarts. An
+   * indexer passes it to writers.add as `swarmKey` or lists it in the invite.
    */
   get swarmKey() {
     return this._swarmKeyPair ? this._swarmKeyPair.publicKey : null
@@ -573,15 +433,12 @@ export class Bundle extends EventEmitter {
     return !!this.db && this.db.writable
   }
 
-  /**
-   * okf authority (§8), never autobee's isIndexer: refreshed from gov/
-   * after every view update and at open (_refreshIndexer).
-   */
+  /** okf authority from gov/ (SPEC §8), never autobee's isIndexer. */
   get isIndexer() {
     return this._isIndexer
   }
 
-  /** Read surface: the ViewAdapter over autobee's read-only view snapshot. */
+  /** The ViewAdapter over autobee's read-only view snapshot. */
   get view() {
     return this.db.view
   }
@@ -599,33 +456,19 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * No append starts once close() begins: append() refuses with
-   * VAULT_CLOSED. close() waits for no append before it closes autobee.
-   * Every append that started before close() settles before close()
-   * resolves (G11). The order:
-   * 1. autobee closes. This step waits for no append. A db.append can wait
-   *    for a drain that waits for a block that no peer sends, such as a
-   *    reorder that reads an absent block (index.js:1575, :645,
-   *    lib/topo.js:78, :181-182; G3-P3 F01). Only autobee's close ends that
-   *    read: its teardown closes its corestore session, which closes the
-   *    cores, and then it awaits the drain (index.js:391-452, :442, :446).
-   *    So each db.append in flight settles.
-   * 2. Every append settles. No append now waits for autobee or the
-   *    network. An append that has not handed autobee its node sees
-   *    _closing and fails VAULT_CLOSED_BEFORE_DURABLE (see _append()). An
-   *    append whose node autobee holds decides in _durable() from the
-   *    length of the local core after the close (_lengthAfterClose()).
-   * 3. The root corestore closes. _lengthAfterClose() reads through it, so
-   *    it closes only after step 2.
+   * Once close() begins, append() fails VAULT_CLOSED, and every earlier
+   * append settles before close() resolves. In this order:
+   * 1. autobee closes, with no wait for appends. A db.append can wait for a
+   *    block that no peer sends, and only this close ends that wait.
+   * 2. Every append settles (_append(), _durable()).
+   * 3. The root corestore closes last: _lengthAfterClose() reads through it.
    */
   async close() {
     this._closing = true
     this._wakeAckWaiters() // release any append blocked in the ack gate
     await this._destroySwarm()
-    // db.close() closes the generation SESSION (autobee _close); the root
-    // corestore — which the Bundle owns either way — closes after it.
     if (this.db) await this.db.close() // step 1
-    await Promise.all(this._appending) // step 2: the append chain too
+    await Promise.all(this._appending) // step 2
     await this.store.close() // step 3
   }
 
@@ -644,7 +487,7 @@ export class Bundle extends EventEmitter {
     return node ? JSON.parse(node.value) : undefined
   }
 
-  /** Async iterable of `{ key, value }` (JSON-decoded) over a §4 prefix. */
+  /** Async iterable of `{ key, value }` (JSON-decoded) over a keyspace prefix. */
   scan(prefix) {
     const stream = this.db.view.createReadStream(K.range(prefix))
     return (async function* () {
@@ -654,68 +497,32 @@ export class Bundle extends EventEmitter {
     })()
   }
 
-  /**
-   * I2/I3 store-level check: hash of a full range scan of the view —
-   * byte-compatible with core MemView.hash(), so a substrate view and a
-   * unit-suite view of the same linearized prefix compare directly.
-   */
+  /** Hash of a full scan of the view, byte-compatible with MemView.hash() of core (I2, I3). */
   async snapshotHash() {
     await this.update()
     return viewHash(this.db.view)
   }
 
-  /** Alias for snapshotHash() (vault-ld test-harness parity). */
+  /** Alias for snapshotHash(). */
   hash() {
     return this.snapshotHash()
   }
 
-  // ---------- §3/§8 op emission ----------
+  // ---------- op emission (SPEC §3, §8) ----------
 
   /**
-   * Encode and append one §3 op. Fills the common fields when absent:
-   * `clock` (the writer's observed vector clock — the last folded position
-   * of each writer with a gov/writer record in okf's view, self entry
-   * pinned to this op's own seq per the §8 forged-clock rule, see clock())
-   * and `at` (informational wall-clock ms, §3). Returns `{ seq, tag }` —
-   * `seq` is the position of the op's node in the local core (§3), and
-   * `tag` is the §3 opId apply will derive (`writerKey || seq`), which for
-   * a minting `create-concept` is the concept's `_id`. It resolves only
-   * once the local core holds the node (T10, see _durable()).
+   * Encode and append one op. Fills `clock` (clock()) and `at` (wall clock
+   * ms, informational) when absent. Returns `{ seq, tag }` once the local
+   * core holds the node (_durable()). `seq` is the node's position in
+   * the local core, and `tag` is the opId that apply derives. Appends run
+   * one at a time. The forged-clock rule of SPEC §8 pins the self entry of
+   * each clock to the real position of its node.
    *
-   * Appends are internally serialized (one at a time): the §8 forged-clock
-   * rule pins each op's self-clock entry to its actual local position, so
-   * two interleaved async appends must not race the seq assignment.
-   *
-   * Backpressure (opt-in): with no option, append is fire-at-caller-rate —
-   * a sustained fast writer can outrun every peer's fold and starve them
-   * (vault-ld M2). Pass `{ backpressure: true }` (or `{ maxInflight,
-   * ackTimeout }`), or configure the vault with `{ backpressure }`, and
-   * append() runs two admission gates before issuing the op, both on the
-   * same `maxInflight` watermark:
-   *
-   * 1. own fold — if `maxInflight` of this writer's ops are outstanding
-   *    beyond its last awaited fold, await `update()` (folds the full
-   *    linearized DAG, remote ops included), so the writer never builds a
-   *    local append-vs-apply backlog;
-   * 2. peer acknowledgment — if `maxInflight` of this writer's ops are
-   *    beyond the highest seq of OUR ops any peer op's §3 clock has cited
-   *    (i.e. beyond what any peer has demonstrably folded), wait for fresh
-   *    acks, at most `ackTimeout` ms. Skipped until the vault has folded
-   *    another writer's op (single-writer vaults never wait); on timeout
-   *    the op is admitted anyway, so silent/partitioned peers degrade
-   *    throughput to ~maxInflight per ackTimeout rather than deadlocking
-   *    the writer. Disable per-op (`backpressure: false`) for deliberate
-   *    offline/bulk writing.
-   *
-   * Close (G11): an append that starts after close() begins fails with
-   * VAULT_CLOSED. close() closes autobee first, and then it waits for every
-   * append that started before it. Such an append returns only if its node
-   * is in the local core. Otherwise it fails VAULT_CLOSED_BEFORE_DURABLE,
-   * and its op is not written (see close() and _append()).
-   *
-   * The chain serializes the appends only until autobee holds each node.
-   * The wait for the local core runs outside it, so the next append can
-   * take the next position while a node waits behind a missing link.
+   * `backpressure` is off by default. `true` or `{ maxInflight, ackTimeout }`
+   * gates the op on the own fold of this writer and on the fold that peer
+   * clocks prove (_admit()). Pass `false` per op for bulk writing. Once
+   * close() begins, a new append fails VAULT_CLOSED, and an earlier one
+   * fails VAULT_CLOSED_BEFORE_DURABLE unless its node reached the core.
    */
   append(type, payload = {}, opts = {}) {
     if (this._closing) return Promise.reject(closedError())
@@ -724,6 +531,8 @@ export class Bundle extends EventEmitter {
       () => {},
       () => {}
     )
+    // The wait for the core runs outside the chain, so the next append takes
+    // the next position while this node waits behind a missing link.
     const durable = run.then((res) => this._durable(res.seq).then(() => res))
     const settled = durable.then(
       () => this._appending.delete(settled),
@@ -734,20 +543,11 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * Resolves once the local core holds position `seq` (T10). A plain
-   * db.append resolves with the drain that writes its node to the core, so
-   * this mostly resolves at once. A node that waits behind an earlier local
-   * node that links a missing block stays in autobee's memory
-   * (lib/writers.js:624-631) until a later drain writes it. The wait listens
-   * to the documented hypercore events of db.local (the local writer
-   * Hypercore, autobee README): 'append' for a new length, and 'close'.
-   * The local writer appends through db.local itself (lib/writers.js:19,
-   * :37, :785). No timer polls.
-   *
-   * On 'close' the wait decides only once autobee has closed (see
-   * _lengthAfterClose()). A flush that started before db.local closed can
-   * still commit after it (hypercore index.js:1151, lib/session-state.js:
-   * 683-785), and the closed session then gets no 'append'.
+   * Resolves once the local core holds position `seq`. A node that waits
+   * behind a missing link stays in autobee's memory until a later drain
+   * writes it. So the wait listens to the 'append' and 'close' events of
+   * db.local. On 'close' it waits for autobee to close (_lengthAfterClose()),
+   * because a flush that started before can still commit after.
    */
   _durable(seq) {
     const local = this.db.local
@@ -779,22 +579,11 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * The length of the local core once autobee has closed, read from storage
-   * through the root corestore, which the Bundle closes last. A node that
-   * is not in the core then never lands, also not after a reopen:
-   * - It lives only in the writer's pending list (lib/writers.js:732-755).
-   * - Writer.flush is the only code that writes it to the core
-   *   (lib/writers.js:768-789). It runs only from the drain (index.js:824,
-   *   :1578-1597, lib/writers.js:137-147).
-   * - autobee's close calls no flush. It closes the writers and db.local,
-   *   and then awaits the drain in flight (index.js:391-452, :424, :439,
-   *   :446).
-   * - A reopen starts the writer with no pending node, at the core length
-   *   (lib/writers.js:329-331).
-   * - A node that waits behind a missing link never reached apply, so no
-   *   view or system state holds it (lib/writers.js:556-631).
-   * So an append that fails VAULT_CLOSED_BEFORE_DURABLE wrote nothing, and
-   * a retry writes the op once.
+   * The length of the local core once autobee has closed. A node that is
+   * not in the core then never lands. Only the drain writes a pending node,
+   * autobee's close runs no flush, and a reopen starts the writer at the
+   * core length. So an append that fails VAULT_CLOSED_BEFORE_DURABLE wrote
+   * nothing, and a retry writes the op once.
    */
   _lengthAfterClose() {
     if (!this._closedLength) {
@@ -812,19 +601,11 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * close() closes autobee without waiting for an append (see close()).
-   * Once close() begins, an append hands autobee no node:
-   * - It checks _closing before it reads autobee, after the gates, and
-   *   just before db.append, with no await between that check and
-   *   db.append.
-   * - A read of the closing autobee can fail.
-   * Each such end is VAULT_CLOSED_BEFORE_DURABLE. No node of the append
-   * exists then, so its op is not written. err.seq is the position of the
-   * op, or null if it took none.
-   *
-   * If autobee closes during db.append, the append returns its seq, and
-   * _durable() decides from the length of the local core after the close.
-   * So no tag is returned for a node that is not in the local core.
+   * Once close() begins, an append hands autobee no node. It reads
+   * _closing before it reads autobee, after the gates, and once more before
+   * db.append with no await between. Each such exit is
+   * VAULT_CLOSED_BEFORE_DURABLE. If autobee closes during db.append,
+   * _durable() decides from the core length after the close.
    */
   async _append(type, payload, { backpressure } = {}) {
     await this.ready()
@@ -841,30 +622,26 @@ export class Bundle extends EventEmitter {
       }
       seq = this._nextPosition()
       this._assertOpen(seq) // close() releases the gates
-      // §8 app-level containment: once this peer's own revocation record is
-      // in the view, any new local op is uniformly rejected 'revoked' by
-      // every peer's apply — refuse the append instead of growing the log
-      // with dead ops. (Mirrors core's exact rule: actual-seq cross-check
-      // first, claimed-clock strict precedence second.)
+      // Once the view holds this writer's own revocation, apply on every
+      // peer rejects its new ops as 'revoked'. Refuse instead of growing
+      // the log.
       await this._guardRevoked(payload.clock, seq)
       const op = { ...payload }
       if (op.clock === undefined) op.clock = await this.clock(seq)
-      if (op.at === undefined) op.at = Date.now() // §3: informational only
-      buf = encodeOp(type, op) // may throw on a bad payload: seq not yet burned
+      if (op.at === undefined) op.at = Date.now() // informational only
+      buf = encodeOp(type, op) // can throw on a bad payload, the seq is not burned yet
       // Again after the awaits above: a fold can take the grant away.
       this._assertWritable()
       this._assertOpen(seq) // no await from here to db.append
     } catch (err) {
       throw this._closing ? closedBeforeDurableError(seq) : err
     }
-    // Appends are serialized (append()), so the seq moves only once
-    // autobee holds the node. A plain append: autobee runs with
-    // optimistic: false.
+    // The seq moves only once autobee holds the node.
     try {
       await this.db.append(buf)
     } catch (err) {
       if (!this._closing) throw err
-      // autobee closed during db.append: _durable() decides (see above)
+      // autobee closed during db.append, so _durable() decides
     }
     this._nextSeq = seq + 1
     return { seq, tag: makeTag(this.db.local.key, seq) }
@@ -876,41 +653,22 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * §3, §8 forged-clock (AD4): the position that the next local node takes
-   * in the local core (db.local, documented). autobee gives a new local
-   * node the core length plus the count of local nodes it has not yet
-   * written to the core (lib/writers.js:332, :748). The Bundle is the only
-   * writer of the local core, and its appends are serialized (append()):
-   * - A plain db.append resolves with the drain that applies its node and
-   *   writes it to the core (index.js:1575, :633-645, :766-831, :824;
-   *   lib/writers.js:137-147, :768-789). So the core length counts every
-   *   earlier node.
-   * - The drain cannot write a node that waits behind an earlier local
-   *   node, such as a node of the local core that a reopen cannot fold yet
-   *   because it links a node that is not in the system (lib/writers.js:
-   *   602-605, :673-723). Then the core length is behind, and _nextSeq,
-   *   one past the seq of the last append, holds the position.
-   * - autobee's only other local append is the empty ack
-   *   (index.js:1297-1314, :1312). okf's configuration never triggers it.
-   *   A threshold ack needs a head that is not trusted (index.js:1305,
-   *   :1316-1330), and with no trust hook every key is trusted
-   *   (lib/trusted.js:30-32). The ack after a reindex needs a system or
-   *   view core below manifest version 3 (index.js:693, :707, :738-751),
-   *   and this release creates both at version 3 (index.js:213-221).
+   * The position that the next local node takes in the local core. That is
+   * the core length, or _nextSeq when a node waits behind a missing link
+   * and the drain has not written it. The Bundle is the only writer of the
+   * local core, its appends run one at a time, and okf never triggers
+   * autobee's own ack append.
    */
   _nextPosition() {
     return Math.max(this.db.local.length, this._nextSeq)
   }
 
   /**
-   * Refuse an append unless autobee has added this writer and not
-   * removed it: `db.writable` (autobee index.js:196-198, lib/writers.js:
-   * 208-216). autobee's own append refuses only a removed writer
-   * (index.js:1531-1533). A writer it never added gets past that, fails
-   * the local flush with 'Not writable' (lib/writers.js:633-638), and
-   * autobee closes itself while the append resolves (index.js:669-690,
-   * G12). This check throws before the seq moves and before anything
-   * reaches the local core.
+   * Refuse an append unless autobee has added this writer and not removed
+   * it (db.writable). autobee's own append refuses only a removed writer.
+   * A writer it never added fails the local flush with 'Not writable', and
+   * autobee closes itself while the append resolves. It throws before the
+   * seq moves.
    */
   _assertWritable() {
     if (this.db.writable) return
@@ -925,23 +683,21 @@ export class Bundle extends EventEmitter {
 
   /** The two admission gates (see append()). */
   async _admit(bp) {
-    // gate 1: own fold — never run more than maxInflight ops ahead of the
-    // writer's own last awaited fold
+    // gate 1: own fold
     if (this._nextSeq - this._foldedSeq >= bp.maxInflight) {
       const target = this._nextSeq
       await this.update()
       if (target > this._foldedSeq) this._foldedSeq = target
     }
-    // gate 2: peer acknowledgment — never run more than maxInflight ops
-    // ahead of what some peer's op clock proves that peer has folded
+    // gate 2: peer ack
     if (!this._ackSeen) return
     const deadline = Date.now() + bp.ackTimeout
     while (!this._closing && this._nextSeq - this._bestAck >= bp.maxInflight) {
       const remaining = deadline - Date.now()
-      if (remaining <= 0) return // degrade instead of deadlocking (see append())
+      if (remaining <= 0) return // slow down, do not deadlock
       await this._ackWait(remaining)
       if (this._closing) return
-      // fold whatever arrived: acks only advance when remote ops fold
+      // acks advance only when remote ops fold
       await this.update()
     }
   }
@@ -960,26 +716,11 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * The §3 clock payload: [[writerKeyHex, seq], ...] (0-based positions),
-   * sorted by key. Every entry comes from okf's view: seen/<W> is W's last
-   * folded position plus one (§3, AD4), so the entry is that position. A
-   * remove-writer's clock cites the target's last folded position (§8:
-   * `seqAtRemoval` derives from exactly this entry), in the same unit as
-   * the seq of every op (G8). No entry comes from substrate state that the
-   * view has not folded.
-   *
-   * §8 (T12, G33): the clock carries self and each writer with a
-   * gov/writer/<W> record in the view, and no other key. Only an indexer's
-   * AddWriter writes that record, so a member cannot grow the clock: a key
-   * that a member's AddWriter op grants at the substrate (AD7) gets no
-   * record, and its ops never put it here. Core never deletes the record,
-   * so a revoked writer stays in the clock: the §8 window test compares
-   * every entry, and a revocation clock without a writer that an in-flight
-   * op cites would reject that op (I10). A writer with a record and no
-   * folded op has no entry.
-   * The self entry is pinned to `seq`, the op's own 0-based position: §8's
-   * forged-clock rule rejects any op whose claimed self entry differs from
-   * its actual seq. It is there whether or not self has a record.
+   * The clock of an op: [[writerKeyHex, seq], ...]. Each entry is seen/<W>
+   * minus one. The clock carries self and each writer with a gov/writer
+   * record, and no other key. A revoked writer stays in it, because the
+   * window test of SPEC §8 compares every entry. The self entry is `seq`,
+   * the real position of the op, record or not.
    */
   async clock(seq = null) {
     const entries = new Map()
@@ -998,12 +739,9 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * §8 revocation containment, app-level (autobee's positional teardown is
-   * never used — see DEVIATIONS.md): refuse a local append once
-   * `gov/removed/<self>` exists, mirroring core's apply rule exactly —
-   * an op whose actual seq exceeds `seqAtRemoval` is dead regardless of
-   * its claimed clock; within the window, only a caller-crafted clock that
-   * strictly precedes the revocation clock survives.
+   * Refuse a local append once `gov/removed/<self>` exists, with the rule
+   * of apply. An op past `seqAtRemoval` is dead. Within the window only a
+   * clock that strictly precedes the revocation clock survives.
    */
   async _guardRevoked(clock, seq) {
     if (!this.db || !this.db.local) return
@@ -1017,16 +755,13 @@ export class Bundle extends EventEmitter {
     throw vaultError('VAULT_REVOKED', `local writer ${self} has been removed (§8)`)
   }
 
-  // Governance ops (§8: apply rejects these unless the ISSUER is a
-  // confirmed indexer at the op's linearized position; revocation is
-  // causal — core's clock rule — never host.removeWriter).
+  // Governance ops. apply accepts them only from an indexer. See SPEC §8.
   /**
    * `key`: the writer key, 32 bytes or 64 hex characters. Each governance
-   * helper refuses any other key with VAULT_BAD_WRITER_KEY before anything
-   * is appended (D-047 F18).
-   * `swarmKey` (T25, optional): the writer's swarm key, 32 bytes or 64 hex.
-   * Core stores it on gov/writer/<key>, and every peer's swarm firewall then
-   * admits it (swarm()). A bad key is refused before anything is appended.
+   * helper fails VAULT_BAD_WRITER_KEY on any other key before it appends.
+   * `swarmKey` (optional): the swarm key of the writer, 32 bytes or 64 hex.
+   * apply stores it on gov/writer/<key>, and the firewall of every peer
+   * then admits it (swarm()).
    */
   addWriter(key, { indexer = false, swarmKey = null } = {}) {
     const writerKey = toKeyBuffer(key)
@@ -1051,10 +786,8 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * rateCeiling is a required wire uint. It defaults to the ceiling of the
-   * pinned metadata, which open loads, so a call before open waits for open,
-   * as every append does (D-047 N13). After open, the call appends at once,
-   * so it keeps its place among the caller's appends.
+   * rateCeiling defaults to the ceiling of the pinned metadata, which open
+   * loads, so a call before open waits for open as every append does.
    */
   async setWriterPolicy(key, { namespacePrefixes = [], rateCeiling } = {}) {
     const writerKey = toKeyBuffer(key)
@@ -1067,8 +800,8 @@ export class Bundle extends EventEmitter {
     })
   }
 
-  // Content-op conveniences (thin over append()). `backpressure` is the
-  // one append option; everything else rides the payload.
+  // Content ops, thin over append(). `backpressure` is the one append
+  // option. The rest rides the payload.
   createConcept(path, type, opts = {}) {
     const { backpressure, id, ...rest } = opts
     return this.append(
@@ -1089,9 +822,8 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * §5 citation contract: computes and cites EVERY tag currently mapped to
-   * `value` in this writer's resolved view (client libraries compute this
-   * set — RemTag removes by observed tokens, never by value alone).
+   * Cites every tag that maps to `value` in the view of this writer. RemTag
+   * removes observed tags, never by value alone. See SPEC §5.
    */
   async remTag(id, value, opts = {}) {
     if (this._closing) throw closedError() // before the reads, as append() does
@@ -1137,56 +869,33 @@ export class Bundle extends EventEmitter {
 
   // ---------- replication ----------
 
-  /** Direct replication stream (autobee: store.replicate + wakeup wiring). */
+  /** A direct replication stream. No firewall runs here: the caller chooses the peer. */
   replicate(isInitiatorOrStream) {
     return this.db.replicate(isInitiatorOrStream)
   }
 
   /**
-   * Replicate over a private hyperswarm (T25). The vault key is no
-   * capability to connect: the swarm listens and dials with this peer's
-   * swarm key (swarmKey), and its firewall rejects every remote key outside
-   * the allowlist, on both sides of a connection (hyperswarm README.md:52,
-   * index.js:49, :204-205, :309-322). The allowlist (_refreshAllowlist):
-   * - the keys of metadata.swarm.allow (pinned in the invite),
-   * - the swarm key of each gov/writer record with no gov/removed record,
-   *   and
-   * - the keys of `allow`, the local list of this peer (G3-P9 F03),
-   * minus the bound swarm key of each removed writer (also when a live
-   * record, metadata.swarm.allow or `allow` carries the same key), and
-   * minus each key that revokePeer() cut. The bound key of a writer is the
-   * swarmKey on its gov/writer record, and for genesisKey also the key that
-   * metadata.swarm.genesis binds (D-060 F01). A writer with no bound key
-   * keeps what the invite or a local list grants its swarm key. The
-   * allowlist is read again after every fold (the update handler), so an
-   * admission opens the firewall, and a folded RemoveWriter cuts the
-   * writer as revokePeer() does.
+   * Replicate over a private hyperswarm. The vault key is no capability to
+   * connect: the swarm listens and dials with swarmKey, and its firewall
+   * admits only the allowlist, on both sides. The allowlist is the union of
+   * metadata.swarm.allow, the swarmKey of each gov/writer record and
+   * `allow`. _refreshAllowlistOnce subtracts the bound key of each removed
+   * writer and each key that revokePeer() cut, and runs after every fold.
    *
    * `opts`: exactly one DHT choice, or the call fails VAULT_SWARM_DHT.
-   *   bootstrap  ['host:port' | { host, port }, ...]: the bootstrap nodes of
-   *              a private DHT, such as `auto-okf bootstrap` runs
-   *   publicDht  true: hyperdht's default bootstrap nodes, the public DHT
-   *              that is "publicly served on behalf of the commons"
-   *              (hyperdht README.md:84). Explicit opt-in.
-   *   allow      optional: swarm keys (32 bytes or 64 hex each) that this
-   *              peer admits and dials, and no other peer. They are never
-   *              written to the metadata. A late joiner folds no gov/writer
-   *              record before it connects, so it admits only the keys of
-   *              the invite. When no peer of the invite is online, the
-   *              indexer that admitted it hands it its swarm key with the
-   *              invite, and the joiner passes that key here. A value that
-   *              is not an array, a bad key or a key listed twice fails
-   *              VAULT_BAD_SWARM_ALLOW before anything else happens.
+   *   bootstrap  ['host:port' | { host, port }, ...]: the nodes of a
+   *              private DHT, such as `auto-okf bootstrap` runs
+   *   publicDht  true: the public DHT of hyperdht. Explicit opt-in.
+   *   allow      swarm keys (32 bytes or 64 hex each) that this peer alone
+   *              admits and dials, never written to the metadata. A joiner
+   *              that reaches no peer of the invite passes the swarm key
+   *              that its indexer hands it. A bad list fails VAULT_BAD_SWARM_ALLOW.
    *
-   * The swarm listens (listen()) and joinPeers each listed key, of the
-   * invite and of `allow`, so a pre-provisioned fleet connects with no
-   * topic announcement. It also joins the auto-okf/2 topic,
-   * sha256('auto-okf/2' ‖ db.discoveryKey), for the writers that gov/writer
-   * admits later. Every admitted connection is fed to db.replicate. The
-   * Bundle owns the swarm: leaveSwarm() and close() destroy it, and clear
-   * the local list. A second call before leaveSwarm() joins again on the
-   * swarm, and the DHT, of the first call, and adds the keys of its
-   * `allow` to the local list. Returns the swarm.
+   * The swarm joinPeers each listed key, so a fleet connects with no topic
+   * announcement. It also joins sha256('auto-okf/2' ‖ db.discoveryKey) for
+   * the writers that gov/writer admits later. leaveSwarm() and close() destroy
+   * the swarm and clear the local list. A second call before leaveSwarm()
+   * reuses the swarm and adds its `allow` to the local list.
    */
   async swarm({ bootstrap, allow, publicDht = false } = {}) {
     await this.ready()
@@ -1194,10 +903,8 @@ export class Bundle extends EventEmitter {
     const dht = swarmDhtOptions(bootstrap, publicDht)
     const local = allow === undefined ? [] : swarmKeyList(allow, 'allow')
     if (!this.swarmInstance) {
-      // The firewall reads _allowed. On the first call it is empty until
-      // the _refreshAllowlist() below. After leaveSwarm() it still holds
-      // the last list, and that refresh replaces it. The swarm listens and
-      // dials only after the refresh, so no stale list decides an attempt.
+      // _allowed is empty or stale here. The refresh below fills it before
+      // the swarm listens or dials.
       this.swarmInstance = new Hyperswarm({
         ...dht,
         keyPair: this._swarmKeyPair,
@@ -1208,8 +915,7 @@ export class Bundle extends EventEmitter {
     if (!this._onConnection) {
       this._onConnection = (conn) => {
         conn.on('error', () => {})
-        // The firewall ran before the handshake. A key can leave the
-        // allowlist before 'connection' fires, so check it again here.
+        // A key can leave the allowlist between the firewall and 'connection'.
         if (!this._allows(conn.remotePublicKey)) return conn.destroy()
         this.db.replicate(conn)
       }
@@ -1217,7 +923,7 @@ export class Bundle extends EventEmitter {
     }
     if (!this._onBan) {
       this._onBan = (info) => this._recordBan(info)
-      swarm.on('ban', this._onBan) // hyperswarm README.md:162-164
+      swarm.on('ban', this._onBan)
     }
     for (const hex of local) this._localAllow.add(hex)
     await this._refreshAllowlist()
@@ -1228,12 +934,12 @@ export class Bundle extends EventEmitter {
     return swarm
   }
 
-  /** Leave the topic and the listed peers that swarm() joined, and destroy the swarm. */
+  /** Destroy the swarm that swarm() made, with its topic and listed peers. */
   async leaveSwarm() {
     await this._destroySwarm()
   }
 
-  /** destroy() leaves every topic (clear()), and the listed peers go with the swarm. */
+  /** destroy() leaves every topic, and the listed peers go with the swarm. */
   async _destroySwarm() {
     const swarm = this.swarmInstance
     if (!swarm) return
@@ -1253,14 +959,10 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * Cut a peer (T25): take its swarm key out of the live allowlist, destroy
-   * its open connections, and leavePeer it. The key stays out for the life
-   * of this Bundle, also when gov/writer or metadata.swarm.allow still name
-   * it. A folded RemoveWriter has the same effect for the bound swarm key
-   * of the removed writer (see swarm()), through the update handler. This
-   * stops the peer's replication with this peer only. The other peers cut
-   * it when they fold the RemoveWriter, or when each of them calls
-   * revokePeer().
+   * Cut a peer: take its swarm key out of the allowlist, destroy its
+   * connections and leavePeer it. The key stays out for the life of this
+   * Bundle, also when gov/writer or metadata.swarm.allow names it. The
+   * other peers cut it when they fold the RemoveWriter or call revokePeer().
    */
   revokePeer(swarmKey) {
     const key = swarmKeyBuffer(swarmKey)
@@ -1291,10 +993,9 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * Read the allowlist again from metadata and gov/ (see swarm()), and
-   * apply the difference to the swarm: a key that left is evicted, and a
-   * key that came in is admitted. The runs are serialized, so a slow run
-   * never puts back a list that a later fold changed.
+   * Read the allowlist again (see swarm()) and apply the difference to the
+   * swarm. Serialized, so a slow run never puts back a list that a later
+   * fold changed.
    */
   _refreshAllowlist() {
     const run = this._allowChain.then(() => this._refreshAllowlistOnce())
@@ -1312,24 +1013,18 @@ export class Bundle extends EventEmitter {
       if ((await this.val(K.govRemoved(writer))) === undefined) live.add(value.swarmKey)
       else removed.add(value.swarmKey)
     }
-    // D-060 F01: the genesis record holds no swarm key, because core seeds
-    // it from the apply config alone. The pinned invite binds the creator's
-    // swarm key to genesisKey instead (metadata.swarm.genesis), so a folded
-    // RemoveWriter of genesisKey takes that key out as it takes out the key
-    // on any removed writer's record. Every peer of the invite pins the same
-    // binding, and every peer folds the same gov/, so each peer, a reopen and
-    // a fresh joiner compute the same set.
+    // The genesis record holds no swarm key, because apply seeds it from
+    // the configuration alone. metadata.swarm.genesis binds the swarm key
+    // of the creator instead, so a folded RemoveWriter of genesisKey cuts it.
     const { genesis } = this.metadata.swarm
     if (genesis !== null && (await this.val(K.govRemoved(this.metadata.genesisKey))) !== undefined) {
       removed.add(genesis)
     }
     // No await from here on, so a revokePeer() that ran during the reads
     // above is in _revokedPeers now.
-    // G3-P9 F01: core lets two gov/writer records carry one swarm key
-    // (core lib/apply.js opAddWriter). The swarm key of a removed writer is
-    // subtracted from the whole union, so a second, live record with the
-    // same key cannot keep the removed writer connected. The rule reads
-    // gov/ alone, so a reopen computes the same set.
+    // Two gov/writer records can carry one swarm key. Subtract the key of a
+    // removed writer from the whole union, so that a live second record
+    // cannot keep the removed writer connected.
     const next = new Set(live)
     for (const hex of this.metadata.swarm.allow) next.add(hex)
     for (const hex of this._localAllow) next.add(hex)
@@ -1354,12 +1049,10 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * Into the allowlist. hyperswarm bans a key that the firewall rejected,
-   * and rejects a banned key before the firewall runs (index.js:312-319),
-   * so a peer that dialed before its admission folded is unbanned
-   * (PeerInfo.ban(false), README.md:202-204), and the topic is looked up
-   * again (discovery.refresh(), README.md:174), so the two dial at once
-   * and not at the next refresh, which can be 10 minutes away.
+   * Into the allowlist. hyperswarm rejects a banned key before the firewall
+   * runs. So this unbans a peer that dialed before its admission folded
+   * (PeerInfo.ban(false)) and looks the topic up again (discovery.refresh()).
+   * The next refresh can be 10 minutes away.
    */
   _allowPeer(hex) {
     const swarm = this.swarmInstance
@@ -1376,15 +1069,10 @@ export class Bundle extends EventEmitter {
   }
 
   /**
-   * The 'ban' handler (G3-P9 F02, see MAX_BANNED_PEERS). hyperswarm emits
-   * 'ban' when its firewall rejects a key (index.js:315-319, :481-485,
-   * README.md:162-164). The table keeps the newest MAX_BANNED_PEERS keys.
-   * Past the bound, the oldest ban is lifted with the documented
-   * PeerInfo.ban(false) (README.md:202-204), and leavePeer() (README.md:
-   * 126-132) frees the record: it deletes a record that is not banned,
-   * queued, explicit or waiting and has no connection (index.js:556-564,
-   * :431-439, lib/peer-info.js:113-115). The firewall still rejects the key
-   * at its next attempt, and bans it again.
+   * The 'ban' handler (see MAX_BANNED_PEERS). Past the bound it lifts the
+   * oldest ban with PeerInfo.ban(false) and frees the record with
+   * leavePeer(). hyperswarm deletes a record that is not banned, queued,
+   * explicit or waiting and has no connection.
    */
   _recordBan(info) {
     const swarm = this.swarmInstance
@@ -1404,17 +1092,9 @@ export class Bundle extends EventEmitter {
 }
 
 /**
- * Adapts autobee's host (lib/apply-calls.js) to the one call that
- * @auto-okf/core's apply makes: addWriter(key, { weight: 0 }) (AD7). Core
- * makes it for every AddWriter op that it folds, whether it then accepts or
- * rejects the op, once the op is within maxOpBytes, decodes, and names a
- * 32-byte key (core/lib/apply.js:361-375, grant() at :444-448). The grant
- * comes before every check that reads the op's linearized position, such
- * as the revocation check and the indexer-issuer check, so a reorder can
- * never undo it (G9b). okf membership still comes only from gov/, which
- * those checks decide.
- * autobee's positional removeWriter is deliberately NOT exposed: §8
- * revocation is decided purely by core's in-log clock rule.
+ * Adapts autobee's host to the one call that core's apply makes:
+ * addWriter(key, { weight: 0 }). removeWriter is not exposed: revocation is
+ * the clock rule of apply. See SPEC §8.
  */
 class HostAdapter {
   constructor(host) {
@@ -1422,41 +1102,11 @@ class HostAdapter {
   }
 
   addWriter(key) {
-    // WEIGHT 0 FOR EVERY WRITER. Core passes { weight: 0 }. The adapter
-    // grants { weight: 0 } whatever core passes, so autobee's default
-    // (isIndexer true, weight 2, lib/apply-calls.js:33) never applies. With
-    // `bootstrapWeight: 0` (the constructor call), genesis stands at 0 too.
-    // What that means on autobee@2.12.1:
-    // - The grant records the key at weight 0 with ceiling (maxWeight) 0
-    //   (lib/apply-calls.js:33-41, lib/system.js:66-92). isIndexer only
-    //   selects the default weight (lib/apply-calls.js:33), so the adapter
-    //   does not pass it. A grant at 0 opens no promotion request
-    //   (lib/system.js:78, lib/promotions.js:111-113). The D-047 F08 test
-    //   in okf/test/store-governance.test.js fails at the default weight.
-    // - Order: nodes sort by weight, then timestamp, then writer key, then
-    //   length (lib/topo.js:168-179). Every weight is 0, so nodes sort by
-    //   timestamp, then key.
-    // - No approval: an append collects approvals only when its writer has
-    //   a standing above 0 (index.js:1250-1255, :1555). The standing is the
-    //   writer's current weight (index.js:1223-1226, lib/witness.js:8-12).
-    // - No witness: an append cites one only when the writer's grant hint
-    //   is heavier than its current weight (index.js:1546-1553). A grant
-    //   through this host sets no hint (lib/system.js:76-77: no anchor).
-    // - No climb: a witness raises a weight only when the approver it cites
-    //   has a standing of at least the claimed weight (lib/witness.js:19-51).
-    //   Genesis qualifies only up to bootstrapWeight (lib/witness.js:47),
-    //   and every other writer stands at 0, so no claim above 0 verifies.
-    // So no resolved weight depends on a node's position (the G1 livelock
-    // mechanism). autobee's isIndexer is always false (see the header), and
-    // Bundle.isIndexer reads gov/.
-    //
-    // A member can still forge a node with approvals. autobee then adds
-    // each named key at weight 0, because the carrier's weight caps the
-    // grant (index.js:1432-1441, lib/system.js:75). okf membership still
-    // comes only from gov/, which core decides.
-    //
-    // Returned, not fire-and-forget: core awaits it, and an un-awaited
-    // grant can miss autobee's system flush.
+    // Weight 0 for every writer, so autobee's default (isIndexer true,
+    // weight 2) never applies. With bootstrapWeight: 0 genesis stands at 0
+    // too. So no weight climbs, no resolved weight depends on the position
+    // of a node, and nodes sort by timestamp then key. Returned, not
+    // fire-and-forget: an un-awaited grant can miss autobee's system flush.
     return this.host.addWriter(key, { weight: 0 })
   }
 }
@@ -1478,18 +1128,12 @@ function swarmTopic(discoveryKey) {
   return createHash('sha256').update(SWARM_NAMESPACE).update(discoveryKey).digest()
 }
 
-/**
- * A 32-byte writer key from 32 bytes or 64 hex characters, else null
- * (D-047 F18). A writer key has the form of a swarm key.
- */
+/** A 32-byte writer key from 32 bytes or 64 hex characters, else null. */
 function toKeyBuffer(key) {
   return swarmKeyBuffer(key)
 }
 
-/**
- * The Hyperswarm options of one DHT choice (see Bundle.swarm()): the
- * bootstrap nodes of a private DHT, or the public DHT by explicit opt-in.
- */
+/** The Hyperswarm options of one DHT choice (see Bundle.swarm()). */
 function swarmDhtOptions(bootstrap, publicDht) {
   const nodes = Array.isArray(bootstrap) ? bootstrap : null
   const valid =

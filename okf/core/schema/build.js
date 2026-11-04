@@ -1,21 +1,10 @@
-// Schema + dispatch builder for the auto-okf op wire contract (okf SPEC §3).
+// Schema and dispatch builder for the op wire contract (SPEC §3). toDisk()
+// writes okf/core/spec/.
 //
-// Pattern ancestor: vault-ld/core/schema/build.js (patterns only, no code
-// path shared — okf SPEC §0 copy-don't-depend). Sources verified 2026-07-13
-// against the installed packages:
-// - hyperschema@1.21 README + lib/types.js: Hyperschema.from(dir),
-//   schema.namespace(name), ns.register({ name, fields: [{ name, type,
-//   required, array }] }), Hyperschema.toDisk(schema) — append-only
-//   versioned encodings; 'json' is in SupportedTypes.
-// - hyperdispatch@1.6 example.js + builder.mjs: Hyperdispatch.from(
-//   SCHEMA_DIR, DISPATCH_DIR), hd.namespace(ns).register({ name,
-//   requestType }), Hyperdispatch.toDisk(hd); generated spec/hyperdispatch
-//   exports { Router, encode, decode, version }. Importing the .mjs
-//   builders sets `static esm = true`, so toDisk() emits ESM.
-//
-// WIRE CONTRACT (okf SPEC §3): this file is APPEND-ONLY for the life of a
-// vault. Never reorder or remove structs, fields, or commands; add new ops
-// as new commands with new ids. Deprecated ops keep their decoder forever.
+// WIRE CONTRACT (SPEC §3): this file is APPEND-ONLY for the life of a
+// vault. Never reorder or remove a struct, a field or a command. Add a new
+// op as a new command with a new id. A deprecated op keeps its decoder
+// forever.
 import { fileURLToPath } from 'url'
 import path from 'path'
 import Hyperschema from 'hyperschema'
@@ -28,25 +17,16 @@ const DISPATCH_DIR = path.join(dir, '..', 'spec', 'hyperdispatch')
 const schema = Hyperschema.from(SCHEMA_DIR)
 const okf = schema.namespace('okf')
 
-// Common fields (okf SPEC §3):
-// - `clock`: the writer's observed vector clock at append time, JSON-encoded
-//   as [[writerKeyHex, seq], ...] including the writer's own entry (its own
-//   seq). Required semantically ("every op carries clock"); optional on the
-//   wire so decode never throws — apply rejects a missing/forged clock
-//   (reason 'forged-clock', §8).
-// - `at`: the writer's wall-clock milliseconds at append time.
-//   Informational only, never an input to merge/ordering/conflict detection
-//   (I1); a missing/garbage `at` materializes as 1970-01-01, so it is
-//   optional on the wire and never a rejection cause.
-// - `tag` (opId) is DERIVED by apply from the node (writer key + actual
-//   seq), never encoded in the payload. Only RemTag.tags and
-//   ResolveConflict.keep/supersede carry references to OTHER ops' tags or
-//   hashes (citations, not self-identifications) — as hex strings.
+// Common fields (SPEC §3). `clock` is the vector clock of the writer, JSON
+// [[writerKeyHex, seq], ...]. It is optional on the wire so that decode
+// never throws. apply rejects a missing one. `at` is the wall-clock
+// milliseconds at append time, informational only, never a rejection. The
+// tag (opId) is not on the wire. apply derives it from the node.
 
 okf.register({
   name: 'create-concept',
   fields: [
-    // id absent = mint, id present = adopt (§6)
+    // id absent: mint. id present: adopt (§6).
     { name: 'id', type: 'string' },
     { name: 'path', type: 'string', required: true },
     { name: 'type', type: 'string', required: true },
@@ -60,8 +40,8 @@ okf.register({
   fields: [
     { name: 'id', type: 'string', required: true },
     { name: 'key', type: 'string', required: true },
-    // LWW-array register value (§5): scalar or array of JSON scalars;
-    // JSON bytes are fixed at append time so decode is deterministic.
+    // LWW array register value (§5): a scalar or an array of JSON scalars.
+    // The JSON bytes are fixed at append time, so decode is deterministic.
     { name: 'value', type: 'json', required: true },
     { name: 'clock', type: 'json' },
     { name: 'at', type: 'uint' }
@@ -83,7 +63,7 @@ okf.register({
   fields: [
     { name: 'id', type: 'string', required: true },
     { name: 'value', type: 'string', required: true },
-    // every observed tag (opId hex) mapped to the value (§5 OR-set remove)
+    // every observed tag (opId hex) that maps to the value (§5 OR-set remove)
     { name: 'tags', type: 'string', array: true, required: true },
     { name: 'clock', type: 'json' },
     { name: 'at', type: 'uint' }
@@ -94,8 +74,8 @@ okf.register({
   name: 'set-body',
   fields: [
     { name: 'id', type: 'string', required: true },
-    // base: 64-char lowercase-hex revHash of the cited base revision, or
-    // null for "no base cited" (§5, §6 _rev).
+    // the 64-char lowercase hex revHash of the cited base revision, or
+    // null for no base (§5, §6)
     { name: 'base', type: 'string' },
     { name: 'text', type: 'string', required: true },
     { name: 'clock', type: 'json' },
@@ -150,12 +130,10 @@ okf.register({
     { name: 'indexer', type: 'bool', required: true },
     { name: 'clock', type: 'json' },
     { name: 'at', type: 'uint' },
-    // The writer's 32-byte hyperswarm public key, or null. apply checks the
-    // length and stores it hex on gov/writer/<key> (§8), and the store's
-    // swarm firewall admits the swarm keys of live records (T25). It is a
-    // field of schema version 1: no vault of an earlier release is carried
-    // over (AD5), so the schema was regenerated, not appended, and the
-    // codec has no branch for an older version.
+    // The 32-byte hyperswarm public key of the writer, or null. apply
+    // checks the length (§8). The firewall admits the swarm keys of live
+    // gov/writer records. It is a field of schema version 1, because no
+    // vault of an earlier release carries over.
     { name: 'swarmKey', type: 'buffer' }
   ]
 })
@@ -185,8 +163,8 @@ Hyperschema.toDisk(schema)
 const hd = Hyperdispatch.from(SCHEMA_DIR, DISPATCH_DIR)
 const cmds = hd.namespace('okf')
 
-// Command ids are assigned in registration order starting at 0 and are
-// frozen thereafter (dispatch.json pins them). APPEND-ONLY (§3).
+// Command ids follow registration order from 0, and dispatch.json freezes
+// them. APPEND-ONLY (§3).
 for (const name of [
   'create-concept',
   'set-field',
