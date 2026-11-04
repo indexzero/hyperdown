@@ -1,25 +1,16 @@
-// compareNotes(face, vault) — the byte compare behind the fidelity check of
-// importFace (okf SPEC §10, §14). After an import, the notes of a
-// materialize of the new vault (in memory) must equal the notes of the face
-// that import read, byte for byte, "modulo the `_rev` frontmatter lines"
-// (§14): `_rev` re-derives in the new vault. importFace leaves out index.md
-// and log.md, the regenerated faces, before it calls this.
-//
-// Both sides are Map<rel, Buffer> that the caller built: the face's notes at
-// any depth, dot-segment paths included, and the byte plan of materialize.
-// No directory is walked here, and no copy is written to disk.
+// The byte compare behind the fidelity check of importFace. See SPEC §10
+// and §14.
 
 /**
- * Compare the notes of a face with the notes of a new vault (importFace),
- * both Map<rel, Buffer>. Returns every difference, in byte order of path
- * (an empty array when they match):
+ * Compare the notes of a bundle with the notes of the new vault. Both are
+ * Map<rel, Buffer> without index.md and log.md. Returns every difference in
+ * byte order of path, [] when they match:
  *
- *   { path, kind: 'missing' }   only the face holds the note
+ *   { path, kind: 'missing' }   only the bundle holds the note
  *   { path, kind: 'extra' }     only the vault holds it
- *   { path, kind: 'differs' }   both hold it, with different bytes
+ *   { path, kind: 'differs' }   the bytes differ
  *
- * Each `_rev` line of a note's frontmatter block is excluded: it re-derives
- * in the new vault (§14). A `_rev:` line in a body is compared.
+ * `_rev` lines are not compared (withoutRev).
  */
 export function compareNotes(face, vault) {
   const paths = [...new Set([...face.keys(), ...vault.keys()])].sort(byteCmp)
@@ -33,9 +24,10 @@ export function compareNotes(face, vault) {
 }
 
 /**
- * The note's bytes (as latin1, one char per byte) with every `_rev:` line of
- * its frontmatter block removed. The block is found the way parseNote finds
- * it: an opening `---\n`, then the first `\n---` line.
+ * The bytes of a note as latin1, without the `_rev:` lines of its
+ * frontmatter block. `_rev` re-derives in the new vault (SPEC §14). A
+ * `_rev:` line in a body stays. The block is found the way parseNote finds
+ * it.
  */
 function withoutRev(buf) {
   const text = buf.toString('latin1')

@@ -1,22 +1,9 @@
-// auto-okf CLI (okf SPEC §13): a thin veneer over @auto-okf/store (vault
-// lifecycle + §8 governance ops) and @auto-okf/faces (materialize, ingest
-// watcher, per-file status, wanted index, and the import of a face into a
-// new vault, §10). The CLI never writes the view or the face itself — every
-// effect flows through the packages, so everything it does is exactly what
-// a library caller does.
+// The auto-okf CLI (SPEC §13) over @auto-okf/store and @auto-okf/faces.
+// The CLI never writes the view or the bundle itself. Every effect goes
+// through the packages, so a library caller gets the same result.
 //
-// The command surface is declared once as a paparam command tree (paparam is
-// Holepunch's own parser — pear's CLI runs on it): a root command composing
-// the 15 subcommands from command()/flag()/arg(), with --help|-h and all help
-// text generated from the declarations.
-//
-// Exit codes: 0 success, 1 operational error (for materialize also a value
-// that the face cannot hold, §10), 2 usage error, 3 materialize projected
-// everything owned but left pending-ingest file(s) in place (ADR-004).
-// paparam's parse() returns null on any parse failure; the wrapper maps that
-// — unknown flag/command, extra arguments, bad flag values, and (via
-// per-command validate()) missing required arguments — to 2, never letting
-// paparam pick the code. Unknown flags are rejected strictly, as before.
+// paparam's parse() returns null on every parse failure, and run maps that
+// to exit 2. Do not let paparam pick the code.
 import { access, stat } from 'node:fs/promises'
 import { isIPv4 } from 'node:net'
 import { join, relative, resolve, sep } from 'node:path'
@@ -39,9 +26,8 @@ const FOOTER = 'exit codes: 0 ok, 1 error, 2 usage, 3 pending-ingest only (mater
 
 class UsageError extends Error {}
 
-// ADR-006 wrong-tool guardrail: the sibling system's marker file is stable
-// contract between the twin CLIs; auto-okf refuses vault-ld storage
-// pointedly (naming the right tool) instead of opening it.
+// The marker file of vault-ld. auto-okf refuses a vault-ld directory and
+// names the right tool (ADR-006). Do not rename it: both CLIs rely on it.
 const SIBLING_MARKER = 'vault-ld.json'
 
 class WrongToolError extends Error {}
@@ -61,7 +47,6 @@ async function refuseSiblingVault(dir) {
 export async function run(argv) {
   const { root, captured } = buildCli()
 
-  // Parity with the pre-paparam CLI: `auto-okf help` prints help and exits 0.
   if (argv[0] === 'help') {
     process.stdout.write(root.help())
     return 0
@@ -76,8 +61,8 @@ export async function run(argv) {
   }
 
   if (parsed === null) {
-    // Either --help|-h (paparam printed the generated help; success) or a
-    // parse bail (captured by the bail handler; usage error).
+    // null with no bail: paparam printed --help. null with a bail: a parse
+    // failure.
     if (captured.bail === null) return 0
     const b = captured.bail
     process.stderr.write(`${formatBail(b, root)}\n\n${(b.command || root).help()}`)
@@ -85,7 +70,6 @@ export async function run(argv) {
   }
 
   if (parsed === root) {
-    // Bare `auto-okf` with no command: print help, exit 2 (usage).
     process.stdout.write(root.help())
     return 2
   }
@@ -99,8 +83,7 @@ export async function run(argv) {
       return 2
     }
     if (err instanceof WrongToolError) {
-      // ADR-006: the refusal shape is pinned — `error: <dir> is a … vault
-      // (<marker> present); use <tool>, not <this tool>`.
+      // The refusal shape is pinned (ADR-006).
       process.stderr.write(`error: ${err.message}\n`)
       return 1
     }
@@ -110,11 +93,9 @@ export async function run(argv) {
 }
 
 /**
- * The text for an operational error. The store refuses every append until
- * autobee has added this peer's key as a writer (VAULT_NOT_WRITABLE, §8).
- * That is substrate admission, not okf membership (store/lib/bundle.js
- * _assertWritable). So the error names the writer key and the honest step
- * that grants it and admits it: an indexer's add-writer.
+ * The text of an operational error. VAULT_NOT_WRITABLE is substrate
+ * admission, not membership (store/lib/bundle.js _assertWritable), so the
+ * text names the one step that does both: an indexer's add-writer.
  */
 function errorText(err) {
   if (err && err.code === 'VAULT_NOT_WRITABLE') {
@@ -131,16 +112,15 @@ function errorText(err) {
 // ---------- command tree (paparam) ----------
 
 /**
- * Build the paparam command tree. Returns { root, captured }; captured.bail
- * holds the paparam bail object after a failed parse (null otherwise), so the
- * wrapper can map every parse failure to exit 2.
+ * Build the paparam command tree. Returns { root, captured }. captured.bail
+ * holds the paparam bail object after a failed parse, else null, so run
+ * maps every parse failure to exit 2.
  */
 function buildCli() {
   const captured = { bail: null }
 
-  // Every subcommand carries the title header; the root adds the literal
-  // usage synopsis line beneath it (paparam's own oneliner renders as
-  // `auto-okf [flags] [command]`).
+  // The root adds a literal usage line, because paparam's own renders as
+  // `auto-okf [flags] [command]`.
   const sub = (name, sum, ...mods) => command(name, header(TITLE), summary(sum), ...mods)
 
   const cmds = [
@@ -294,11 +274,11 @@ function buildCli() {
 }
 
 /**
- * validate() modifier enforcing required positionals on a subcommand.
- * paparam's own MISSING_ARG check inspects only the command parse() was
- * called on (the root), so subcommands enforce theirs here; the thrown
- * err.bail routes through the root bail handler to exit 2. Runs after the
- * --help check, so `auto-okf <cmd> -h` still prints help without arguments.
+ * Enforce the required positionals of a subcommand. paparam reports
+ * MISSING_ARG only on the command that parse() ran on, the root. The thrown
+ * err.bail routes through the root bail handler to exit 2. It runs after
+ * paparam handles --help, so `auto-okf <cmd> -h` prints help without
+ * arguments.
  */
 function requiredArgs(...specs) {
   return validate((parsed) => {
@@ -374,10 +354,8 @@ function hexKey(value, what) {
 }
 
 /**
- * `--swarm-allow <hex64>` of `init` (T25, D-060 F10) and of `join` (G3-P9
- * F03), one grammar: each value is one 64-hex swarm key, the flag repeats,
- * and no key comes twice. A bad or repeated key is a usage error, before
- * the store exists or opens.
+ * The `--swarm-allow` keys of `init` and of `join`. A bad or repeated key
+ * is a usage error, before the store exists or opens.
  */
 function swarmAllowKeys(values) {
   const keys = []
@@ -390,10 +368,8 @@ function swarmAllowKeys(values) {
 }
 
 /**
- * The swarm options of `watch` (T25): null without --swarm. With --swarm,
- * exactly one DHT: --bootstrap (a private DHT) or --public-dht (the
- * commons, explicit opt-in). Anything else is a usage error, named, and it
- * comes before the vault opens.
+ * The swarm configuration of `watch`, or null without --swarm. Every
+ * usage error comes here, before the vault opens.
  */
 function swarmOptions(flags) {
   if (!flags.swarm) {
@@ -430,7 +406,7 @@ async function isPinned(dir) {
   }
 }
 
-/** Open an EXISTING vault (pinned dir) and close it after fn. */
+/** Open an existing vault and close it after fn. */
 async function withVault(dir, opts, fn) {
   await refuseSiblingVault(dir)
   if (!(await isPinned(dir))) {
@@ -452,8 +428,8 @@ function localHex(vault) {
 
 /**
  * `error: drafts/big.md: its set-body op is 71,290 bytes encoded; maxOpBytes
- * is 65,536` (ADR-005, D-060 F09): the preflight measures the encoded op
- * (D-048 F02), so the line names that size, never the body's.
+ * is 65,536`. The line names the size of the encoded op, not of the body,
+ * because the preflight measures the op (faces/lib/ingest.js, ADR-005).
  */
 function oversizeLine({ path, opBytes, limit }) {
   const n = (v) => v.toLocaleString('en-US')
@@ -462,11 +438,9 @@ function oversizeLine({ path, opBytes, limit }) {
 
 /**
  * `error: notes/x.md: core rejected its set-body op (policy-namespace), and
- * the file stays pending` (D-048 F02, D-055 Q1): one line per op of a file
- * that core rejected. Ingest does not record such a file, so it stays
- * pending, and materialize keeps it. A delete-concept that core rejected
- * ends `and the delete stays pending` (G3-P8 F02): ingest keeps the
- * manifest entry of the deleted file, so the next ingest retries it.
+ * the file stays pending`, one line per rejected op. A rejected
+ * delete-concept ends `and the delete stays pending`. Why each stays
+ * pending: see faces/lib/ingest.js.
  */
 function rejectedLine({ path, op, reason }) {
   const pending = op === 'delete-concept' ? 'the delete' : 'the file'
@@ -479,7 +453,7 @@ function printIdentity(vault) {
   console.log(`swarm key:   ${b4a.toString(vault.swarmKey, 'hex')}`)
 }
 
-/** Rejection reason recorded against this peer's own op at `seq` (§3/§8), or null. */
+/** The rejection reason of this peer's own op at `seq`, or null. See core/lib/apply.js. */
 async function rejectionFor(vault, seq) {
   const rec = await vault.val(K.flagRejected(localHex(vault), seq))
   return rec ? rec.reason || 'rejected' : null
@@ -513,9 +487,9 @@ async function cmdInit({ args, flags }) {
 }
 
 /**
- * `join --metadata <okf-vault.json>`: the invite, the creator's pinned
- * document. loadMetadata validates it, so a file that is not metadata of
- * this release fails by name, with its path, before the store exists.
+ * The invite of `join --metadata`: the creator's pinned document. A file
+ * that is not metadata of this release fails in loadMetadata by name, with
+ * its path, before the store exists.
  */
 async function inviteMetadata(path) {
   let meta
@@ -533,14 +507,13 @@ async function cmdJoin({ args, flags }) {
   const key = args.vaultKey !== undefined ? hexKey(args.vaultKey, 'vault key') : undefined
   const allow = flags.swarmAllow !== undefined ? swarmAllowKeys([].concat(flags.swarmAllow)) : null
   await refuseSiblingVault(dir)
-  // A pinned dir reopens without a key; a fresh dir needs the vault key.
   const pinned = await isPinned(dir)
   if (!pinned && key === undefined) {
     throw new UsageError('a vault key is required to join fresh storage')
   }
-  // D-060 F11: fresh storage needs the invite. Without it the peer pins
-  // metadata that is not the creator's: no key of the invite, so the
-  // private swarm admits nobody, and pinned metadata never changes.
+  // Fresh storage needs the invite. Without it the peer pins metadata that
+  // is not the creator's: no swarm key of the invite, so the private swarm
+  // admits nobody, and pinned metadata never changes.
   if (!pinned && !flags.metadata) {
     throw new UsageError(
       "join needs the invite to join fresh storage: --metadata <okf-vault.json>, the creator's pinned file"
@@ -555,8 +528,6 @@ async function cmdJoin({ args, flags }) {
   try {
     printIdentity(vault)
     if (allow !== null) {
-      // G3-P9 F03: this peer's own list, apart from the invite. It replaces
-      // the list that an earlier join wrote.
       for (const hex of await saveLocalAllow(dir, allow)) console.log(`local allow:  ${hex}`)
       console.log(`(this peer alone admits these keys: ${join(dir, LOCAL_ALLOW_FILE)}, never the invite)`)
     }
@@ -569,11 +540,10 @@ async function cmdJoin({ args, flags }) {
 }
 
 /**
- * D-060 F01: true when the view or the invite binds a swarm key to the
- * writer: its gov/writer record carries one, or the writer is genesisKey
- * and the pinned invite binds the creator's key (metadata.swarm.genesis).
- * A folded remove-writer cuts only a bound key (store/lib/bundle.js
- * _refreshAllowlistOnce).
+ * True when the view or the invite binds a swarm key to the writer: its
+ * gov/writer record carries one, or the writer is genesisKey and the invite
+ * binds the creator's key (metadata.swarm.genesis). A folded remove-writer
+ * cuts only a bound key (store/lib/bundle.js _refreshAllowlistOnce).
  */
 async function boundSwarmKey(vault, writerHex) {
   const rec = await vault.val(K.govWriter(writerHex))
@@ -585,9 +555,9 @@ async function cmdAddWriter({ args, flags }) {
   const key = hexKey(args.writerKey, 'writer key')
   const swarmKey = flags.swarmKey !== undefined ? hexKey(flags.swarmKey, '--swarm-key') : null
   return withVault(args.dir, {}, async (vault) => {
-    // D-060 F01: every writer that the CLI admits has a bound swarm key, so
-    // a later remove-writer cuts it on every peer, also when the invite or a
-    // local list names the key. The refusal comes before the append.
+    // Every writer that the CLI admits has a bound swarm key, so a later
+    // remove-writer cuts it on every peer. The refusal comes before the
+    // append.
     const writerHex = b4a.toString(key, 'hex')
     if (swarmKey === null && !(await boundSwarmKey(vault, writerHex))) {
       throw new UsageError(
@@ -598,11 +568,9 @@ async function cmdAddWriter({ args, flags }) {
     const { seq } = await vault.addWriter(key, { indexer: flags.indexer === true, swarmKey })
     await vault.update()
     const rec = await vault.val(K.govWriter(writerHex))
-    // "Did not take effect" means okf membership: apply wrote no gov/writer
-    // record. The substrate grant still happened, because core grants the
-    // key of every AddWriter op that it folds (AD7, core/lib/apply.js:375).
-    // So the key is writable, and apply rejects each of its ops (D-047 F14,
-    // okf/cli/README.md, the add-writer row).
+    // "Did not take effect" means no gov/writer record, so no membership.
+    // The grant still happened, so the key is writable and apply rejects
+    // each of its ops. See core/lib/apply.js.
     if (!rec) {
       const reason = await rejectionFor(vault, seq)
       process.stderr.write(
@@ -620,11 +588,11 @@ async function cmdAddWriter({ args, flags }) {
 }
 
 /**
- * T25: the writer key and the swarm key of a vault directory. A directory
- * without a vault has no writer key yet, but its swarm key already exists:
- * the store derives it from the directory's corestore, which this creates
- * when it is new. So a pre-provisioned fleet can collect every key before
- * the creator runs `init --swarm-allow`.
+ * The writer key and the swarm key of a vault directory. A directory
+ * without a vault has no writer key yet, but its swarm key exists: the
+ * store derives it from the corestore of the directory, which this creates
+ * when new. So a fleet can collect every swarm key before the creator runs
+ * `init --swarm-allow`.
  */
 async function cmdKeys({ args }) {
   const { dir } = args
@@ -643,11 +611,7 @@ async function cmdKeys({ args }) {
   return 0
 }
 
-/**
- * T25: a DHT bootstrap node in the foreground until SIGINT or SIGTERM. The
- * peers of a private swarm pass `--bootstrap <host>:<port>`. The node binds
- * <host> alone, so the default 127.0.0.1 keeps it on this machine.
- */
+/** A DHT bootstrap node in the foreground until SIGINT or SIGTERM. See store/lib/dht.js. */
 async function cmdBootstrap({ flags }) {
   if (flags.port === undefined) throw new UsageError('--port <n> is required')
   const port = Number(flags.port)
@@ -694,9 +658,6 @@ async function cmdRemoveWriter({ args }) {
 async function cmdMaterialize({ args, flags }) {
   const { dir, bundleDir } = args
   return withVault(dir, {}, async (vault) => {
-    // materialize is the plaintext export. For an encrypted vault, it names
-    // the directory that holds its contents as plaintext before its first
-    // write (announcePlaintext). The exit code does not change.
     const report = await materialize(vault, bundleDir, {
       forceMirror: flags.forceMirror === true,
       onPlaintext: announcePlaintext
@@ -715,11 +676,8 @@ async function cmdMaterialize({ args, flags }) {
     for (const rel of report.stale || []) {
       process.stderr.write(`notice: stale (no longer produced, left in place): ${rel}\n`)
     }
-    // §10: a value that the face cannot hold. A generation (materialize,
-    // then import) would lose it, so the operator fixes it in the vault
-    // before the import. For an encrypted vault the line names the _id
-    // only: the path, the key and the values are contents of the vault, and
-    // stderr can reach a log (D-060 F23).
+    // A value that the bundle cannot hold (SPEC §10). A generation loses
+    // it, so the operator fixes it in the vault before the import.
     const encrypted = vault.metadata.encrypted === true
     for (const l of report.lossy) process.stderr.write(lossyLine(l, encrypted))
     if (report.lossy.length > 0) {
@@ -727,23 +685,20 @@ async function cmdMaterialize({ args, flags }) {
         `error: ${report.lossy.length} value(s) that the face cannot hold; fix each one in the vault before import (SPEC §10)\n`
       )
     }
-    // N3 exit taxonomy (ADR-004): an unsafe path means part of the owned
-    // projection was NOT written — a real failure (1). So is a value that
-    // the face cannot hold (1, §10). Pending-ingest files are a healthy
-    // multi-writer state: everything owned was projected and the foreign
-    // files were left in place (3). Otherwise clean (0); stale is a notice
-    // either way (left in place, per spec).
+    // ADR-004: an unsafe path means part of the owned projection was not
+    // written, so exit 1. A lossy value also exits 1 (SPEC §10).
+    // Pending-ingest files are a healthy multi-writer state: everything
+    // owned was written, so exit 3. Stale is a notice either way.
     if ((report.unsafe || []).length > 0 || report.lossy.length > 0) return 1
     return report.ok ? 0 : 3
   })
 }
 
 /**
- * One `warning:` line for a value that the face cannot hold (§10):
  * `warning: notes/a.md: the face cannot hold the value of 'reference'
  * (_id <id>): the vault holds [...], the face holds [...]`. For an encrypted
- * vault the line names the `_id` alone, an opaque tag: no path, no key and
- * no value.
+ * vault the line names the `_id` alone, because stderr can reach a log: no
+ * path, no key and no value.
  */
 function lossyLine({ id, path, key, before, after }, encrypted) {
   if (encrypted) {
@@ -754,11 +709,11 @@ function lossyLine({ id, path, key, before, after }, encrypted) {
 }
 
 /**
- * ADR-001: resolve the trailing path arguments to bundle-relative concept
- * files, validating BEFORE any op is appended. Literal paths only — the
- * shell expands globs; a path that does not exist, resolves outside the
- * bundle root, or is not a concept `.md` file is an error naming it.
- * Returns null for the zero-path form (full scan, unchanged).
+ * Resolve the trailing path arguments to bundle-relative concept files,
+ * before any op is appended (ADR-001). Literal paths only: the shell
+ * expands globs. A path that does not exist, resolves outside the bundle
+ * root, or is not a `.md` file is an error that names it. Returns null for
+ * the zero-path form, the full scan.
  */
 async function scopedIngestPaths(bundleDir, given) {
   if (given.length === 0) return null
@@ -785,10 +740,9 @@ async function scopedIngestPaths(bundleDir, given) {
 async function cmdIngest(parsed) {
   const { args, flags } = parsed
   const { dir, bundleDir } = args
-  // paparam's rest is greedy: once both positionals are filled, everything
-  // remaining — flags included — lands in rest. Re-recognize ingest's own
-  // flags so the pre-ADR-001 `ingest <dir> <bundle> --confirm-deletes` form
-  // keeps working; the remainder is the ADR-001 path set.
+  // paparam's rest is greedy: once both positionals are filled, every
+  // remaining token lands in rest, flags included. So ingest recognizes its
+  // own flags here, and the remainder is the path set.
   const trailing = []
   for (const t of parsed.rest || []) {
     if (t === '--confirm-deletes') flags.confirmDeletes = true
@@ -812,20 +766,16 @@ async function cmdIngest(parsed) {
       ops += emitted.length
       console.log(`ingested ${path}: ${emitted.map((o) => o.type).join(', ') || '(no-op)'}`)
     })
-    // ADR-003: count the hash-match skips so "0 op(s) from 0 file(s)" cannot
-    // mean both "nothing found" and "everything already converged".
+    // Count the unchanged skips, so "0 op(s) from 0 file(s)" cannot mean
+    // both nothing found and all converged (ADR-003).
     watcher.on('skip', ({ reason }) => {
       if (reason === 'unchanged') upToDate++
     })
-    // ADR-005: a file whose encoded set-body op is oversize is refused per
-    // file, before any of its ops; sibling files in the same run still
-    // ingest, but the run exits 1.
     let oversize = 0
     watcher.on('oversize', (o) => {
       oversize++
       process.stderr.write(oversizeLine(o))
     })
-    // D-055 Q1: each op that core rejects is named, and the run exits 1.
     let rejected = 0
     watcher.on('rejected', (r) => {
       rejected++
@@ -841,7 +791,6 @@ async function cmdIngest(parsed) {
       if (paths === null) await watcher.scan()
       else for (const rel of paths) await watcher.ingestFile(rel)
       await vault.update()
-      // The skip clause is omitted (never "0") when no skips occurred.
       const skips = upToDate > 0 ? `; ${upToDate} file(s) already up to date` : ''
       console.log(`ingest complete: ${ops} op(s) from ${files} file(s)${skips}`)
       return oversize > 0 || rejected > 0 ? 1 : 0
@@ -872,7 +821,7 @@ async function cmdWatch({ args, flags }) {
       console.log(`ingested ${path}: ${ops.map((o) => o.type).join(', ') || '(no-op)'}`)
     })
     watcher.on('oversize', (o) => process.stderr.write(oversizeLine(o)))
-    watcher.on('rejected', (r) => process.stderr.write(rejectedLine(r))) // D-055 Q1: watch keeps running
+    watcher.on('rejected', (r) => process.stderr.write(rejectedLine(r))) // unlike ingest, watch keeps running
     watcher.on('warning', (w) =>
       process.stderr.write(`warning: ${w && w.message ? w.message : JSON.stringify(w)}\n`)
     )
@@ -882,7 +831,6 @@ async function cmdWatch({ args, flags }) {
     watcher.on('error', (err) => process.stderr.write(`watch error: ${errorText(err)}\n`))
     vault.on('error', (err) => process.stderr.write(`vault error: ${err.message}\n`))
     if (swarmOpts) {
-      // G3-P9 F03: the local list that `join --swarm-allow` kept, this peer only.
       const allow = await loadLocalAllow(dir)
       await vault.swarm({ ...swarmOpts, allow })
       swarmed = true
@@ -913,9 +861,8 @@ async function cmdWatch({ args, flags }) {
 async function cmdStatus({ args, flags }) {
   const { dir, bundleDir } = args
   return withVault(dir, {}, async (vault) => {
-    // ADR-002: strictly read-only — status appends no ops, writes no files,
-    // touches no manifest. The five-state vocabulary and the --json
-    // [{ path, state }] rows are contract.
+    // status is read-only: no ops, no files, no manifest (ADR-002). The
+    // five states and the --json rows are a contract.
     const rows = await status(vault, bundleDir)
     if (flags.json) {
       console.log(JSON.stringify(rows, null, 2))
@@ -961,15 +908,10 @@ async function cmdFlags({ args, flags }) {
 }
 
 /**
- * T24: `import <face-dir> <dir>` (SPEC §10). importFace refuses a pinned,
- * non-empty or non-directory <dir>, and a face that holds a conflicted copy,
- * a reserved .okf- note, a note without _id or a symlink, and the face of an
- * encrypted vault without a key, before it writes anything. It claims
- * <dir> before it creates the vault, so a second import into the same <dir>
- * refuses (IMPORT_DIR_CLAIMED, G3-P8 F01). It checks the new vault against
- * the face, and on a difference (IMPORT_FIDELITY) it removes only what it
- * created. import reads plaintext and writes none, so it prints no
- * plaintext warning.
+ * `import <face-dir> <dir>`: a new vault from a bundle (SPEC §10). What
+ * importFace refuses, claims and removes on failure: see
+ * faces/lib/import.js. import reads plaintext and writes none, so it prints
+ * no plaintext warning.
  */
 async function cmdImport({ args, flags }) {
   const { faceDir, dir } = args
@@ -984,9 +926,8 @@ async function cmdImport({ args, flags }) {
   try {
     res = await importFace(Bundle.init, faceDir, dir, opts)
   } catch (err) {
-    // run() prints the message and exits 1. The warnings say why a note did
-    // not import, and IMPORT_FIDELITY names every difference in its message.
-    // A successful import has no warning (D-060 F06).
+    // run() prints err.message and exits 1. The warnings before it say why
+    // a note did not import.
     for (const w of err.warnings || []) process.stderr.write(warningLine(w))
     if (err.code === 'IMPORT_FIDELITY') process.stderr.write(`notes:       ${importCountsLine(err.counts)}\n`)
     throw err
@@ -1004,12 +945,12 @@ async function cmdImport({ args, flags }) {
     )
     return 0
   } finally {
-    // importFace returns the new vault OPEN; the caller owns closing it.
+    // importFace returns the vault open. The caller closes it.
     await res.vault.close()
   }
 }
 
-/** --metadata: the predecessor's okf-vault.json, which must be metadata of this release. */
+/** The predecessor's okf-vault.json of `--metadata`. It must be metadata of this release. */
 async function predecessorMetadata(path) {
   let meta
   try {
@@ -1021,7 +962,7 @@ async function predecessorMetadata(path) {
   return meta
 }
 
-/** `3 read, 3 imported`: the notes that import read from the face, and the notes that established a concept. */
+/** `3 read, 3 imported`: the notes that import read, and the notes that made a concept. */
 function importCountsLine({ notes, imported }) {
   return `${notes} read, ${imported} imported`
 }
@@ -1032,11 +973,10 @@ function warningLine({ path, message }) {
 }
 
 /**
- * Print a plaintext warning on stderr (decision 8), and resolve when the
- * line is written: `warning: <dir>: now holds the contents of an encrypted
- * vault as plaintext`. materialize awaits it before its first plaintext
- * write, so a failure or a crash after that write finds the warning already
- * printed.
+ * Print `warning: <dir>: now holds the contents of an encrypted vault as
+ * plaintext` on stderr, and resolve when the line is written. materialize
+ * awaits it before its first plaintext write, so a crash after that write
+ * finds the warning already printed.
  */
 function announcePlaintext(warning) {
   return new Promise((resolve, reject) => {

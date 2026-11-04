@@ -1,34 +1,9 @@
-// View adapter (okf SPEC §13 store wiring): presents the hyperbee2-flavored
-// surface @auto-okf/core's apply consumes (get / write() batches with
-// tryPut+tryDelete+flush / createReadStream — the surface MemView documents
-// and the unit suite runs against) over the real hyperbee2 view autobee
-// hands apply, converting string keys/values to buffers at the boundary.
-//
-// hyperbee2 surface, verified against the installed source of
-// hyperbee2@2.20.1, the version that autobee@2.12.1 resolves (autobee
-// package.json:29; upstream https://github.com/holepunchto/hyperbee2).
-// autobee opens both db.view and its working view through `open` (autobee
-// index.js:93-94, :127-128, lib/apply-view.js:8-10), so this adapter stays
-// a stateless wrapper:
-// - `await bee.get(key)` (hyperbee2 index.js:346) — key MUST be a Buffer
-//   (get() binary-searches with b4a.compare, index.js:363); resolves to a
-//   finalized key pointer `{ seq, key, value, ... }` or null, value a
-//   Buffer.
-// - `bee.write()` (hyperbee2 index.js:151) — returns a WriteBatch
-//   (lib/write.js) with `tryPut(key, value)` / `tryDelete(key)` /
-//   `await flush()` (lib/write.js:46, :51, :84); keys and values are
-//   buffers.
-// - `bee.createReadStream(options)` (hyperbee2 index.js:211) — a
-//   RangeStream (lib/ranges.js) that DOES support range iteration:
-//   `{ gt, gte, lt, lte, reverse, limit }`, keys in byte order
-//   (b4a.compare), limit -1 = unlimited. This matches
-//   core's MemView contract exactly (classic hyperbee's richer
-//   createReadStream signature is NOT assumed anywhere).
-//
-// Determinism (I1/I2): keys are UTF-8 encoded strings; values pass through
-// VERBATIM as UTF-8 — core's apply writes stableStringify JSON strings, so
-// the bytes a converged peer holds are exactly the bytes MemView holds for
-// the same linearized prefix, and viewHash (hash.js) equals MemView.hash().
+// The view that core's apply folds over, with the surface that MemView
+// documents: get, write() with tryPut, tryDelete and flush, and
+// createReadStream. autobee hands apply its hyperbee2 view (2.20.1 under
+// autobee@2.12.1) through the `open` handler (autobee lib/apply-view.js,
+// ApplyView.open). Values pass through as UTF-8 with no change, so
+// viewHash equals MemView.hash() (I1, I2).
 import b4a from 'b4a'
 
 function toBuf(x) {
@@ -39,6 +14,7 @@ function toStr(x) {
   return typeof x === 'string' ? x : b4a.toString(x)
 }
 
+// hyperbee2 write() returns a WriteBatch (lib/write.js): buffer keys and values.
 class WriteBatchAdapter {
   constructor(batch) {
     this.batch = batch
@@ -63,8 +39,9 @@ export class ViewAdapter {
   }
 
   /**
-   * `{ seq, key: string, value: string } | null` — value is the raw stored
-   * JSON string (core's Tx.val JSON-parses it; Bundle.val does too).
+   * `{ seq, key: string, value: string } | null`. value is the raw stored
+   * JSON string. The caller parses it (core's Tx.val, Bundle.val). hyperbee2
+   * get(key) needs a Buffer key, because it compares with b4a.compare.
    */
   async get(key) {
     const node = await this.bee.get(toBuf(key))
@@ -77,9 +54,12 @@ export class ViewAdapter {
   }
 
   /**
-   * Async iterable of `{ key: string, value: string }`, keys in UTF-8 byte
-   * order. Accepts the same (rangeOpts, opts) split MemView does — core
-   * always calls it with a single `{ gte, lt }` object (K.range(prefix)).
+   * An async iterable of `{ key: string, value: string }`, keys in UTF-8
+   * byte order. It takes the (rangeOpts, opts) split of MemView. core calls
+   * it with one `{ gte, lt }` object (K.range(prefix)). hyperbee2's
+   * RangeStream (lib/ranges.js) takes `{ gt, gte, lt, lte, reverse, limit }`
+   * in byte order, limit -1 for no limit. Do not assume the richer
+   * createReadStream of classic hyperbee.
    */
   createReadStream(rangeOpts = {}, opts = {}) {
     const o = { ...rangeOpts, ...opts }
@@ -97,7 +77,7 @@ export class ViewAdapter {
     })()
   }
 
-  /** Plain object dump of a prefix, values JSON-decoded (mirrors MemView.dump). */
+  /** A plain object of one prefix, values JSON-decoded, like MemView.dump. */
   async dump(prefix = '') {
     const out = {}
     const range = prefix

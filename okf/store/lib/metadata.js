@@ -1,54 +1,23 @@
-// Vault metadata pinning (okf SPEC §8, §10, §13): every peer of a vault
-// MUST fold under identical createApply config — metadata is a
-// convergence-relevant input (I2). The document is written once at init,
-// loaded at open, and carried to joining peers in the invite; its canonical
-// bytes (stableStringify: sorted keys, fixed JSON, trailing newline) are
-// identical across peers regardless of how the object was assembled, so
-// `metadataHash` is a cross-peer pin.
+// okf-vault.json: the constants of a vault. See SPEC §8, §10 and §13.
 //
-// §8 append-only: `appendOnly: true` is an IMMUTABLE vault-metadata
-// constant. It lives OUTSIDE the op log — there is no op that can flip it
-// (nothing in the §3 wire contract mentions it), no code path in this
-// package rewrites the metadata file after init, and validateMetadata
-// refuses any document where it is not exactly `true`, so a tampered file
-// cannot open. createMetadata likewise refuses an input trying to set it
-// to anything but true: an append-only:false vault is unrepresentable.
-//
-// §10 generation chain: `predecessorKey` (null for a root vault) records
-// the vault key of the predecessor whose face this vault imported
-// (`auto-okf import --predecessor`). It is the operator's claim: provenance
-// metadata, not proof (consumers MUST treat cross-generation identity as
-// trusted-operator scope). Nothing here checks it against a vault.
-//
-// §10 writer-key freshness: writer cores derive under a per-generation
-// corestore namespace recorded in the metadata (`generation`). The generation id is
-// a PURE FUNCTION of predecessorKey — 'root' for a first-generation vault,
-// else sha256(predecessorKey bytes) — so every peer of one vault derives the
-// same namespace from the same pinned metadata, an operator re-initing in a
-// REUSED corestore directory still gets fresh writer keypairs (the
-// namespace differs from the predecessor's), and a joiner handed only
-// predecessorKey can reconstruct it (implementation resolution where §10 is
-// silent on HOW the namespace is derived; code-comment scope per SPEC §0
-// rule 4).
+// Every peer must fold under the same createApply configuration, or the
+// views diverge (I2). So the creator writes the metadata once, a joiner
+// takes it from the invite, and no code path rewrites the file.
+// canonicalMetadataBytes is the same on every peer, so metadataHash is a
+// cross-peer pin.
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { canonical } from '@auto-okf/core'
 
-// The release states that it is v2: it writes version 2, and
-// validateMetadata (so loadMetadata) refuses every other version.
 export const METADATA_VERSION = 2
 export const METADATA_FILE = 'okf-vault.json'
 export const ROOT_GENERATION = 'root'
 
 const HEX64 = /^[0-9a-f]{64}$/
 
-// limits/rate defaults mirror @auto-okf/core lib/apply.js DEFAULTS exactly
-// (§3 limits; §8 rate — defaultCeiling, the only rate setting, is the
-// spec-silent admitted-writer ceiling pinned here and in core).
-// swarm (T25, D-060 F01) holds the static allowlist of the swarm firewall
-// and the creator's bound swarm key: see validateSwarm. It is not an input
-// of apply, so applyConfig leaves it out, but it is in the pinned hash like
-// every other field.
+// limits and rate must equal DEFAULTS of @auto-okf/core lib/apply.js.
+// swarm is not an input of apply, so applyConfig leaves it out, but the
+// pinned hash covers it like every other field. See validateSwarm.
 export const METADATA_DEFAULTS = {
   limits: { maxOpBytes: 65536, maxPathBytes: 1024, maxPathDepth: 64 },
   rate: { defaultCeiling: 1024 },
@@ -58,10 +27,8 @@ export const METADATA_DEFAULTS = {
   predecessorKey: null
 }
 
-// D-060 F22: the top-level keys of a version 2 document, and no other. The
-// document is closed like its groups: a key outside this list is refused by
-// name, in a loaded document and in the input of createMetadata, never
-// carried.
+// Version 2 is a closed document: a key outside FIELDS is refused by
+// name, never carried.
 const FIELDS = [
   'version',
   'genesisKey',
@@ -82,9 +49,11 @@ function refuseUnknownFields(doc) {
 }
 
 /**
- * The §10 per-generation namespace id: 'root' when there is no predecessor,
- * else sha256 over the predecessor key bytes. Deterministic from pinned
- * metadata on every peer.
+ * The corestore namespace of the writer cores of one generation: 'root'
+ * without a predecessor, else sha256 of the predecessor key bytes. It
+ * depends on predecessorKey alone, so every peer derives the same namespace
+ * from the invite, and a re-init in a reused corestore directory still gets
+ * fresh writer key pairs. See SPEC §10.
  */
 export function generationId(predecessorKey) {
   if (predecessorKey == null) return ROOT_GENERATION
@@ -92,13 +61,11 @@ export function generationId(predecessorKey) {
 }
 
 /**
- * Build a complete, validated metadata document. `genesisKey` (hex string
- * or 32-byte Buffer) is required — it is both the §8 genesis indexer and
- * the vault (bootstrap) key: a creator passes autobee no key, and autobee
- * then takes the key of the creator's local writer core as the vault key
- * (autobee@2.12.1 lib/boot.js:65-89: with no key, and no `referrer` in the
- * user data of the local core, `result.key = result.local.key` at :86), so
- * the two coincide by construction on every peer.
+ * Build a complete metadata document that passes validateMetadata.
+ * `genesisKey` (hex string or 32-byte Buffer) is required. It is the
+ * genesis indexer (SPEC §8) and also the vault key: a creator passes
+ * autobee no key, so autobee takes the key of the local writer core
+ * (autobee lib/boot.js, `boot` with no key and no `referrer`).
  */
 export function createMetadata(input = {}) {
   refuseUnknownFields(input)
@@ -123,12 +90,9 @@ export function createMetadata(input = {}) {
 }
 
 /**
- * The swarm group of an input. A default applies only when its field is
- * absent: no swarm, or a swarm without allow or without genesis (G3-P9
- * F04). A swarm that is not an object is refused by name. genesis is null
- * or a swarm key, 32 bytes or 64 hex characters in any case, else
- * VAULT_BAD_SWARM_GENESIS. Every other key of the group passes through, and
- * validateMetadata refuses it by name.
+ * The swarm group of an input. A default fills only an absent field, never
+ * a null one. Every other key passes through, and validateMetadata refuses
+ * it by name.
  */
 function swarmGroup(swarm) {
   if (swarm === undefined) return { allow: [...METADATA_DEFAULTS.swarm.allow], genesis: METADATA_DEFAULTS.swarm.genesis }
@@ -154,13 +118,10 @@ function swarmGenesisError(message) {
 }
 
 /**
- * A supplied list of swarm keys (T25) in canonical form: lowercase hex,
- * sorted, so peers that assemble the same list in another order pin the
- * same bytes. Each entry is 32 bytes or 64 hex characters, in any case.
- * `field` names the list in the error. A value that is not an array, an
- * entry that is not a swarm key, and a key that the list holds twice each
- * throw VAULT_BAD_SWARM_ALLOW (G3-P9 F04). No entry is dropped or merged
- * in silence.
+ * A list of swarm keys in canonical form: lowercase hex, sorted, so peers
+ * that assemble one list in another order pin the same bytes. A value that
+ * is not an array, an entry that is not a swarm key, or a key listed twice
+ * throws VAULT_BAD_SWARM_ALLOW, named by `field`.
  */
 export function swarmKeyList(list, field) {
   if (!Array.isArray(list)) {
@@ -176,7 +137,7 @@ export function swarmKeyList(list, field) {
   return [...keys].sort()
 }
 
-/** A swarm key as 64 lowercase hex, from 32 bytes or 64 hex characters in any case; else null. */
+/** A swarm key as 64 lowercase hex, from 32 bytes or 64 hex characters in any case, or null. */
 export function swarmKeyHex(key) {
   if (key instanceof Uint8Array) return key.byteLength === 32 ? Buffer.from(key).toString('hex') : null
   if (typeof key === 'string' && /^[0-9a-f]{64}$/i.test(key)) return key.toLowerCase()
@@ -199,13 +160,12 @@ export function validateMetadata(meta) {
     throw new TypeError('metadata.genesisKey must be a 64-char lowercase-hex key')
   }
   if (meta.appendOnly !== true) {
-    // §8: outside the log, no op — and no edited file — can flip it.
+    // No op and no edited file can flip appendOnly. See SPEC §8.
     throw new Error('metadata.appendOnly must be exactly true (§8 append-only guarantee)')
   }
   validateGenerationChain(meta)
   // limits and rate are closed groups. applyConfig hands each one whole to
-  // createApply, so every key in them is a key of this version: version 2
-  // has one shape, and a key outside it is refused, never carried.
+  // createApply, so a key outside this version is refused, never carried.
   for (const [group, keys] of [
     ['limits', ['maxOpBytes', 'maxPathBytes', 'maxPathDepth']],
     ['rate', ['defaultCeiling']]
@@ -233,15 +193,11 @@ export function validateMetadata(meta) {
 }
 
 /**
- * T25: swarm is a closed group of two keys in canonical form.
- * - allow is the static allowlist of the swarm firewall: the hyperswarm
- *   public keys, 64 hex each, sorted, each once, that every peer of the
- *   vault admits and dials (Bundle.swarm()).
- * - genesis (D-060 F01) is the creator's swarm key, one key of allow, or
- *   null. The invite binds it to genesisKey, so a folded RemoveWriter of
- *   genesisKey cuts it (Bundle _refreshAllowlistOnce). The genesis record
- *   of gov/ holds no swarm key, because core seeds it from the apply config
- *   alone.
+ * allow is the static allowlist of the firewall. genesis is the swarm key
+ * of the creator, or null. The invite binds it to genesisKey (SPEC §8), so
+ * a folded RemoveWriter of genesisKey cuts it. The gov/ record of genesis
+ * holds no swarm key, because core seeds it from the apply configuration
+ * alone.
  */
 function validateSwarm(swarm) {
   if (!swarm || typeof swarm !== 'object' || Array.isArray(swarm)) {
@@ -269,6 +225,9 @@ function validateSwarm(swarm) {
   }
 }
 
+// predecessorKey is the claim of the operator. Nothing here compares it
+// with a vault. See SECURITY_MODEL.md, "The generation chain is
+// provenance, not proof".
 function validateGenerationChain(meta) {
   const pk = meta.predecessorKey
   if (pk != null && (typeof pk !== 'string' || !HEX64.test(pk))) {
@@ -279,17 +238,17 @@ function validateGenerationChain(meta) {
   }
 }
 
-/** Canonical on-disk / hash bytes: sorted-key JSON + trailing newline. */
+/** The canonical bytes of the file and of the hash: sorted-key JSON and a trailing newline. */
 export function canonicalMetadataBytes(meta) {
   return Buffer.from(canonical.stableStringify(validateMetadata(meta)) + '\n', 'utf8')
 }
 
-/** Cross-peer metadata pin: sha256 of the canonical bytes. */
+/** The cross-peer pin: sha256 of the canonical bytes. */
 export function metadataHash(meta) {
   return createHash('sha256').update(canonicalMetadataBytes(meta)).digest('hex')
 }
 
-/** The createApply(config) slice of the metadata (core apply.js contract). */
+/** The createApply(config) slice of the metadata. See core/lib/apply.js. */
 export function applyConfig(meta) {
   validateMetadata(meta)
   return {
@@ -304,7 +263,7 @@ export async function saveMetadata(path, meta) {
   return meta
 }
 
-/** Load pinned metadata; null when the file does not exist. */
+/** The pinned metadata, or null when the file does not exist. */
 export async function loadMetadata(path) {
   let raw
   try {

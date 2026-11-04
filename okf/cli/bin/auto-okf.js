@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// auto-okf — CLI veneer over @auto-okf/{core,store,faces} (okf SPEC §13).
+// auto-okf: the CLI over @auto-okf/{core,store,faces}. See SPEC §13.
 import { run } from '../lib/run.js'
 
 run(process.argv.slice(2)).then(

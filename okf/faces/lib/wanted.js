@@ -1,18 +1,14 @@
-// wanted(vault): the ranked demand index (okf SPEC §4, §9;
-// Special:WantedPages). A `wanted/<path>/<from-id>` row is written by apply
-// for every unresolved link referrer, and `wantedrank/<inv-count>/<path>`
-// is the derived rank index whose ASCENDING scan yields most-wanted first
-// (inv-count = MAX - count, §4). This is a pure read: wanted/ demand is
-// NOT loss (I4) — it is "what does the graph want written?", ranked by
-// referrer count.
+// wanted(vault): the ranked demand index. apply writes
+// `wanted/<path>/<from-id>` for every link that does not resolve, and
+// `wantedrank/<inv-count>/<path>` so that an ascending scan gives the
+// most-wanted path first. See SPEC §4. The index is demand, not loss (I4).
 import { keyspace as K } from '@auto-okf/core'
 
 /**
- * Return the ranked list of wanted (unwritten) concept paths:
+ * The wanted paths, most referenced first, ties in byte order of path:
  *   [{ path, count, referrers: [fromId, ...] }, ...]
- * ordered most-referenced first (ties broken by path byte order, which the
- * wantedrank/ key order provides deterministically). `reader` is a store
- * Bundle (or any { scan } surface); values are JSON-decoded.
+ * `reader` is a store Bundle, or any { scan } surface with JSON-decoded
+ * values.
  */
 export async function wanted(reader) {
   const referrersByPath = new Map()
@@ -24,7 +20,7 @@ export async function wanted(reader) {
     referrersByPath.get(path).push(segs[2])
   }
 
-  // wantedrank/ ascending == most-wanted first (§4).
+  // Ascending is most-wanted first.
   const out = []
   const ranked = new Set()
   for await (const { key } of reader.scan(K.wantedRankRoot())) {
@@ -36,9 +32,8 @@ export async function wanted(reader) {
     out.push({ path, count: referrers.length, referrers })
   }
 
-  // Defensive: any wanted/ path missing from wantedrank/ (should not happen
-  // in a converged view — I8) is appended in deterministic byte order so the
-  // result is never silently short.
+  // A wanted/ path with no wantedrank/ row cannot occur in a converged view
+  // (I8). Append it anyway, in byte order, so that the result is never short.
   const leftover = [...referrersByPath.keys()].filter((p) => !ranked.has(p)).sort(byteCmp)
   for (const path of leftover) {
     const referrers = referrersByPath.get(path).slice().sort(byteCmp)

@@ -1,39 +1,33 @@
-// Read the auto-okf view (okf SPEC §4 keyspace) into a structured model the
-// faces project onto disk. Pure projection of a converged view: the same
-// view yields the same model on every peer (I8/I9). Reads go through the
-// store Bundle surface (`val(key)`, `scan(prefix)` — @auto-okf/store), which
-// JSON-decodes values; a MemView is adapted by memViewReader() below for
-// off-substrate tests.
+// Read the view (SPEC §4) into the model that the faces project to disk.
+// The same view gives the same model on every peer (I8, I9). Reads go
+// through the store Bundle surface, `val(key)` and `scan(prefix)`, which
+// JSON-decodes values. memViewReader adapts a MemView for tests.
 import { keyspace as K } from '@auto-okf/core'
 
-/** Fresh per-concept accumulator. */
 function newConcept(id) {
   return {
     id,
-    type: undefined, // resolved emit type (§5: first element of the register)
+    type: undefined,
     created: undefined,
     deleted: false,
     path: undefined,
     ord: undefined,
     headHash: undefined,
     headText: '',
-    fields: new Map() // key -> raw view record ({ values, tag, writer } | { els, removed })
+    fields: new Map() // key -> view record: { values, tag, writer } or { els, removed }
   }
 }
 
-/** Stable Set membership key for a (path, id) pathcollision entry (§7). */
+/** The Set key of one (path, id) pathcollision entry. */
 export function collisionKey(path, id) {
   return `${path}\u0000${id}`
 }
 
 /**
- * Build the concept model + path-collision index from a view. Returns:
- *   {
- *     concepts: Map<id, concept>,   // ALL concepts incl. tombstoned
- *     collisions: Set<"path id">  // §7 pathcollision losers
- *   }
- * A concept: { id, type, created, deleted, path, ord, headHash, headText,
- *              fields }.
+ * The concept model and the path-collision index of a view. Returns
+ *   { concepts: Map<id, concept>, collisions: Set<collisionKey> }.
+ * `concepts` includes the deleted ones. A concept is { id, type, created,
+ * deleted, path, ord, headHash, headText, fields }.
  */
 export async function readView(reader) {
   const concepts = new Map()
@@ -52,8 +46,7 @@ export async function readView(reader) {
       case 'meta':
         c.created = value.created
         c.deleted = value.deleted != null
-        // meta.type is a bookkeeping copy (§5); the register is authoritative,
-        // but seed from meta so a corrupt/missing register still has a value.
+        // A seed. The `type` register below wins.
         if (c.type === undefined) c.type = value.type
         break
       case 'path':
@@ -80,8 +73,8 @@ export async function readView(reader) {
     }
   }
 
-  // §5: `type` materializes as the first element of the c/<id>/f/type
-  // register when present; meta.type is only the corrupt-state fallback.
+  // SPEC §5: `type` is the first element of the register. meta.type is the
+  // fallback for corrupt state.
   for (const c of concepts.values()) {
     const rec = c.fields.get('type')
     if (rec && Array.isArray(rec.values) && rec.values.length > 0) {
@@ -102,7 +95,7 @@ export async function readView(reader) {
   return { concepts, collisions }
 }
 
-/** Read every `log/<ordinal>` record in ascending ordinal order (§9). */
+/** Every `log/<ordinal>` record, in ascending ordinal. */
 export async function readLog(reader) {
   const out = []
   for await (const { key, value } of reader.scan(K.logRoot())) {
@@ -113,9 +106,9 @@ export async function readLog(reader) {
 }
 
 /**
- * Adapt a core MemView to the { val, scan } reader surface readView/readLog
- * (and wanted) expect — for off-substrate determinism tests. Keys/values in
- * MemView are strings; values are JSON.
+ * Adapt a core MemView to the { val, scan } reader surface, for tests
+ * without the substrate. MemView keys and values are strings. Values are
+ * JSON.
  */
 export function memViewReader(view) {
   return {

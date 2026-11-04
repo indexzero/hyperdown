@@ -1,15 +1,13 @@
-// Full-range-scan view hash — the I2 convergence / I3 rebuild-equality
-// check at store level (okf SPEC §11). Byte construction matches
-// @auto-okf/core's MemView.hash() exactly (key, 0x00, raw stored value
-// bytes, '\n'), so a view folded over a real autobee hashes identically to
-// the same linearized sequence folded over MemView in the unit suite.
+// The view hash of SPEC §11 at store level: I2 convergence and I3 rebuild
+// equality.
 import { createHash } from 'node:crypto'
 
 /**
- * Hash a full range scan of any view exposing
- * `createReadStream() -> async iterable of { key, value }` where value is
- * the raw stored string (ViewAdapter over an autobee view, or core's
- * MemView — both yield the stableStringify bytes apply wrote).
+ * Hash a full range scan of a view whose `createReadStream()` yields
+ * `{ key, value }` with value the raw stored string: ViewAdapter or
+ * MemView. The bytes must match MemView.hash() of @auto-okf/core (key,
+ * 0x00, value, '\n'), so a view folded over autobee hashes the same as the
+ * same linearized sequence folded over MemView.
  */
 export async function viewHash(view) {
   const h = createHash('sha256')

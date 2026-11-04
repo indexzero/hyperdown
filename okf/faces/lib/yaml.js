@@ -1,20 +1,9 @@
-// YAML for the OKF faces (okf SPEC §6, §9). Pattern ancestor:
-// vault-ld/faces/lib/note.js (copy-don't-depend, SPEC §0).
+// YAML for the faces. See SPEC §6 and §9.
 //
-// EMISSION is hand-rolled and canonical (§9 "YAML emission is pinned"):
-// byte-deterministic output is required for cross-implementation
-// byte-identity and OKF §9(1) parseability. A general-purpose YAML dumper
-// owns its style decisions (quote choice, line wrapping, number/date
-// rendering) and can change them across versions, which would silently
-// break I9. So the emitter below defines every byte:
-//   - scalars double-quoted iff YAML would otherwise reinterpret them
-//   - flow-style lists
-//   - LF line endings, trailing newline (renderNote)
-//
-// PARSING human-edited YAML, by contrast, needs full YAML 1.2 coverage, so
-// ingest and the frontmatter reader use the maintained `yaml` package
-// (https://eemeli.org/yaml/ — YAML 1.2 core schema; parse() returns plain
-// JS values). Parse-only: the emitter is never the `yaml` dumper.
+// Emission is hand-written. A general YAML dumper owns its quote, wrap and
+// number style and can change it across versions. That breaks I9 with no
+// sign. Parsing uses the `yaml` package (YAML 1.2 core schema), parse only.
+// The emitter is never the `yaml` dumper.
 import { parse as parseYaml } from 'yaml'
 import { canonical } from '@auto-okf/core'
 
@@ -22,14 +11,12 @@ const { nfc, canonicalInteger, canonicalDouble, stableStringify } = canonical
 
 // ---------- canonical YAML emission (§9) ----------
 
-// Core-schema spellings that would change a plain scalar's TYPE on re-parse.
+// Spellings that change the type of a plain scalar on re-parse.
 const YAML_RESERVED_WORD = /^(?:null|Null|NULL|~|true|True|TRUE|false|False|FALSE)$/
-// Number-shaped strings must be quoted so they stay strings on re-parse.
+// Number-shaped strings get quotes, so that they stay strings on re-parse.
 const YAML_NUMBERISH = /^[-+]?(?:\.[0-9]|[0-9]|\.inf|\.Inf|\.INF|\.nan|\.NaN|\.NAN)/
-// Conservative plain-style charset (ASCII, no flow indicators or comment/
-// anchor/tag introducers). Anything outside is double-quoted; being
-// conservative never hurts determinism -- only which of two deterministic
-// spellings is chosen.
+// Plain-style charset: ASCII without flow indicators and without comment,
+// anchor or tag introducers. Anything else gets double quotes.
 const PLAIN_OK = /^[A-Za-z0-9_][A-Za-z0-9_ ./@%+'()-]*$/
 
 function quoteDouble(s) {
@@ -78,9 +65,8 @@ export function emitYamlValue(v) {
   if (typeof v === 'string') return emitString(v)
   if (Array.isArray(v)) return '[' + v.map(emitYamlValue).join(', ') + ']'
   if (typeof v === 'object') {
-    // Wiki-style reference and typed-literal shapes core's canonicalValue may
-    // produce. OKF fields are ordinarily plain scalars; these keep any richer
-    // value round-trippable rather than dropped.
+    // The reference and typed-literal shapes of core's canonicalValue, so
+    // that a rich value round-trips.
     if (typeof v.ref === 'string') return emitString(v.ref)
     if ('value' in v) {
       const parts = []
@@ -101,10 +87,9 @@ export function emitYamlKey(k) {
 }
 
 /**
- * Canonical frontmatter block from [key, value] pairs. Ordering is the
- * caller's (§6: _id, _rev, type, then sorted); values are scalars or arrays;
- * arrays are always flow style; a length-1 array collapse is the caller's
- * decision.
+ * The frontmatter block from [key, value] pairs. The caller orders the
+ * pairs (SPEC §6) and decides on a length-1 array collapse. Arrays are flow
+ * style.
  */
 export function emitFrontmatter(pairs) {
   let out = ''
@@ -115,14 +100,10 @@ export function emitFrontmatter(pairs) {
 }
 
 /**
- * Render one concept note (§9 byte layout, fixed for I9):
- *   ---\n<frontmatter>---\n            (frontmatter always present: type is
- *                                        required, so pairs is non-empty)
- *   \n<body>\n                          (only when body is non-empty)
- *
- * The file newline after the body is always written, also when the body
- * itself ends in '\n'. So the body bytes are never merged with it, and
- * parseNote gets the body back exactly.
+ * One concept note (SPEC §9): `---\n<frontmatter>---\n`, then `\n<body>\n`
+ * when the body is not empty. The file newline after the body is always
+ * written, also when the body ends in '\n', so parseNote gets the body back
+ * exactly.
  */
 export function renderNote(pairs, body) {
   let out = ''
@@ -137,16 +118,11 @@ export function renderNote(pairs, body) {
 
 /**
  * Parse one concept note into { fm, body, warnings }. `fm` is null when the
- * file has no frontmatter block, else the plain-object YAML parse. The body
- * is the text after the closing '---' with the single leading blank
- * separator line and the single trailing file newline removed.
- *
- * For every body and every non-empty `pairs`, this is the exact inverse of
- * renderNote: parseNote(renderNote(pairs, body)).body === body, also when
- * the body ends in one or more '\n' (G25). A hand-written note that ends in
- * one newline, such as '---\ntype: note\n---\n\nbody text\n', parses to the
- * body 'body text': that one newline is the file newline. A note that ends
- * in two newlines parses to a body that ends in one.
+ * file has no frontmatter block. The body is the text after the closing
+ * '---', without one leading blank line and one trailing newline.
+ * parseNote(renderNote(pairs, body)).body === body for every body, also one
+ * that ends in '\n'. In a hand-written note, the last newline is the file
+ * newline, not body.
  */
 export function parseNote(text) {
   const warnings = []
@@ -178,10 +154,8 @@ export function parseNote(text) {
 }
 
 /**
- * Map one parsed YAML value to the op-value shape core canonicalizes
- * (§3/§5): strings NFC-normalized; Date -> canonical xsd:dateTime string;
- * numbers/booleans/null pass through. OKF frontmatter is plain data, so this
- * stays intentionally simple.
+ * One parsed YAML value as the op value that core canonicalizes (SPEC §3,
+ * §5): a string as NFC, a Date as an xsd:dateTime string, the rest as is.
  */
 export function yamlToValue(v) {
   if (typeof v === 'string') return nfc(v)

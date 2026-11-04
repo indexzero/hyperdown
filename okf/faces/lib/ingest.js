@@ -1,31 +1,11 @@
-// Ingest watcher (okf SPEC §9): human edits to the on-disk OKF bundle
-// re-enter the vault as MINIMAL ops. The watcher parses changed files,
-// diffs frontmatter PER KEY against view state and the body against the head
-// revision, and emits the smallest op set — never whole-file ops (§3: the
-// failure mode this design exists to avoid is file-granularity LWW).
+// Ingest: edits of a bundle re-enter the vault as the smallest set of ops
+// (SPEC §9). Identity is the `_id`, not the path.
 //
-// Identity is the concept's `_id` (§6), not the filename: a known `_id` at a
-// new path is a rename (SetPath); a missing `_id` mints; an unknown `_id` is
-// ADOPTED (the generation contract, §10: importNote below). `_id`/`_rev` are stripped from
-// the frontmatter diff (identity + derived output, never fields, §5).
+// apply, not the watcher, extracts the links of a SetBody.
 //
-// Link handling is APPLY's job: a SetBody triggers core's normative link
-// extraction, which populates link/, bl/ and (for unresolved targets)
-// wanted/ — the ranked demand index, NEVER a flag (§9, I4). The watcher only
-// emits the body op.
-//
-// fs.watch semantics (verified against
-// https://nodejs.org/api/fs.html#fswatchfilename-options-listener and
-// #caveats): not 100% consistent across platforms; `recursive: true` is
-// supported on macOS/Windows and, since Node 20, Linux (engines.node >= 20).
-// Event types and `filename` are unreliable, so every event is treated only
-// as "this path is dirty" (null => full rescan): re-stat, debounce, wait for
-// write-settle, then decide changed-vs-deleted from the filesystem itself.
-//
-// Coordination with materialize (§9): the same per-path in-flight lock
-// registry serializes ingest reads against materialize's rename critical
-// section, and the emission manifest lets the watcher ignore the system's
-// own writes instead of echoing them back as ops.
+// fs.watch gives unreliable event types and filenames. Every event means
+// "this path is dirty", a null filename a full rescan. `recursive: true`
+// needs Node 20 on Linux.
 import { EventEmitter } from 'node:events'
 import { watch } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -52,32 +32,30 @@ const { nfc, canonicalArray, canonicalValue, byteForm } = canonical
 const CONFLICT_SUFFIX_RE = /\.conflict-[0-9a-f]{8,}$/
 const HEX64 = /^[0-9a-f]{64}$/
 const RESERVED_FRONTMATTER = new Set(['_id', '_rev'])
-// The shortest tag (§3 makeTag): a 64-hex writer key and one hex digit of seq.
+// The shortest tag that makeTag can make: a 64-hex writer key and one hex digit of seq.
 const MIN_TAG = '0'.repeat(65)
-// D-055 Q2, D-060 F04: the record of the concept of each pending file,
-// `{ concepts: { <_id>: { at, path, sha256, gone? } } }` (see "pending files").
-// The faces reserve `.okf-` names for their own state.
+// The pending record: `{ concepts: { <_id>: { at, path, sha256, gone? } } }`.
+// See "pending files" below.
 const PENDING_FILE = '.okf-pending.json'
 
 /**
- * Create (and start) the ingest watcher for `dir`.
+ * Create the ingest watcher for `dir` and start it, unless `opts.watch` is
+ * false.
  *
- * `vault` must expose the @auto-okf/store read surface (`val`, `scan`,
- * `update`), its pinned `metadata.limits` (the oversize preflight reads
- * `maxOpBytes` there), and the content-op helpers (`createConcept`,
- * `setField`, `addTag`, `remTag`, `setBody`, `setPath`, `deleteConcept`).
- * The oversize preflight also reads `clock([seq])`, the §3 clock of an op,
- * to encode an op before it is appended.
+ * `vault` must expose the read surface of @auto-okf/store (`val`, `scan`,
+ * `update`), `metadata.limits.maxOpBytes`, `clock(seq)` and the content-op
+ * helpers (`createConcept`, `setField`, `addTag`, `remTag`, `setBody`,
+ * `setPath`, `deleteConcept`, `undeleteConcept`).
+ *
  * Options:
- *
- *   confirmDelete   async (id, relPath) => boolean — the §9 deletion guard
- *                   (default ON: WITHOUT a handler, DeleteConcept is NEVER
- *                   emitted; the skip is observable via 'delete-skipped').
- *   debounce        ms of per-path quiet time before reading (default 100)
- *   settle          write-settle interval: size+mtime stable for one
- *                   interval before the read (default 50)
- *   watch           false to disable fs.watch (drive scan()/ingestFile()
- *                   manually; used by deterministic tests)
+ *   confirmDelete   async (id, relPath) => boolean. Without a handler the
+ *                   watcher never emits DeleteConcept. It emits
+ *                   'delete-skipped' instead.
+ *   debounce        ms of quiet time per path before a read (default 100)
+ *   settle          ms that size and mtime must stay stable before a read
+ *                   (default 50)
+ *   watch           false: no fs.watch. The caller drives scan() and
+ *                   ingestFile().
  */
 export async function createIngestWatcher(vault, dir, opts = {}) {
   const { realRoot, registry } = await rootRegistry(dir)
@@ -97,13 +75,13 @@ export class IngestWatcher extends EventEmitter {
     this.settleMs = opts.settle ?? 50
     this.closed = false
     this._timers = new Map() // rel -> timeout
-    this._ingested = new Map() // rel -> sha256 last ingested (echo suppression)
+    this._ingested = new Map() // rel -> sha256 of the last ingest (echo suppression)
     this._fsw = null
-    this._inflight = 0 // settle/ingest passes currently running
-    this._pendingDeletes = new Set() // vanished paths awaiting the quiet-drain
+    this._inflight = 0 // settle and ingest passes that run now
+    this._pendingDeletes = new Set() // vanished paths that wait for the quiet drain
     this._drainTimer = null
     this._scanTimer = null
-    this._scanChain = Promise.resolve() // serializes directory-event rescans
+    this._scanChain = Promise.resolve() // serializes the rescans of directory events
     this._import = null // { rel } while importNote runs (import mode)
   }
 
@@ -135,13 +113,10 @@ export class IngestWatcher extends EventEmitter {
   }
 
   /**
-   * Non-`.md` watch path: possibly a DIRECTORY event. macOS delivers a
-   * subtree move (`mv Recipes Cooking`) as renames of the directories —
-   * never the nested new `.md` paths — so dropping these events loses the
-   * move entirely (issue #30). Probe after the debounce: a directory, or a
-   * path that no longer exists (renamed away), schedules one coalesced
-   * `scan()`, which is lossless by construction (ingest-first, then
-   * vacated-path deletes). A plain non-`.md` file stays ignored.
+   * A non-`.md` path can be a directory event. macOS reports a subtree move
+   * as renames of the directories, never of the nested `.md` paths. So a
+   * directory, or a path that is gone, schedules one scan(). A plain
+   * non-`.md` file stays ignored.
    */
   _dirtyMaybeDir(rel) {
     const t = this._timers.get(rel)
@@ -172,7 +147,7 @@ export class IngestWatcher extends EventEmitter {
     }, this.debounceMs)
   }
 
-  /** §9 write-settle: read only once size+mtime are stable for one interval. */
+  /** Write-settle: read only after size and mtime stay stable for one interval (SPEC §9). */
   async _settleAndIngest(rel) {
     this._inflight++
     try {
@@ -192,14 +167,11 @@ export class IngestWatcher extends EventEmitter {
   }
 
   /**
-   * §9 live-watcher ordering (issue #30): a vanished path is never deleted
-   * from inside the event that noticed it — it is queued and drained only
-   * once the watcher is quiet (no pending timers, no in-flight ingest). A
-   * moved file's new path therefore ingests FIRST; its SetPath vacates the
-   * old `path/<p>` claim, so the drained delete finds no holder and emits
-   * nothing — the same ingest-before-delete order `scan()` has always had.
-   * A file that truly vanished still deletes, behind the confirmation
-   * guard, one quiet-window later.
+   * Never delete a vanished path inside the event that saw it. Queue it,
+   * and drain only when the watcher is quiet: no timer, no in-flight
+   * ingest. The new path of a moved file then ingests first, and its
+   * SetPath vacates the old `path/<p>` claim, so the drained delete finds
+   * no holder. scan() keeps the same order. See SPEC §9.
    */
   _deferDelete(rel) {
     this._pendingDeletes.add(rel)
@@ -221,7 +193,7 @@ export class IngestWatcher extends EventEmitter {
     this._pendingDeletes.clear()
     for (const rel of rels) {
       if (this.closed) return
-      // Reappeared (editor save cycle, move-back): an ingest, not a delete.
+      // The file is back (editor save cycle, move back): ingest it, do not delete.
       if ((await statOrNull(join(this.root, rel))) !== null) {
         this._dirty(rel)
         continue
@@ -233,16 +205,15 @@ export class IngestWatcher extends EventEmitter {
   // ---------- one-file ingest ----------
 
   /**
-   * Ingest one concept file (bundle-relative path). Returns the op
-   * descriptors emitted (possibly empty). Serialized against materialize by
-   * the per-path lock. Every dot path is ignored, as the watcher and scan()
-   * always do. The import of a face (importNote) takes dot paths.
+   * Ingest one concept file at the bundle-relative path `rel`. Returns the
+   * op descriptors that it emitted, possibly none. The per-path lock
+   * serializes it against materialize. A dot path is ignored here, but
+   * importNote takes it.
    */
   async ingestFile(rel) {
     rel = nfc(rel.split(sep).join('/'))
     if (isIgnoredPath(rel) || !rel.endsWith('.md')) return []
     if (isReservedFile(rel)) {
-      // §9: index.md/log.md are reserved regenerated faces — edits ignored.
       this.emit('skip', { path: rel, reason: 'reserved' })
       return []
     }
@@ -257,19 +228,15 @@ export class IngestWatcher extends EventEmitter {
       const file = { hash: sha256(raw), owned: undefined } // owned: the concept of a file with no _id of its own
       const manifest = await loadManifest(this.root)
       if (manifest.files[rel] === file.hash || this._ingested.get(rel) === file.hash) {
-        // Our own materialized bytes, or an edit already ingested: not a human
-        // edit — nothing to diff (§9 self-echo suppression).
+        // The bytes are materialize's own, or already ingested: not a human edit.
         this.emit('skip', { path: rel, reason: 'unchanged' })
         return []
       }
       const { fm, body, warnings } = parseNote(raw.toString('utf8'))
       for (const wmsg of warnings) this.emit('warning', { path: rel, message: wmsg })
 
-      // §9 oversize preflight (ADR-005, D-048 F02): a body whose set-body
-      // op would exceed the vault's pinned maxOpBytes (G26) is refused
-      // HERE, by name, before any op for this file is appended. The file
-      // stays pending; sibling files are unaffected. The import of a face
-      // checks each op (_preflightImport).
+      // Refuse an oversize body here, by name, before any op of this file is
+      // appended. The file stays pending. Other files are not affected.
       const refused = await this._preflightBody(fm || {}, body)
       if (refused !== null) {
         this.emit('oversize', { path: rel, ...refused })
@@ -287,18 +254,16 @@ export class IngestWatcher extends EventEmitter {
       const { ops, established, id } = parsed
 
       if (!established) {
-        // No concept corresponds to this file (e.g. missing/empty `type`, so
-        // CreateConcept could not fire). It stays an UNTRACKED human file:
-        // recording its hash in the manifest would let the next materialize
-        // treat it as a prior output and DELETE it (N3). Leave it out so it
-        // surfaces as pending-ingest instead.
+        // No concept corresponds to this file, for example because `type` is
+        // missing. Do not record its hash in the manifest: the next
+        // materialize then treats the file as a prior output and deletes
+        // it. Left out, it stays pending-ingest.
         this.emit('ops', { path: rel, ops })
         return ops
       }
-      // D-048 F02: core's verdict comes before the record. A file with an op
-      // that core rejected is not recorded as ingested: its bytes stay out of
-      // the manifest, so it stays pending, and the next materialize keeps
-      // it. Each rejection is reported by name.
+      // Read core's verdict before the record. A file with a rejected op
+      // stays out of the manifest, so it stays pending and the next
+      // materialize keeps it.
       const rejected = await this._rejections(appended)
       if (rejected.length > 0) {
         await this._keepPending(rel, file)
@@ -307,9 +272,8 @@ export class IngestWatcher extends EventEmitter {
       }
       await this._clearPending(rel, id)
       this._ingested.set(rel, file.hash)
-      // Account the ingested bytes into the manifest: they are now known to
-      // the system, so the next materialize MAY regenerate the file (its
-      // canonical bytes) instead of treating the human edit as still-pending.
+      // The manifest now knows these bytes, so the next materialize can
+      // regenerate the file instead of keeping it as pending.
       await this._touchManifest(rel, file.hash)
       if (typeof this.vault.update === 'function') await this.vault.update()
       this.emit('ops', { path: rel, ops })
@@ -318,29 +282,22 @@ export class IngestWatcher extends EventEmitter {
   }
 
   /**
-   * The oversize preflight of ingestFile (ADR-005, D-048 F02). apply
-   * measures the encoded op (apply.js `raw.length > maxOpBytes`), and a
-   * set-body op holds the id, the base, the clock and `at` beside the body.
-   * So the preflight encodes the set-body op that the file leads to, and
-   * returns `{ bytes, limit, opBytes }` when that op exceeds the pinned
-   * maxOpBytes, else null. `bytes` is the size of the body.
+   * The oversize preflight of ingestFile. apply measures the encoded op
+   * (apply.js, `raw.length > maxOpBytes`), so this encodes the set-body op
+   * that the file leads to. Returns `{ bytes, limit, opBytes }` when that op
+   * exceeds the pinned maxOpBytes, else null. `bytes` is the size of the
+   * body.
    *
-   * No op of the file is appended yet, so the encoded op is a lower bound:
-   * - The id is the file's `_id`, or a minted tag of 65 ASCII bytes (the
-   *   shortest tag, makeTag), whichever has fewer UTF-8 bytes. A copy gets
-   *   a minted id. The codec writes an id as a length prefix and its UTF-8
-   *   bytes (hyperschema c.string), and the prefix never gets shorter as
-   *   the length grows. So the id with fewer UTF-8 bytes gives the shorter
-   *   op (G3-P8 F03: a count of UTF-16 code units can choose the longer).
-   *   Core takes only a hex `_id` (SPEC §6), so an `_id` with more UTF-8
-   *   bytes than code units is one that core rejects bad-id.
-   * - The base is the file's `_rev`, or none. Without `_rev`, the op of a
-   *   concept with a head cites the head.
+   * The encoded op is a lower bound of the op that the store appends, so
+   * the preflight never refuses an op that core takes:
+   * - The id is the `_id` of the file or MIN_TAG, whichever has fewer UTF-8
+   *   bytes. The codec writes an id as a length prefix and its UTF-8 bytes,
+   *   so count UTF-8 bytes, not UTF-16 code units.
+   * - The base is the `_rev` of the file, or none.
    * - The clock is clock(0), whose self entry is the smallest position.
-   * So the preflight never refuses an op that core takes. An op within a
-   * few bytes of the limit can pass it, and core then rejects that op.
-   * A body equal to the head of the concept of its `_id` returns null. But a
-   * copy (§9) sets that body on a new concept: core's verdict checks it.
+   * An op within a few bytes of the limit can pass, and core then rejects
+   * it. A body equal to the head of its `_id` returns null. But a copy sets
+   * that body on a new concept, and core's verdict covers it.
    */
   async _preflightBody(fm, body) {
     const text = nfc(body)
@@ -360,10 +317,9 @@ export class IngestWatcher extends EventEmitter {
   }
 
   /**
-   * Diff a parsed file against the view and emit the minimal op set.
-   * Resolves identity first (§6/§9: known/adopt/mint + copy detection +
-   * conflict-copy awareness), then diffs fields and body. Each op that it
-   * appends goes on `appended` as `{ op, tag }`, for core's verdict. `file`: see _ownedConcept.
+   * Diff a parsed file against the view and emit the smallest op set. Each
+   * op that it appends goes on `appended` as `{ op, tag }`, for core's
+   * verdict. `file`: see _ownedConcept.
    */
   async _ingestParsed(rel, fm, body, appended, file) {
     if (typeof this.vault.update === 'function') await this.vault.update()
@@ -371,11 +327,10 @@ export class IngestWatcher extends EventEmitter {
     const P = rel.slice(0, -3) // strip '.md'
     const terminal = P.split('/').pop()
     const isConflictCopy = CONFLICT_SUFFIX_RE.test(terminal)
-    // §9 conflict-copy awareness: ingest at the suffix-stripped path. A
-    // human-authored file can carry MORE THAN ONE reserved suffix (materialize
-    // never emits such a path, §7); strip every trailing reserved suffix so the
-    // authored path is not itself reserved and rejected reserved-path — which
-    // would leave the file permanently pending-ingest (issue #28 / P7).
+    // Ingest at the path without its conflict suffixes. A human file can
+    // carry more than one. Strip every one, or the authored path is itself
+    // reserved, apply rejects it reserved-path, and the file stays pending
+    // forever.
     let authoredPath = P
     while (CONFLICT_SUFFIX_RE.test(authoredPath.split('/').pop())) {
       authoredPath = authoredPath.replace(CONFLICT_SUFFIX_RE, '')
@@ -383,36 +338,33 @@ export class IngestWatcher extends EventEmitter {
 
     const emitted = []
     const id = await this._ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted, appended, file)
-    if (id == null) return { ops: emitted, established: false } // could not create (e.g. missing type)
+    if (id == null) return { ops: emitted, established: false } // no concept created, for example no type
 
     if (typeof this.vault.update === 'function') await this.vault.update()
     const state = await this._conceptState(id)
 
     const ops = []
 
-    // ---- tombstone (§9, issue #30): a file ON DISK bearing a known-but-
-    // tombstoned _id is intent-to-keep — the human kept, moved, or restored
-    // it. Undo the tombstone FIRST so the SetPath/SetBody below land on a
-    // live concept instead of flagging writeafterdelete while the concept
-    // stays suppressed from materialize (which would then unlink the file).
-    // Conflict copies are exempt: a transient face never resurrects the
-    // concept it mirrors (same rationale as the deletion skip). apply
-    // writes the permanent flag/undelete audit record. ----
+    // A file on disk with a tombstoned `_id` is intent to keep. Undelete
+    // first, so the SetPath and SetBody below land on a live concept. Else
+    // apply flags writeafterdelete, materialize still suppresses the
+    // concept, and it unlinks the file. A conflict copy never resurrects
+    // the concept that it mirrors.
     if (!isConflictCopy && state.exists && state.deleted) {
       ops.push({ type: 'undelete-concept', payload: { id } })
     }
 
-    // ---- path (§9): rename only, and never for a conflict copy sitting at
-    // its stripped path (that IS the loser's materialized face) ----
+    // Rename only. Never for a conflict copy at its stripped path: that
+    // file is the materialized face of the loser.
     if (!isConflictCopy && state.exists && state.path !== authoredPath) {
       ops.push({ type: 'set-path', payload: { id, path: authoredPath } })
     }
 
-    // ---- frontmatter per-key diff (§9) ----
+    // ---- frontmatter diff per key ----
     const authored = new Map() // key -> { values, scalar }
     for (const [rawKey, rawVal] of Object.entries(fm)) {
       const key = nfc(rawKey)
-      if (RESERVED_FRONTMATTER.has(key)) continue // §5: identity/derived, never fields
+      if (RESERVED_FRONTMATTER.has(key)) continue // never fields (SPEC §5)
       authored.set(key, yamlToValues(rawVal))
     }
     const keys = new Set([...authored.keys(), ...state.fields.keys()])
@@ -424,7 +376,7 @@ export class IngestWatcher extends EventEmitter {
       }
     }
 
-    // ---- body diff (§9): one SetBody citing the file's _rev ----
+    // ---- body diff: one SetBody that cites the `_rev` of the file ----
     const text = nfc(body)
     if (text !== state.headText) {
       const base = this._chooseBase(fm._rev, state.head)
@@ -436,9 +388,8 @@ export class IngestWatcher extends EventEmitter {
   }
 
   /**
-   * Ensure the concept exists and return its `_id` (§6/§9). Emits a
-   * CreateConcept when adopting, minting, or copy-splitting; the created id
-   * is appended to `emitted`.
+   * Make sure that the concept exists, and return its `_id`. A
+   * CreateConcept for an adopt, a mint or a copy goes on `emitted`.
    */
   async _ensureConcept(rel, fm, authoredPath, isConflictCopy, emitted, appended, file) {
     const rawId = typeof fm._id === 'string' ? nfc(fm._id) : undefined
@@ -446,16 +397,15 @@ export class IngestWatcher extends EventEmitter {
     if (rawId) {
       const meta = await this.vault.val(K.cMeta(rawId))
       if (meta !== undefined) {
-        // Known id. Copy detection (§9): same _id at two paths — the file at
-        // the id's current view path is the original; this one is a copy.
         if (!isConflictCopy) {
           const pathRec = await this.vault.val(K.cPath(rawId))
           const viewPath = pathRec ? pathRec.path : undefined
           if (viewPath !== undefined && viewPath !== authoredPath) {
             const original = await statOrNull(join(this.root, viewPath + '.md'))
             if (original !== null) {
-              // A distinct file holds the original path: mint a fresh copy,
-              // or reuse the copy that a pending ingest of this file made.
+              // A distinct file holds the view path of the id, so this file
+              // is a copy (SPEC §9). It gets a new concept, or the one that
+              // a pending ingest of it made.
               this.emit('copy', { path: rel, of: rawId })
               return this._ownedConcept(rel, authoredPath, fm, emitted, appended, file)
             }
@@ -463,17 +413,16 @@ export class IngestWatcher extends EventEmitter {
         }
         return rawId
       }
-      // §9/§10: unknown id → ADOPT it.
+      // An unknown id: adopt it (SPEC §6).
       return this._create(authoredPath, fm, rawId, emitted, appended)
     }
 
-    // §9: missing _id → mint (write-back happens on the next materialize,
-    // which stamps the deterministic minted _id into the file). A pending
-    // ingest of this file already minted one: reuse it (D-055 Q2).
+    // No `_id`: mint. The next materialize stamps the id into the file. A
+    // pending ingest of this file can already hold one (_ownedConcept).
     return this._ownedConcept(rel, authoredPath, fm, emitted, appended, file)
   }
 
-  /** Emit a CreateConcept; return the concept id (adopted id or minted tag). */
+  /** Emit a CreateConcept and return the concept id: the adopted id, or the minted tag. */
   async _create(path, fm, id, emitted, appended) {
     const type = this._fmType(fm)
     if (type == null) {
@@ -481,11 +430,10 @@ export class IngestWatcher extends EventEmitter {
       return null
     }
     const res = await this._apply({ type: 'create-concept', payload: { path, type, id } }, appended)
-    // Adoption keeps the supplied id. For a MINT the concept's id is knowable
-    // only from the view (§9/§6 P1): a squat pre-occupying this writer's
-    // tag-id makes apply mint a SHA fallback, so the op's tag can point at the
-    // squatter's concept, not the one we just created. Resolve it from the
-    // view — never trust the op tag for identity.
+    // An adoption keeps the supplied id. For a mint, only the view knows the
+    // id: a squat on the tag-id of this writer makes apply mint a SHA
+    // fallback, so the tag of the op can point at the squatter's concept.
+    // Never take the op tag as identity.
     const conceptId = id !== undefined ? id : await this._resolveMintedId(res && res.tag, path)
     emitted.push({ type: 'create-concept', payload: { path, type, id: conceptId } })
     if (appended) appended[appended.length - 1].created = conceptId
@@ -493,10 +441,10 @@ export class IngestWatcher extends EventEmitter {
   }
 
   /**
-   * Resolve the id of a just-minted concept from the view (§6 P1). Common
-   * case (no squat on the tag-id): the op's tag IS the id — one O(1) read.
-   * If a squat fired the SHA fallback, the genuine concept claimed `path` at
-   * create and its `meta.created === tag`; find it via path/, else scan c/.
+   * Resolve the id of a new mint from the view (SPEC §6).
+   * Without a squat the tag is the id: one read. After a squat the genuine
+   * concept claimed `path` at create, and its `meta.created === tag`: find
+   * it through path/, else scan c/.
    */
   async _resolveMintedId(tag, path) {
     if (typeof this.vault.update === 'function') await this.vault.update()
@@ -525,19 +473,18 @@ export class IngestWatcher extends EventEmitter {
 
   _chooseBase(fmRev, head) {
     if (typeof fmRev === 'string' && HEX64.test(nfc(fmRev))) return nfc(fmRev)
-    // §6: missing _rev over a concept WITH revisions cites the current head;
-    // over a concept without revisions, base null.
+    // No `_rev`: cite the head when one exists (SPEC §6).
     return head !== undefined ? head : null
   }
 
   // ---------- per-field diff engines ----------
 
-  /** LWW field (§5): one SetField, or SetField [] to clear a removed key. */
+  /** LWW field (SPEC §5): one SetField, or SetField [] to clear a removed key. */
   _diffLww(id, key, authoredEntry, rec) {
     const current = rec && Array.isArray(rec.values) ? canonicalArray(rec.values) : undefined
     if (!authoredEntry) {
       if (current === undefined || current.length === 0) return []
-      // §5: type can never be emptied (apply rejects empty-type); skip it.
+      // apply rejects an empty `type` (empty-type), so never clear it.
       if (key === 'type') return []
       return [{ type: 'set-field', payload: { id, key, value: [] } }]
     }
@@ -547,7 +494,7 @@ export class IngestWatcher extends EventEmitter {
     return [{ type: 'set-field', payload: { id, key, value } }]
   }
 
-  /** OR-set `tags` (§5): AddTag for new members, RemTag for dropped ones. */
+  /** OR-set `tags` (SPEC §5): AddTag for each new member, RemTag for each dropped one. */
   _diffTags(id, authoredEntry, rec) {
     const els = (rec && rec.els) || {}
     const present = new Map() // byteForm -> value
@@ -563,8 +510,7 @@ export class IngestWatcher extends EventEmitter {
       if (!present.has(bf)) ops.push({ type: 'add-tag', payload: { id, value: v } })
     }
     for (const [bf, v] of [...present.entries()].sort(byteEntryCmp)) {
-      // remTag recomputes the §5 citation set (every observed token) from the
-      // view — the store helper owns that computation.
+      // The store helper remTag adds the cited tags from the view.
       if (!wanted.has(bf)) ops.push({ type: 'rem-tag', payload: { id, value: v } })
     }
     return ops
@@ -590,30 +536,23 @@ export class IngestWatcher extends EventEmitter {
     return st
   }
 
-  // ---------- import mode (§10, `auto-okf import`) ----------
+  // ---------- import mode (SPEC §10, `auto-okf import`) ----------
 
   /**
-   * Import one note of a face into a fresh vault (§10, importFace). `raw`
-   * holds the bytes that importFace read from the face, so the note is read
-   * once, and the fidelity check compares the same bytes. Import mode
-   * differs from ingestFile:
-   *
+   * Import one note of a face into a fresh vault (SPEC §10, importFace).
+   * `raw` holds the bytes that importFace read, so the note is read once,
+   * and the fidelity check compares the same bytes. Import mode differs
+   * from ingestFile:
    *   - It reads no emission manifest and no pending record, and writes
-   *     neither. The face is inert source: no note is a self-echo.
-   *   - It treats `_rev` as absent. No base exists in the fresh vault, so
-   *     each head is the concept's first revision (base null), and `_rev`
-   *     re-derives (§6, §14).
-   *   - A dot segment is part of a concept path (core accepts
-   *     `.drafts/idea`). importFace refuses a `.conflict-` copy and a
-   *     reserved `.okf-` name before the first note.
-   *   - Before it appends an op, it refuses an op whose encoded form exceeds
-   *     the vault's maxOpBytes: IMPORT_OVERSIZE (§3, D-048 F02). After the
-   *     ops of the note, it reads core's verdict on each one, and a rejected
-   *     op throws IMPORT_REJECTED. An import never keeps an op that core
-   *     rejected.
-   *
-   * Returns the op descriptors: none when the note establishes no concept,
-   * for example a note without `type` (a 'warning' event says why).
+   *     neither.
+   *   - It treats `_rev` as absent. Each head is the first revision of its
+   *     concept, and `_rev` re-derives.
+   *   - A dot segment is part of a concept path.
+   *   - It refuses an oversize op before the append (IMPORT_OVERSIZE), and
+   *     it throws IMPORT_REJECTED on an op that core rejected. It never
+   *     keeps such an op.
+   * Returns the op descriptors: none when the note establishes no concept.
+   * A 'warning' event says why.
    */
   async importNote(rel, raw) {
     rel = nfc(rel.split(sep).join('/'))
@@ -643,15 +582,10 @@ export class IngestWatcher extends EventEmitter {
   }
 
   /**
-   * Import mode: refuse an op whose encoded form exceeds the vault's
-   * pinned maxOpBytes, before it is appended (§3; apply checks the encoded
-   * op, apply.js `raw.length > maxOpBytes`). The size here is a lower bound
-   * of the op that the store appends: the store fills `clock` with this
-   * writer's position, which is at least the 0 used here, and with the
-   * positions that its view holds then, and `at` with the time of the
-   * append. So the check never refuses an op that core would take. An op
-   * within a few bytes of the limit can pass it, and core then rejects it:
-   * importNote reads that verdict.
+   * Import mode: refuse an op whose encoded form exceeds the pinned
+   * maxOpBytes, before the append. clock(0) and `at` here give a lower
+   * bound of the op that the store appends, as in _preflightBody, so the
+   * preflight never refuses an op that core takes.
    */
   async _preflightImport(op) {
     const limit = this.vault.metadata.limits.maxOpBytes
@@ -670,9 +604,9 @@ export class IngestWatcher extends EventEmitter {
   }
 
   /**
-   * Core's verdict on each op in `appended` (`{ op, tag }`): the ones that
-   * core rejected, as `{ op, reason }`, in append order. It folds first, so
-   * the view holds each flag/rejected record (§3, I4).
+   * Core's verdict on each op in `appended` (`{ op, tag }`): the rejected
+   * ones, as `{ op, reason }`, in append order. It folds first, so the view
+   * holds each flag/rejected record.
    */
   async _rejections(appended) {
     if (typeof this.vault.update === 'function') await this.vault.update()
@@ -688,9 +622,9 @@ export class IngestWatcher extends EventEmitter {
   // ---------- op sink ----------
 
   /**
-   * Apply one op descriptor via the store's typed helpers, and put it on
-   * `appended`, when given, for core's verdict. In import mode
-   * (importNote), check the op first.
+   * Apply one op descriptor through the store helper, and put it on
+   * `appended`, when given, for core's verdict. In import mode the
+   * preflight runs first.
    */
   async _apply(op, appended) {
     if (this._import !== null) await this._preflightImport(op)
@@ -699,7 +633,6 @@ export class IngestWatcher extends EventEmitter {
     return res
   }
 
-  /** Append one op descriptor through the store helper for its type. */
   _append(op) {
     const p = op.payload
     switch (op.type) {
@@ -724,7 +657,7 @@ export class IngestWatcher extends EventEmitter {
     }
   }
 
-  // ---------- deletion (§9, behind the confirmation guard) ----------
+  // ---------- deletion (SPEC §9, behind the confirmation guard) ----------
 
   async _maybeDelete(rel) {
     rel = nfc(rel.split(sep).join('/'))
@@ -736,13 +669,14 @@ export class IngestWatcher extends EventEmitter {
     const P = rel.slice(0, -3)
     const terminal = P.split('/').pop()
     if (CONFLICT_SUFFIX_RE.test(terminal)) {
-      // A conflict copy is a transient face, not the concept's canonical
-      // location — its removal is not a DeleteConcept (deletion is dangerous).
+      // A conflict copy is a transient face, not the location of the
+      // concept. Its removal is not a DeleteConcept.
       this.emit('delete-skipped', { path: rel, reason: 'conflict-copy' })
       return []
     }
     // A pending file deletes the concept that the record names for it (it
-    // can have lost a path collision); another file, the holder of its path.
+    // can have lost a path collision). Another file deletes the holder of
+    // its path.
     const id = (await this._pendingOf(rel)) ?? (await this.vault.val(K.path(P)))
     if (id === undefined) return [] // no concept holds this path
     if (!this.confirmDelete || !(await this.confirmDelete(id, rel))) {
@@ -753,9 +687,9 @@ export class IngestWatcher extends EventEmitter {
     const op = { type: 'delete-concept', payload: { id } }
     const appended = []
     await this._apply(op, appended)
-    // G3-P8 F02: core's verdict comes before the record, as for an edit
-    // (ingestFile). A delete that core rejected keeps the manifest entry
-    // and the pending record of the path, so a later scan retries it.
+    // Read core's verdict before the record, as in ingestFile. A rejected
+    // delete keeps the manifest entry and the pending record of the path,
+    // so a later scan retries it.
     const rejected = await this._rejections(appended)
     if (rejected.length > 0) {
       await this._gonePending(rel)
@@ -773,10 +707,10 @@ export class IngestWatcher extends EventEmitter {
   // ---------- full scan ----------
 
   /**
-   * Ingest every concept file on disk, then handle disappeared concepts:
-   * each path that the manifest or the pending record lists and the disk
-   * no longer holds (D-061 R02). A pending file never reached the
-   * manifest, so the manifest alone misses its delete.
+   * Ingest every concept file on disk. Then delete each concept whose path
+   * the manifest or the pending record lists and the disk no longer holds.
+   * A pending file never reached the manifest, so the manifest alone
+   * misses its delete.
    */
   async scan() {
     const rels = []
@@ -806,44 +740,34 @@ export class IngestWatcher extends EventEmitter {
     })
   }
 
-  // ---------- pending files (D-055 Q2, D-060 F04) ----------
+  // ---------- pending files (SPEC §9) ----------
   //
-  // The rule: a new file gets its _id only when materialize stamps it,
-  // after the file is recorded as ingested. A file with no _id of its own
-  // (a note without _id, or a copy) gets a concept from its ingest (a mint
-  // or a copy split). If that ingest does not complete, because core
-  // rejected one of its ops or the ingest threw, the file stays pending
-  // without an _id. So the watcher records, in PENDING_FILE, the concept of
-  // the file: { at, path, sha256 }, keyed by the concept's _id. `path` is
-  // the file, `sha256` the bytes of that ingest, and `at` the concept's
-  // path in the view then. A later ingest, in this watcher or in another
-  // one, takes the recorded concept where it would mint or split a copy,
-  // only on evidence that the file is the same (_pendingConcept):
-  //
-  //   - the file at `path`: an edit, or a retry of the same bytes;
+  // A file with no _id of its own (a note without _id, or a copy) gets a
+  // concept from its ingest. If that ingest does not complete, the file
+  // stays pending with no _id, because only materialize stamps one. So the
+  // watcher records the concept of the file in PENDING_FILE, keyed by its
+  // _id: `path` is the file, `sha256` the bytes of that ingest, and `at`
+  // the path of the concept in the view then. A later ingest takes the
+  // recorded concept in place of a mint or a copy split, only on evidence
+  // that the file is the same (_pendingConcept):
+  //   - the file at `path`: an edit, or a retry of the same bytes.
   //   - a file at another path with the same bytes, while the disk no
-  //     longer holds `path`: a rename. The ingest moves the concept there.
-  //
-  // And only while the concept is live at `at`. A concept that a note with
-  // its _id, or another writer, moved away is no longer the file's. A
-  // record that a delete pass found gone (`gone`), and that deleted
-  // nothing, takes back only the same bytes at `path`: a new note there is
-  // a new concept. The record of a concept goes when an ingest of its file
-  // or of the concept completes, or when the delete of the file takes
-  // effect. Import mode reads no record (D-060 F21).
+  //     longer holds `path`: a rename.
+  // And only while the concept is live at `at`. A record marked `gone`
+  // takes back only the same bytes at `path`: a new note there is a new
+  // concept. The record goes when an ingest of the file or of the concept
+  // completes, or when the delete of the file takes effect.
   //
   // What the disk cannot show: a rename and an edit in one step, while no
-  // watcher runs, is a new file (the old concept waits for the delete of
-  // `path`). And before a delete pass sees `path` gone, a new note at
-  // `path` looks like an edit.
+  // watcher runs, is a new file. Before a delete pass sees `path` gone, a
+  // new note at `path` looks like an edit.
 
   /**
-   * The concept of a file that holds no _id of its own (a note without
-   * _id, or a copy, §9): the pending record's concept for the file, else a
-   * new concept (_create). `file` is ingestFile's { hash, owned }: owned
-   * notes the concept, so a failed ingest records it (_keepPending). Import
-   * mode passes no `file`, and reads no record (D-060 F21): the face is
-   * inert source, and its `.okf-pending.json` is state of another directory.
+   * The concept of a file with no _id of its own: the concept of its pending
+   * record, else a new one (_create). `file` is ingestFile's { hash, owned }.
+   * owned notes the concept, so a failed ingest records it (_keepPending).
+   * Import mode passes no `file` and reads no record: the pending record of
+   * a face is state of another directory.
    */
   async _ownedConcept(rel, authoredPath, fm, emitted, appended, file) {
     if (file === undefined) return this._create(authoredPath, fm, undefined, emitted, appended)
@@ -875,7 +799,7 @@ export class IngestWatcher extends EventEmitter {
     return rec !== undefined && rec.path === at
   }
 
-  /** The concept that the record names for the file `rel`, while it stays; a stale record of `rel` goes. */
+  /** The concept that the record names for the file `rel`, while it stays. A stale record of `rel` goes. */
   async _pendingOf(rel) {
     const { concepts } = await this._loadPending()
     const id = Object.keys(concepts).find((k) => concepts[k].path === rel)
@@ -908,7 +832,7 @@ export class IngestWatcher extends EventEmitter {
     })
   }
 
-  /** A delete pass found the file `rel` gone and deleted nothing: its record is gone (see above). */
+  /** A delete pass found the file `rel` gone and deleted nothing: mark its record `gone` (see above). */
   _gonePending(rel) {
     return this._writePending((cs) => {
       for (const k of Object.keys(cs)) if (cs[k].path === rel) cs[k] = { ...cs[k], gone: true }

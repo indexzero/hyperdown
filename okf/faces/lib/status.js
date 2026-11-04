@@ -1,23 +1,7 @@
-// status(vault, dir) — the per-file vault/bundle state porcelain (ADR-002).
-// Strictly read-only: appends no ops, writes no files, touches no manifest —
-// the plan comes from planBundle (the exact bytes materialize would write),
-// and the emission manifest and on-disk bytes are only read. One row per
-// `.md` file in the union of {planned projection, emission manifest, disk},
-// in canonical byte order, each carrying one state from the fixed ADR-002
-// vocabulary:
-//
-//   in-log          on-disk bytes match the log's canonical projection
-//   pending-ingest  hand-authored, untracked; ingest would establish a
-//                   concept for it (mint/adopt)
-//   dirty           manifest-tracked (in the log) but diverged from the
-//                   projection — a hand edit ingest would fold in as diffs
-//                   against the existing concept, or a log that has moved
-//                   past the last materialize
-//   absent          projected by the log, missing from disk (materialize
-//                   would restore it)
-//   foreign         not in the log, not manifest-tracked, and not
-//                   establishable by ingest (e.g. another writer's
-//                   mid-write WIP with no parseable non-empty `type`)
+// status(vault, dir): one state per `.md` file of a bundle: in-log,
+// pending-ingest, dirty, absent or foreign. Read-only: it appends no op and
+// writes no file. The states are defined in SPEC §9 and in
+// okf/docs/decisions/ADR-002-status-command.md.
 import { readFile, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { canonical } from '@auto-okf/core'
@@ -27,11 +11,11 @@ import { loadManifest, sha256, walkNotes, isReservedFile } from './fsatomic.js'
 
 const { nfc } = canonical
 
-/** Per-file states, sorted by path: [{ path, state }] (the --json contract). */
+/** [{ path, state }] in byte order of path, the shape of `--json`. */
 export async function status(vault, dir) {
   const planned = await planBundle(vault)
-  // No rootRegistry here: it mkdirs the bundle dir, and status writes
-  // nothing. A missing bundle dir is simply all-absent.
+  // Not rootRegistry: it creates the directory, and status writes nothing.
+  // A missing directory is all absent.
   let realRoot = null
   try {
     realRoot = await realpath(dir)
@@ -61,22 +45,21 @@ async function classify(realRoot, rel, plannedBuf, trackedHash) {
     }
   }
   if (raw === null) {
-    // A manifest entry with neither a file nor a projection is retired
-    // state the next materialize drops — no file, no row.
+    // A manifest entry with no file and no plan is retired state. No row.
     return plannedBuf !== undefined ? 'absent' : null
   }
   if (plannedBuf !== undefined && sha256(raw) === sha256(plannedBuf)) return 'in-log'
   if (trackedHash !== undefined) return 'dirty'
-  // Untracked derived face (index.md/log.md before any materialize, or
-  // hand-created): materialize reconciles it, ingest ignores it.
+  // An untracked index.md or log.md: materialize reconciles it, ingest
+  // ignores it.
   if (isReservedFile(rel)) return 'dirty'
-  // Untracked hand-authored file: pending-ingest iff ingest could establish
-  // a concept for it — the same non-empty-`type` gate as the watcher.
+  // pending-ingest only when ingest can make a concept of it: the same
+  // `type` gate as the watcher.
   const { fm } = parseNote(raw.toString('utf8'))
   return fmType(fm) === null ? 'foreign' : 'pending-ingest'
 }
 
-/** Mirror of IngestWatcher._fmType: the `type` ingest needs to mint/adopt. */
+/** Must match IngestWatcher._fmType, the `type` gate of ingest. */
 function fmType(fm) {
   const raw = fm ? fm.type : undefined
   const v = Array.isArray(raw) ? raw[0] : raw

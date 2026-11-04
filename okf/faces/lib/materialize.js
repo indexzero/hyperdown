@@ -1,19 +1,10 @@
-// materialize(vault, dir, opts) — okf SPEC §9: walk the view and emit a
-// byte-deterministic OKF v0.1 bundle (concept files + per-directory
-// index.md + root log.md). Every emitted byte is a pure function of the
-// converged view (I9): converged peers emit identical bundles.
+// materialize(vault, dir, opts) projects the view to a bundle: one file per
+// live concept, index.md per directory, log.md at the root. Every byte is a
+// function of the converged view (I9). See SPEC §9.
 //
-// N3 (load-bearing — "deletion is dangerous"): materialize reconciles the
-// directory to the view THROUGH AN EMISSION MANIFEST, never by blind
-// mirroring. A concept `.md` file whose current bytes differ from its
-// manifest entry — or that has no entry at all (human-authored, not yet
-// ingested) — is NEVER deleted or overwritten. It is left in place and
-// surfaced as pending-ingest; the run reports not-ok unless ingest is run
-// first (opts.forceMirror restores unconditional mirroring for operator
-// use). The only removal candidates are manifest-tracked files this run did
-// not produce whose current bytes still match their manifest entry (prior
-// conflict copies, prior paths of renamed concepts, index.md of vanished
-// directories).
+// A `.md` file whose bytes differ from its emission manifest entry, or that
+// has no entry, is never deleted or overwritten. `opts.forceMirror` removes
+// that guard.
 import { createHash } from 'node:crypto'
 import { dirname } from 'node:path'
 import { keyspace as K, canonical, dirOf, casefoldPath } from '@auto-okf/core'
@@ -48,7 +39,7 @@ function lastComponent(p) {
   return String(p).split('/').pop()
 }
 
-/** OR-set element map -> emitted value list (dedup, canonical §5 byte order). */
+/** The elements of an OR-set record, deduplicated, in canonical byte order. */
 function orSetValues(rec) {
   const els = (rec && rec.els) || {}
   const seen = new Set()
@@ -62,27 +53,27 @@ function orSetValues(rec) {
   return out
 }
 
-/** Emitted frontmatter value for one field key (null => omit the key). */
+/** The frontmatter value of one field. null means that the note omits the key. */
 function fieldEmitValue(key, rec) {
   if (key === 'tags') {
     const vals = orSetValues(rec)
-    return vals.length === 0 ? null : vals // OKF §4.1: tags is a list
+    return vals.length === 0 ? null : vals // OKF §4.1: tags is always a list
   }
   const values = rec && Array.isArray(rec.values) ? rec.values : []
-  if (values.length === 0) return null // §5 empty LWW state => key omitted
+  if (values.length === 0) return null
   return values.length === 1 ? values[0] : values
 }
 
-/** §6 frontmatter pairs for one concept, in emission order. */
+/** The frontmatter pairs of one concept, in the order of SPEC §6. */
 function frontmatterPairs(concept) {
   const pairs = [['_id', concept.id]]
   if (concept.headHash !== undefined) pairs.push(['_rev', concept.headHash])
-  // §5: `type: unknown` is a materialize-only defensive fallback for corrupt
-  // state (empty type is unreachable through accepted ops).
+  // An empty type is unreachable through accepted ops. 'unknown' covers
+  // corrupt state.
   pairs.push(['type', typeof concept.type === 'string' && concept.type !== '' ? concept.type : 'unknown'])
   const rest = []
   for (const [key, rec] of concept.fields) {
-    if (key === 'type') continue // emitted in the fixed position above
+    if (key === 'type') continue
     const v = fieldEmitValue(key, rec)
     if (v !== null) rest.push([key, v])
   }
@@ -90,7 +81,7 @@ function frontmatterPairs(concept) {
   return pairs.concat(rest)
 }
 
-/** Scalar frontmatter field value (title/description), or undefined. */
+/** The first value of a field when it is a string, else undefined. */
 function scalarField(concept, key) {
   const rec = concept.fields.get(key)
   if (!rec || !Array.isArray(rec.values) || rec.values.length === 0) return undefined
@@ -99,23 +90,20 @@ function scalarField(concept, key) {
 }
 
 /**
- * §7 materialized path for a live concept: its path, unless it is a
- * pathcollision loser, in which case a deterministic conflicted copy
- * `<path>.conflict-<first-8-hex-of-SHA-256(_id)>`. Two losers of one path
- * that hash-collide on 8 hex both extend to the full 64-hex hash.
+ * A pathcollision loser materializes at
+ * `<path>.conflict-<first 8 hex of SHA-256(_id)>`. Two losers of one path
+ * whose 8 hex collide both take the full 64 hex. See SPEC §7.
  */
 function conflictHash(id) {
   return createHash('sha256').update(Buffer.from(id, 'utf8')).digest('hex')
 }
 
 /**
- * §10: the field values of `concept` that its rendered note cannot hold.
- * `text` is the note as its bytes decode, so a lone surrogate shows as
- * U+FFFD. Parse the note back, read each field the way ingest reads it (yamlToValues,
- * then the canonical array that apply stores), and compare it with the view.
- * Returns [{ id, path, key, before, after }]: `before` the view's values,
- * `after` the values that the note gives back ([] when the note omits the
- * key), for each key that differs.
+ * The field values of `concept` that its rendered note cannot hold. `text`
+ * is the note as its bytes decode, so a lone surrogate reads as U+FFFD.
+ * Each field is read the way ingest reads it and compared with the view.
+ * Returns [{ id, path, key, before, after }]: `before` from the view,
+ * `after` from the note, [] when the note omits the key.
  */
 function lossyFields(concept, rel, text) {
   const { fm } = parseNote(text)
@@ -129,7 +117,7 @@ function lossyFields(concept, rel, text) {
     const rec = concept.fields.get(key)
     const before = key === 'tags' ? orSetValues(rec) : rec && Array.isArray(rec.values) ? rec.values : []
     let after = parsed.has(key) ? yamlToValues(parsed.get(key)).values : []
-    // ingest takes only string tags (§5: a tag value is a string)
+    // ingest keeps only string tags (SPEC §5).
     if (key === 'tags') after = after.filter((v) => typeof v === 'string')
     after = canonicalArray(after)
     if (!sameValues(canonicalArray(before), after)) out.push({ id: concept.id, path: rel, key, before, after })
@@ -138,21 +126,15 @@ function lossyFields(concept, rel, text) {
 }
 
 /**
- * §10, D-060 F03: the concept paths that a case-insensitive file system
- * cannot hold. Two spellings that fold together (casefoldPath: NFC, then
- * lowercase) are one directory or one file there, such as the directories
- * of `Notes/a` and `notes/b`. The file system keeps the spelling that was
- * written first, and the import gives the concept that spelling. reconcile
- * writes in byte order, so in an empty directory the first spelling in byte
- * order is the one that stays. Returns [{ id, path, key: 'path', before,
- * after }] for each placed note whose path changes under those spellings:
- * `before` the concept's path in the view, `after` the path that its note
- * gives back. It reads no disk, so the report is the same on every file
- * system, a case-sensitive one too (I9).
+ * The concept paths that a case-insensitive file system cannot hold. Two
+ * spellings that casefold together are one entry there. The first spelling
+ * in byte order stays, because reconcile writes in byte order. Reads no
+ * disk, so the report is the same on every file system (I9). Returns
+ * [{ id, path, key: 'path', before, after }] per note whose path changes.
  */
 function lossyPaths(placed) {
   const prefixes = (rel) => rel.split('/').map((_, i, segs) => segs.slice(0, i + 1).join('/'))
-  const first = new Map() // fold -> its first spelling in byte order, of a directory or a note path
+  const first = new Map() // fold -> first spelling in byte order
   for (const p of placed) {
     for (const s of prefixes(p.rel)) {
       const fold = casefoldPath(s)
@@ -161,7 +143,6 @@ function lossyPaths(placed) {
   }
   const out = []
   for (const p of placed) {
-    // The spelling that each segment gets: the name of the first spelling of its prefix.
     const held = prefixes(p.rel).map((s) => lastComponent(first.get(casefoldPath(s)))).join('/')
     if (held === p.rel) continue
     const loser = p.rel !== `${p.concept.path}.md`
@@ -178,13 +159,12 @@ function sameValues(a, b) {
 }
 
 /**
- * The full byte plan for a converged view (materialize steps 1–4: concept
- * files, per-directory index.md, root log.md) WITHOUT touching disk.
- * Returns Map<rel, Buffer>. Shared with status() (ADR-002) so the
- * porcelain's states are judged against the exact bytes materialize would
- * write. With `opts.lossy` (an array), it parses each rendered note back
- * and pushes each field value that the note cannot hold (lossyFields), and
- * each path that a case-insensitive file system cannot hold (lossyPaths).
+ * The bytes of the bundle for a converged view, without a disk write.
+ * Returns Map<rel, Buffer>. status() uses the same plan, so its states are
+ * judged against the exact bytes that materialize writes. With `opts.lossy`
+ * (an array), pushes each field value that a note cannot hold (lossyFields)
+ * and each path that a case-insensitive file system cannot hold
+ * (lossyPaths).
  */
 export async function planBundle(vault, opts = {}) {
   if (typeof vault.update === 'function') await vault.update()
@@ -197,7 +177,6 @@ export async function planBundle(vault, opts = {}) {
     if (c.deleted || c.path === undefined) continue
     live.push(c)
   }
-  // Pre-compute conflict-hash collisions per path (§7 8-hex extension).
   const h8CountByPath = new Map() // path -> Map<h8, count>
   for (const c of live) {
     if (!collisions.has(collisionKey(c.path, c.id))) continue
@@ -222,8 +201,8 @@ export async function planBundle(vault, opts = {}) {
     }
     const rel = matPath + '.md'
     if (takenRel.has(rel)) {
-      // Unreachable given §7's reservations; guard so we never emit two
-      // concepts to one file under any input.
+      // Unreachable under the SPEC §7 reservations. The guard keeps two
+      // concepts out of one file.
       continue
     }
     takenRel.add(rel)
@@ -242,8 +221,8 @@ export async function planBundle(vault, opts = {}) {
   for (const p of placed) {
     const buf = Buffer.from(renderNote(frontmatterPairs(p.concept), p.concept.headText), 'utf8')
     planned.set(p.rel, buf)
-    // D-060 F07: parse the bytes that the note holds, not the string: UTF-8
-    // cannot hold a lone surrogate, so the file gets U+FFFD in its place.
+    // Parse the bytes, not the string. UTF-8 cannot hold a lone surrogate,
+    // so the file holds U+FFFD in its place.
     if (Array.isArray(opts.lossy)) opts.lossy.push(...lossyFields(p.concept, p.rel, buf.toString('utf8')))
   }
   if (Array.isArray(opts.lossy)) {
@@ -273,51 +252,33 @@ export async function planBundle(vault, opts = {}) {
 }
 
 /**
- * Walk the view and emit the bundle. Options:
+ * Project the view to the bundle at `dir`. Options:
  *
- *   forceMirror  restore unconditional mirroring (overwrite/delete
- *                regardless of manifest).
- *   onPlaintext  async (warning) => void. materialize is the plaintext
- *                export (decision 8). When the vault is encrypted (its
- *                pinned `metadata.encrypted`), materialize calls it once with
- *                the plaintext warning, and awaits it, before its first write
- *                to the directory. So a caller can announce the directory
- *                before any plaintext lands in it.
+ *   forceMirror  overwrite and delete without regard to the manifest.
+ *   onPlaintext  async (warning) => void. For an encrypted vault
+ *                (`metadata.encrypted`), materialize calls it once and
+ *                awaits it before its first write, so that a caller can
+ *                announce the directory before plaintext lands in it.
  *
- * The face of an encrypted vault is marked (D-060 F02): after the warning
- * and before its first plaintext write, materialize writes ENCRYPTED_FILE
- * (`.okf-encrypted`) at the root of the directory. import refuses a marked
- * face without a key (decision 8), so a generation never drops encryption,
- * with or without the predecessor's metadata. materialize never removes the
- * mark: a directory that once held an encrypted vault's plaintext stays
- * marked.
+ * For an encrypted vault, materialize writes ENCRYPTED_FILE at the root
+ * before its first plaintext write and never removes it. import refuses a
+ * marked bundle without a key, so a generation never drops encryption.
  *
- * Returns a report:
- *   { root, ok, written, unchanged, pendingIngest, removed, stale, unsafe,
- *     warnings, lossy }
+ * Returns { root, ok, written, unchanged, pendingIngest, removed, stale,
+ * unsafe, warnings, lossy }.
  *
  * `lossy` is [{ id, path, key, before, after }]: each field value that its
- * note cannot hold (§10). materialize parses each rendered note back and
- * compares each field with the view: a scalar null that the note omits, a
- * second `type` value, a reference or an object written as a string, a lone
- * UTF-16 surrogate that the UTF-8 note holds as U+FFFD. An
- * entry with the key `path` is a note path whose spelling folds together
- * with another one, such as `notes/b` beside `Notes/a` (lossyPaths): a
- * case-insensitive file system holds both in one directory. A generation
- * (materialize, then import) would lose such a value, so an operator fixes
- * it in the vault before the import. `ok` does not read it: the caller
- * decides (`auto-okf materialize` exits 1).
+ * note cannot hold, and each path (key `path`) that folds together with
+ * another one. A generation loses such a value. `ok` does not read
+ * `lossy`. The caller decides (`auto-okf materialize` exits 1). See SPEC §10.
  *
- * `warnings` is [] for an unencrypted vault. For an encrypted vault it is
- * [{ kind: 'plaintext', path: root, message }]: the directory now holds the
- * vault's contents as plaintext. An error that materialize throws after that
+ * `warnings` is [] for an unencrypted vault, else
+ * [{ kind: 'plaintext', path: root, message }]. An error thrown after that
  * announcement carries the same list as `err.warnings`.
  *
- * Before it changes anything in the directory, materialize checks the real
- * path of the parent of each path that it can create, overwrite or delete:
- * each planned file and each manifest entry. A parent outside the root, by
- * a symlink in the root, throws UNSAFE_PATH, and nothing in the directory
- * or outside it changes (§9 realpath containment).
+ * Before any change, materialize resolves the real parent of each planned
+ * file and each manifest entry. A parent outside the root throws
+ * UNSAFE_PATH, and nothing changes.
  */
 export async function materialize(vault, dir, opts = {}) {
   const { realRoot, registry } = await rootRegistry(dir)
@@ -326,7 +287,7 @@ export async function materialize(vault, dir, opts = {}) {
   const lossy = []
   const planned = await planBundle(vault, { lossy })
 
-  // ---- 5. reconcile to disk through the manifest (§9) ----
+  // ---- 5. reconcile to disk through the manifest ----
   const report = {
     root: realRoot,
     ok: true,
@@ -342,9 +303,8 @@ export async function materialize(vault, dir, opts = {}) {
   const manifest = await withPathLock(registry, MANIFEST_FILE, () => loadManifest(realRoot))
   await refuseEscapes(realRoot, [...planned.keys(), ...Object.keys(manifest.files)])
 
-  // Decision 8: announce the plaintext directory, then mark it, before the
-  // first plaintext write. So a failure or a crash after a plaintext write
-  // finds the warning out, and an import of the face finds the mark.
+  // Announce, then mark, then write. A crash after a plaintext write then
+  // leaves the warning out and the mark in place.
   if (vault.metadata && vault.metadata.encrypted === true) {
     const warning = plaintextWarning(realRoot)
     report.warnings.push(warning)
@@ -364,12 +324,11 @@ export async function materialize(vault, dir, opts = {}) {
 }
 
 /**
- * §9 realpath containment, before reconciliation changes anything: the real
- * parent of each path in `rels` must be in realRoot (containedParent). A
- * symlink in the root that leads out of it throws UNSAFE_PATH, which names
- * the path. A path that escapes lexically is skipped here: reconcile never
- * touches it, and reports a planned one as unsafe. One check per parent
- * directory.
+ * Make sure that the real parent of each path in `rels` is inside realRoot
+ * (containedParent), before reconcile changes anything. A symlink that leads
+ * out throws UNSAFE_PATH. A path that escapes lexically is skipped here:
+ * reconcile never touches it, and reports a planned one as unsafe. One
+ * check per parent directory.
  */
 async function refuseEscapes(realRoot, rels) {
   const checked = new Set()
@@ -387,7 +346,7 @@ async function refuseEscapes(realRoot, rels) {
   }
 }
 
-/** Write the mark of an encrypted vault's face (ENCRYPTED_FILE) at the root, unless it already holds those bytes. */
+/** Write ENCRYPTED_FILE at the root, unless it already holds those bytes. */
 async function markEncrypted(realRoot, registry) {
   const bytes = Buffer.from(ENCRYPTED_TEXT, 'utf8')
   await withPathLock(registry, ENCRYPTED_FILE, async () => {
@@ -397,16 +356,11 @@ async function markEncrypted(realRoot, registry) {
   })
 }
 
-/** The warning that names a directory that now holds an encrypted vault's contents as plaintext. */
 export function plaintextWarning(dir) {
   return { kind: 'plaintext', path: dir, message: 'now holds the contents of an encrypted vault as plaintext' }
 }
 
-/**
- * Materialize steps 5 to 7 for `planned` (Map<rel, Buffer>): write each
- * planned file, remove this run's own prior outputs, and merge-save the
- * manifest. Fills `report`.
- */
+/** Reconcile the directory to `planned` (Map<rel, Buffer>) and fill `report`. */
 async function reconcile(realRoot, registry, planned, manifest, report, forceMirror) {
   const next = { files: {} }
 
@@ -430,8 +384,8 @@ async function reconcile(realRoot, registry, planned, manifest, report, forceMir
       }
       const reserved = isReservedFile(rel)
       if (!reserved && !forceMirror && onDisk !== null && onDisk !== last) {
-        // N3: human-authored (no entry) or human-modified (bytes != manifest)
-        // concept file — never overwrite; surface as an ingest candidate.
+        // A file with no entry, or with bytes that differ from its entry, is
+        // a human file. Never overwrite it.
         report.pendingIngest.push(rel)
         if (last !== undefined) next.files[rel] = last
         return
@@ -455,12 +409,11 @@ async function reconcile(realRoot, registry, planned, manifest, report, forceMir
     })
   }
 
-  // ---- 6. removal of this run's own prior outputs (§9) ----
+  // ---- 6. removal of the prior outputs of this run ----
   const prunableDirs = new Set()
-  // Manifest entries this run retired: a file we unlinked, or one already gone
-  // from disk. They MUST be dropped from the saved manifest — a stale entry
-  // pointing at a vanished file lets a LATER run delete a human file that
-  // happens to recreate those exact bytes at that path (N3).
+  // Drop a retired entry from the saved manifest. A stale entry at a vanished
+  // file lets a later run delete a human file that recreates those exact
+  // bytes there.
   const droppedFromManifest = new Set()
   for (const rel of Object.keys(manifest.files)) {
     if (planned.has(rel)) continue
@@ -473,7 +426,7 @@ async function reconcile(realRoot, registry, planned, manifest, report, forceMir
       }
       const onDisk = await hashFile(abs)
       if (onDisk === null) {
-        droppedFromManifest.add(rel) // already gone; drop from manifest
+        droppedFromManifest.add(rel)
         return
       }
       if (forceMirror || onDisk === manifest.files[rel]) {
@@ -483,18 +436,18 @@ async function reconcile(realRoot, registry, planned, manifest, report, forceMir
         const d = dirOf(rel)
         if (d) prunableDirs.add(d)
       } else if (isReservedFile(rel)) {
-        // A derived face a human edited: leave it, report as stale (it is not
-        // an ingestable concept), keep tracking so a later run can reconcile.
+        // An edited index.md or log.md is not a concept. Report it stale and
+        // keep its entry.
         report.stale.push(rel)
         next.files[rel] = manifest.files[rel]
       } else {
-        // N3: our old output the human has since edited — never delete.
+        // Our old output that a human edited. Never delete it.
         report.pendingIngest.push(rel)
         next.files[rel] = manifest.files[rel]
       }
     })
   }
-  // add ancestors of pruned dirs so nested empties collapse
+  // Add the ancestors, so that nested empty directories collapse.
   for (const d of [...prunableDirs]) {
     let a = d
     while (a !== '') {
@@ -504,10 +457,9 @@ async function reconcile(realRoot, registry, planned, manifest, report, forceMir
   }
   await pruneEmptyDirs(realRoot, [...prunableDirs])
 
-  // ---- 6b. surface untracked human-authored files (N3) ----
-  // A `.md` on disk that this run did not plan and the manifest has never
-  // tracked is human-authored and not yet ingested: it is LEFT untouched and
-  // reported as pending-ingest (never deleted — deletion is dangerous).
+  // ---- 6b. untracked human files ----
+  // A `.md` that this run did not plan and the manifest never tracked is a
+  // human file. Report it, never delete it.
   if (!forceMirror) {
     const disk = []
     await walkNotes(realRoot, '', disk)
@@ -517,12 +469,12 @@ async function reconcile(realRoot, registry, planned, manifest, report, forceMir
     }
   }
 
-  // ---- 7. merge-save the manifest under its lock (§9 watcher coordination) ----
+  // ---- 7. merge-save the manifest under its lock ----
   await withPathLock(registry, MANIFEST_FILE, async () => {
     const current = await loadManifest(realRoot)
     const merged = { ...current.files, ...next.files }
-    // Drop retired entries LAST so they win over any stale value re-merged from
-    // `current` (this run's own reconciliation is authoritative for them).
+    // Delete after the merge, so that a stale value in `current` cannot bring
+    // an entry back.
     for (const rel of droppedFromManifest) delete merged[rel]
     await saveManifest(realRoot, { files: merged })
   })
@@ -531,10 +483,10 @@ async function reconcile(realRoot, registry, planned, manifest, report, forceMir
 // ---------- index.md (OKF §6) ----------
 
 /**
- * One directory's index.md. Root gets the single permitted frontmatter
- * block (`okf_version: "0.1"`); every index has a single `# Contents`
- * heading, then concept bullets (byte order of `<name>.md`) followed by
- * subdirectory bullets (byte order of `<name>/`).
+ * The index.md of one directory. The root index gets the only frontmatter
+ * block, `okf_version: "0.1"`. Then `# Contents`, the concept bullets in
+ * byte order of `<name>.md`, then the subdirectory bullets in byte order of
+ * `<name>/`.
  */
 export function renderIndex(isRoot, d, placed, dirs) {
   const conceptBullets = []
@@ -573,10 +525,9 @@ function bullet(title, entry, description) {
 // ---------- log.md (OKF §7) ----------
 
 /**
- * Root log.md projected from the log/ family (§9): `# Update Log`, then
- * `## YYYY-MM-DD` UTC headings newest-first, entries within a heading in
- * descending ordinal. Dates come from each op's informational `at`. Entries
- * are deterministic given a converged view (I9).
+ * The root log.md from the `log/` family: `# Update Log`, then one
+ * `## YYYY-MM-DD` UTC heading per day, newest first, with the entries in
+ * descending ordinal. The date comes from the `at` of each op.
  */
 export async function renderLog(reader, concepts) {
   const records = await readLog(reader)
@@ -596,7 +547,7 @@ export async function renderLog(reader, concepts) {
   let out = '# Update Log\n'
   for (const date of [...byDate.keys()].sort().reverse()) {
     const es = byDate.get(date)
-    // ord is a fixed-width zero-padded string, so string-descending == newest.
+    // ord is a zero-padded string of fixed width, so a string compare orders it.
     es.sort((a, b) => (a.ord < b.ord ? 1 : a.ord > b.ord ? -1 : 0))
     out += '\n## ' + date + '\n' + es.map((e) => e.line).join('\n') + '\n'
   }

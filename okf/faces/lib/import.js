@@ -1,30 +1,10 @@
-// importFace(initBundle, faceDir, dir, opts) — okf SPEC §10 generations: a
-// new vault in a new directory, filled from a face on disk. A generation is
-// two commands: `materialize` writes the face of the live vault, and
-// `import` reads that face into a fresh vault. The face is inert source.
-// import reads it once, writes nothing to it and opens no predecessor
-// vault, so no stage, no verification copy and no live predecessor exist.
+// import (SPEC §10): a new vault in a new directory, filled from a face on
+// disk. import reads the face once, writes nothing to it and opens no
+// predecessor vault. Each note goes through import-mode ingest: see
+// IngestWatcher.importNote in ./ingest.js.
 //
-// Each note of the face goes through import-mode ingest
-// (IngestWatcher.importNote): the emission manifest of the face is ignored,
-// `_rev` is absent, a dot segment is part of a concept path, each op is
-// checked against maxOpBytes as encoded before it is appended, and an op
-// that core rejects fails the import by name.
-//
-// The fidelity check: after the import, the byte plan of a materialize of
-// the new vault (planBundle, in memory) must equal the notes read from the
-// face, byte for byte, without each `_rev` frontmatter line (§14). index.md
-// and log.md are regenerated faces, which import never reads (§9), so the
-// check leaves them out. A difference throws IMPORT_FIDELITY, and import
-// removes what it created in the new directory. No verification copy is
-// written to disk.
-//
-// An import holds its directory with a claim file from before its
-// initBundle, then with the files of the new vault (claimDir). So a second
-// import into the same directory refuses by name and deletes nothing.
-//
-// This module imports no substrate, as the rest of @auto-okf/faces: the CLI
-// (okf/cli) passes the @auto-okf/store `Bundle.init` in as `initBundle`.
+// This module imports no substrate: the CLI passes the @auto-okf/store
+// `Bundle.init` in as `initBundle`.
 import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rm, rmdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { planBundle } from './materialize.js'
@@ -33,10 +13,10 @@ import { createIngestWatcher } from './ingest.js'
 import { ENCRYPTED_FILE, hasReservedSegment, isReservedFile } from './fsatomic.js'
 import { compareNotes } from './verify.js'
 
-// §7: a conflicted copy is a note whose terminal name ends `.conflict-<hex>.md`.
+// A conflicted copy (SPEC §7).
 const CONFLICT_COPY_RE = /\.conflict-[0-9a-f]{8,}\.md$/
-// The store pins a vault in this file (@auto-okf/store METADATA_FILE). faces
-// imports no substrate, so it names the file here.
+// The metadata file of a vault, @auto-okf/store METADATA_FILE. faces imports
+// no substrate, so it repeats the name.
 const PINNED_FILE = 'okf-vault.json'
 // An import holds its `dir` with this file while it runs (claimDir).
 const CLAIM_FILE = 'okf-import-claim'
@@ -47,73 +27,64 @@ const CARRIED = ['limits', 'rate', 'schemaVersion']
  * Create a vault at `dir` from the notes of the face at `faceDir`.
  *
  *   initBundle  (required) the @auto-okf/store `Bundle.init(dir, opts)`.
- *   faceDir     the face: a directory of notes, such as one that
- *               `materialize` wrote. import reads every regular `.md` file
- *               in it, at any depth and dot segments included, except the
- *               regenerated faces index.md and log.md. A file that is not
- *               `.md`, such as the emission manifest, is not a note. import
- *               never writes to the face.
- *   dir         storage directory for the new vault: new, or an empty
- *               directory. A trailing slash names the same directory.
- *   opts.encryptionKey   a Buffer or a Uint8Array of 32 bytes: the new
- *               vault is encrypted with it. undefined or null: the new
- *               vault is not encrypted.
- *   opts.metadata        the predecessor's pinned metadata (the document in
- *               its okf-vault.json). The new vault carries its `limits`,
- *               `rate` and `schemaVersion`, and no other field. Without it,
- *               the new vault takes the defaults. When it says `encrypted:
- *               true`, opts.encryptionKey is required (decision 8: a
- *               generation of an encrypted vault is never unencrypted).
- *   opts.predecessorKey  the predecessor's vault key (64 hex characters, or
- *               32 bytes). The new vault records it as `predecessorKey`, and
- *               its generation id derives from it (§10). Without it, the
- *               new vault is a root vault.
+ *   faceDir     a directory of notes, such as one that `materialize` wrote.
+ *               import reads every regular `.md` file in it, at any depth,
+ *               dot segments included, except index.md and log.md. It never
+ *               writes to the face.
+ *   dir         the storage directory of the new vault: new, or empty. A
+ *               trailing slash names the same directory.
+ *   opts.encryptionKey   a Buffer or a Uint8Array of 32 bytes. The new vault
+ *               is encrypted with it. undefined or null: not encrypted.
+ *   opts.metadata        the pinned metadata of the predecessor. The new
+ *               vault carries its `limits`, `rate` and `schemaVersion`, and
+ *               no other field. Without it, the new vault takes the
+ *               defaults. When it says `encrypted: true`,
+ *               opts.encryptionKey is required: a generation of an encrypted
+ *               vault is never unencrypted.
+ *   opts.predecessorKey  the vault key of the predecessor (64 hex characters,
+ *               or 32 bytes). The new vault records it as `predecessorKey`,
+ *               and its generation id derives from it. Without it, the new
+ *               vault is a root vault.
  *
  * Refusals, by name, before import writes anything:
  *   IMPORT_NO_INITBUNDLE           initBundle is not a function
- *   IMPORT_ENCRYPTION_KEY_INVALID  a key that is not 32 bytes (the message
- *                                  never holds it); no value is read as no key
+ *   IMPORT_ENCRYPTION_KEY_INVALID  a key that is not 32 bytes. The message
+ *                                  never holds the key. No value is read as
+ *                                  no key.
  *   IMPORT_ENCRYPTION_KEY_REQUIRED no key, and opts.metadata says encrypted,
- *                                  or the face holds ENCRYPTED_FILE, the mark
- *                                  that materialize writes for an encrypted vault
+ *                                  or the face holds ENCRYPTED_FILE
  *   IMPORT_PREDECESSOR_INVALID     a predecessorKey that is not a vault key
- *   IMPORT_DIR_NOT_EMPTY           `dir` is pinned (it holds okf-vault.json),
- *                                  is not empty, or is not a directory
- *   IMPORT_FACE_ENTRY              the face holds an entry that is not a
- *                                  regular file or a directory, such as a
- *                                  symlink
- *   IMPORT_CONFLICT_COPY           the face holds a `.conflict-<hex>` note: a
- *                                  collision is still open. Resolve it in
- *                                  the face first
- *   IMPORT_RESERVED_NAME           the face holds a note at a reserved `.okf-`
- *                                  name, or under a directory with one
- *   IMPORT_MISSING_ID              the face holds a note whose frontmatter
- *                                  holds no `_id` (import keeps each `_id`)
+ *   IMPORT_DIR_NOT_EMPTY           `dir` holds okf-vault.json, is not empty,
+ *                                  or is not a directory
+ *   IMPORT_FACE_ENTRY              an entry that is not a regular file or a
+ *                                  directory, such as a symlink
+ *   IMPORT_CONFLICT_COPY           a `.conflict-<hex>` note: a collision is
+ *                                  still open
+ *   IMPORT_RESERVED_NAME           a note at or under a reserved `.okf-` name
+ *   IMPORT_MISSING_ID              a note whose frontmatter holds no `_id`
  * Each of the last four carries `err.paths`.
- *   IMPORT_DIR_CLAIMED             another import holds `dir`: its claim
- *                                  file okf-import-claim exists. This
- *                                  import writes no file, and it removes
- *                                  nothing that another import wrote
+ *   IMPORT_DIR_CLAIMED             another import holds `dir`: its
+ *                                  okf-import-claim exists. This import
+ *                                  writes and removes nothing.
  *
  * Failures after the new vault exists: IMPORT_NOT_ENCRYPTED (a key was
- * given and the new vault's metadata does not say encrypted),
- * IMPORT_OVERSIZE and IMPORT_REJECTED (import-mode ingest: `err.path`,
+ * given, and the metadata of the new vault does not say encrypted),
+ * IMPORT_OVERSIZE and IMPORT_REJECTED (from importNote: `err.path`,
  * `err.op`, and `err.bytes` and `err.limit` or `err.reason`), and
  * IMPORT_FIDELITY (`err.differences`: [{ path, kind }], kind 'missing',
- * 'extra' or 'differs'). On each, import closes the new vault and removes
- * what it created: each entry that it wrote in `dir` while it held the
- * claim, and the claim. Then it removes each directory that it made, `dir`
- * or a parent of it, when that directory is empty. An existing `dir` stays.
- * Every error after the refusals carries `err.warnings` and `err.counts`.
- * `err.warnings` is [{ kind, path, message }]: kind 'ingest' (a note that
- * does not parse, or that establishes no concept) or 'copy' (a note whose
- * `_id` another note holds: import minted a new `_id`). Such a note does
- * not round-trip, so each warning comes with a difference (D-060 F06).
+ * 'extra' or 'differs'). On each, import closes the new vault, removes each
+ * entry that it wrote in `dir`, and then removes each directory that it
+ * made, when empty. An existing `dir` stays. Every such error carries
+ * `err.warnings` and `err.counts`. `err.warnings` is [{ kind, path,
+ * message }]: kind 'ingest' (a note that does not parse, or that
+ * establishes no concept) or 'copy' (a note whose `_id` another note holds:
+ * import minted a new `_id`). Such a note does not round-trip, so each
+ * warning comes with a difference.
  *
- * Returns { vault (the new vault, OPEN: the caller closes it), dir,
- *   generation, counts: { notes, imported } }. `notes` counts the notes read
- * from the face, and `imported` the notes that established a concept. A
- * successful import has no warning.
+ * Returns { vault, dir, generation, counts: { notes, imported } }. `vault`
+ * is open: the caller closes it. `notes` counts the notes read from the
+ * face, and `imported` the notes that established a concept. A successful
+ * import has no warning.
  */
 export async function importFace(initBundle, faceDir, dir, opts = {}) {
   if (typeof initBundle !== 'function') {
@@ -141,8 +112,8 @@ export async function importFace(initBundle, faceDir, dir, opts = {}) {
   let vault = null
   try {
     vault = await initBundle(vaultDir, { metadata, ...(encryptionKey !== undefined ? { encryptionKey } : {}) })
-    // initBundle is injected, so import reads the metadata of the vault that
-    // it got before it writes any content to it.
+    // initBundle is injected, so make sure that the vault is encrypted
+    // before any content is written to it.
     if (encryptionKey !== undefined) requireEncrypted(vault, vaultDir)
 
     const watcher = await createIngestWatcher(vault, face.root, { watch: false })
@@ -178,15 +149,10 @@ export async function importFace(initBundle, faceDir, dir, opts = {}) {
 
 /**
  * Read the notes of the face into memory: { root, notes: Map<rel, Buffer> },
- * `root` the real path of the face and each `rel` a forward-slash path as it
- * is on disk. Then refuse, by name and in this order: an entry that is not a
- * regular file or a directory (IMPORT_FACE_ENTRY: import reads only what is
- * in the face, so a symlink never leads it out), a conflicted copy
- * (IMPORT_CONFLICT_COPY), a note at or under a reserved `.okf-` name
- * (IMPORT_RESERVED_NAME: core takes such a path, but the faces reserve the
- * name for their own state), and a note whose frontmatter holds no `_id`
- * (IMPORT_MISSING_ID). A note with no frontmatter block goes on, and fails
- * the fidelity check with a warning: it establishes no concept.
+ * `rel` a forward-slash path as on disk. A symlink is refused
+ * (IMPORT_FACE_ENTRY), so import never reads outside the face. A note with
+ * no frontmatter block goes on. It establishes no concept and fails the
+ * fidelity check with a warning.
  */
 async function readFace(faceDir) {
   const root = await realpath(faceDir)
@@ -247,12 +213,8 @@ async function readFace(faceDir) {
 }
 
 /**
- * G16: a `dir` that exists and is not an empty directory throws
- * IMPORT_DIR_NOT_EMPTY. A store in `dir` would take the import of the face,
- * which reverts the edits made there, or the encryption key, which makes it
- * unreadable. A pinned `dir` holds its metadata file, so this refuses it too.
- * A `dir` that holds only CLAIM_FILE goes on to claimDir, which refuses it
- * by name (IMPORT_DIR_CLAIMED).
+ * Refuse a `dir` that is not new or empty (IMPORT_DIR_NOT_EMPTY). A `dir`
+ * that holds only CLAIM_FILE goes on to claimDir, which refuses it by name.
  */
 async function refuseUsedDir(dir) {
   let names
@@ -290,23 +252,11 @@ function usedDirError(dir, names) {
 }
 
 /**
- * Claim `dir` before the new vault writes to it (G3-P8 F01). mkdir makes
- * `dir` when it is absent. Then an exclusive open ('wx') creates CLAIM_FILE
- * in `dir`. The file system lets only one open create the file, so one
- * import at a time holds `dir`, also when `dir` existed empty. Another
+ * Claim `dir` before the new vault writes to it. mkdir makes `dir` when it
+ * is absent. Then an exclusive open ('wx') creates CLAIM_FILE. Only one
+ * open can create the file, so one import at a time holds `dir`. Another
  * import refuses by name (IMPORT_DIR_CLAIMED) before its initBundle, and
- * deletes nothing. The holder then makes sure that `dir` holds nothing
- * else.
- *
- * The store's first open (initBundle) moves the claim into `<dir>/db/`:
- * hypercore-storage moves each file that it does not know at the top of a
- * new storage directory there. From then on the files of the new vault
- * keep `dir` non-empty, so another import refuses it (IMPORT_DIR_NOT_EMPTY).
- * Every entry in `dir` is still one that this import created. release()
- * removes those entries, the claim with them, then `dir` and each parent
- * that mkdir created, with rmdir, which removes only an empty directory.
- * So release() never removes what another import wrote. done() removes
- * the claim at both places after a successful import (D-060 F05).
+ * deletes nothing.
  */
 async function claimDir(dir) {
   const claim = join(dir, CLAIM_FILE)
@@ -331,13 +281,16 @@ async function claimDir(dir) {
   const others = (await readdir(dir)).filter((name) => name !== CLAIM_FILE)
   if (others.length > 0) {
     // `dir` got entries after refuseUsedDir, for example from an import
-    // that ended before this claim. They are not this import's, so it
-    // removes only its claim.
+    // that ended before this claim. They are not this import's: remove
+    // only the claim.
     await rm(claim, { force: true })
     await removeDirs(dir, created)
     throw usedDirError(dir, others)
   }
   return {
+    // Every entry in `dir` is one that this import created, so remove them
+    // all. rmdir removes only an empty directory, so no entry of another
+    // import goes.
     async release() {
       for (const name of await readdir(dir)) {
         if (name !== CLAIM_FILE) await rm(join(dir, name), { recursive: true, force: true })
@@ -345,6 +298,9 @@ async function claimDir(dir) {
       await rm(claim, { force: true })
       await removeDirs(dir, created)
     },
+    // The first open of the store moves the claim into `<dir>/db/`:
+    // hypercore-storage moves each unknown top-level file of a new storage
+    // directory there. So remove the claim at both places.
     async done() {
       await rm(claim, { force: true })
       await rm(join(dir, 'db', CLAIM_FILE), { force: true })
@@ -352,7 +308,7 @@ async function claimDir(dir) {
   }
 }
 
-/** The new vault's key: undefined for no key (undefined or null), else a 32-byte Buffer or Uint8Array. */
+/** The key of the new vault: undefined for no key (undefined or null), else a 32-byte Buffer or Uint8Array. */
 function keyOption(key) {
   if (key === undefined || key === null) return undefined
   if (key instanceof Uint8Array && key.byteLength === 32) return key
@@ -365,7 +321,7 @@ function keyOption(key) {
   )
 }
 
-/** The predecessor's vault key as 64 lowercase hex characters, or null for none. */
+/** The vault key of the predecessor as 64 lowercase hex characters, or null for none. */
 function predecessorOption(key) {
   if (key === undefined || key === null) return null
   if (typeof key === 'string' && /^[0-9a-fA-F]{64}$/.test(key)) return key.toLowerCase()
@@ -391,9 +347,9 @@ function carriedMetadata(metadata, predecessorKey) {
 
 /**
  * rmdir `dir`, then each parent of it up to `created`, the first directory
- * that this import's mkdir created. It stops at the first directory that
- * rmdir cannot remove, such as one that is not empty. No-op when `created`
- * is undefined.
+ * that the mkdir of this import made. It stops at the first rmdir that
+ * fails, such as on a directory that is not empty. No-op when `created` is
+ * undefined.
  */
 async function removeDirs(dir, created) {
   if (created === undefined) return
@@ -407,14 +363,14 @@ async function removeDirs(dir, created) {
   }
 }
 
-/** The notes of a materialize of `vault`, in memory: index.md and log.md left out. */
+/** The notes of a materialize of `vault`, in memory, without index.md and log.md. */
 async function renderedNotes(vault) {
   const planned = await planBundle(vault)
   for (const rel of [...planned.keys()]) if (isReservedFile(rel)) planned.delete(rel)
   return planned
 }
 
-/** IMPORT_NOT_ENCRYPTED: import got a key, and the new vault's metadata does not say encrypted. */
+/** IMPORT_NOT_ENCRYPTED: import got a key, and the metadata of the new vault does not say encrypted. */
 function requireEncrypted(vault, dir) {
   if (vault.metadata && vault.metadata.encrypted === true) return
   throw importError(
@@ -438,9 +394,8 @@ function fidelityError(faceRoot, differences) {
 }
 
 /**
- * Does the face at `root` carry the mark of an encrypted vault
- * (ENCRYPTED_FILE)? Any entry at that name marks it, also a directory or a
- * symlink (lstat), so import fails closed (decision 8).
+ * Does the face at `root` hold ENCRYPTED_FILE? Any entry at that name
+ * marks it, a directory or a symlink too (lstat), so import fails closed.
  */
 async function isMarkedEncrypted(root) {
   try {

@@ -1,29 +1,6 @@
-// On-disk safety plumbing shared by materialize and the ingest watcher
-// (okf SPEC §9). Pattern ancestor: vault-ld/faces/lib/fsatomic.js
-// (copy-don't-depend, SPEC §0); rewritten for the auto-okf manifest name
-// and OKF reserved-file rules.
-//
-// - Atomic writes: temp file in the target's own (real) directory, fsync,
-//   rename — rename(2) is atomic within a filesystem, and writing the temp
-//   file next to the target guarantees a same-filesystem rename
-//   (https://nodejs.org/api/fs.html#fspromisesrenameoldpath-newpath).
-// - Containment (§9 "lexical + realpath containment"): a lexical check on
-//   the resolved path (no '..' escape, no absolute override) AND a realpath
-//   check on the parent directory (containedParent), so a symlinked parent
-//   that resolves outside the root is refused. atomicWrite checks the parent
-//   before its mkdir and again after it. atomicUnlink checks the parent
-//   before it unlinks, and unlinks through the checked real parent.
-// - Per-path in-flight locks: one promise-chain mutex per (vault root,
-//   relative path), shared process-wide through a registry keyed by the
-//   root's realpath, so a materializer and an ingest watcher on the same
-//   directory serialize their file-level critical sections (§9).
-// - The emission manifest (§9 "reconciles through an emission manifest,
-//   never blind mirroring"): relPath -> sha256 of the last-materialized
-//   bytes. Materialize uses it to (a) detect human-authored/modified files
-//   it must never overwrite or delete (N3), and (b) know which of its own
-//   prior outputs are safe to remove. The watcher uses the same hashes to
-//   ignore the system's own writes. Stored at <root>/.okf-manifest.json in
-//   canonical bytes, so it is itself deterministic for a given view.
+// File-system plumbing that materialize and the ingest watcher share: atomic
+// writes, containment in the root, per-path locks and the emission manifest.
+// See SPEC §9.
 import { createHash } from 'node:crypto'
 import { mkdir, open, readFile, readdir, readlink, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
@@ -31,10 +8,9 @@ import { canonical, casefoldPath } from '@auto-okf/core'
 
 export const MANIFEST_FILE = '.okf-manifest.json'
 
-// Decision 8, D-060 F02: materialize of an encrypted vault writes this file
-// at the root of the face before its first plaintext write. Its presence
-// marks the face, and import refuses a marked face without a key. Its bytes
-// say why (ENCRYPTED_TEXT), and nothing reads them.
+// materialize of an encrypted vault writes this file at the root before its
+// first plaintext write. import refuses a marked bundle without a key.
+// Nothing reads the bytes (ENCRYPTED_TEXT).
 export const ENCRYPTED_FILE = '.okf-encrypted'
 export const ENCRYPTED_TEXT =
   'This face holds the contents of an encrypted vault as plaintext.\n' +
@@ -48,9 +24,8 @@ export function sha256(buf) {
 }
 
 /**
- * Resolve (and create) a vault/bundle root, returning its process-wide
- * registry. Keyed by realpath so two handles on the same directory (e.g.
- * one via a symlink) share one lock table.
+ * Create the root if needed and return its process-wide registry. The key
+ * is the realpath, so two handles on one directory share one lock table.
  */
 export async function rootRegistry(dir) {
   await mkdir(dir, { recursive: true })
@@ -63,7 +38,7 @@ export async function rootRegistry(dir) {
   return { realRoot, registry: reg }
 }
 
-/** Promise-chain mutex per relative path (the §9 in-flight lock). */
+/** Promise-chain mutex per relative path, so that a materializer and a watcher on one directory serialize. */
 export function withPathLock(registry, rel, fn) {
   const prev = registry.locks.get(rel) || Promise.resolve()
   const run = prev.then(fn, fn)
@@ -83,7 +58,7 @@ function containedError(rel, detail = '') {
   return err
 }
 
-/** Lexical containment of rel under realRoot; returns the absolute path. */
+/** Lexical containment of rel under realRoot. Returns the absolute path. */
 export function containedPath(realRoot, rel) {
   const abs = resolve(realRoot, rel)
   if (abs !== realRoot && !abs.startsWith(realRoot + sep)) throw containedError(rel)
@@ -91,8 +66,9 @@ export function containedPath(realRoot, rel) {
 }
 
 /**
- * Containment of an existing file: lexical, then its real path, so a symlink
- * cannot lead out of the root. Returns the absolute path. Throws UNSAFE_PATH.
+ * Containment of an existing file: lexical, then its real path, so that a
+ * symlink cannot lead out of the root. Returns the absolute path. Throws
+ * UNSAFE_PATH.
  */
 export async function containedRealPath(realRoot, rel) {
   const abs = containedPath(realRoot, rel)
@@ -102,10 +78,10 @@ export async function containedRealPath(realRoot, rel) {
 }
 
 /**
- * Containment of the parent directory of `rel` (G3-P5 F05): lexical, then
- * the real location of the parent (realLocation), which must be realRoot or
- * inside it. The parent need not exist yet. A symlink in the root that leads
- * out of it, dangling or not, throws UNSAFE_PATH. Returns the real parent.
+ * Containment of the parent directory of `rel`: lexical, then the real
+ * location of the parent (realLocation). The parent need not exist yet. A
+ * symlink in the root that leads out of it, dangling or not, throws
+ * UNSAFE_PATH. Returns the real parent.
  */
 export async function containedParent(realRoot, rel) {
   const abs = containedPath(realRoot, rel)
@@ -151,15 +127,13 @@ export async function hashFile(abs) {
 }
 
 /**
- * Atomic, contained write (§9): mkdir parents, realpath-check the parent,
- * write a temp file, fsync, optionally re-check the precondition, rename,
- * fsync the directory. `precondition.hash` is the on-disk hash observed by
- * the caller under the same path lock (null for "file must not exist"); if
- * the file changed in between, the write is abandoned with code 'MODIFIED'.
+ * Atomic, contained write. `precondition.hash` is the hash that the caller
+ * observed on disk under the same path lock, null for "the file must not
+ * exist". If the file changed since, the write stops with code 'MODIFIED'.
  */
 export async function atomicWrite(realRoot, rel, buf, { precondition } = {}) {
   const abs = containedPath(realRoot, rel)
-  // Before the mkdir: a mkdir through a symlinked parent creates directories
+  // Before the mkdir. A mkdir through a symlinked parent creates directories
   // outside the root.
   await containedParent(realRoot, rel)
   await mkdir(dirname(abs), { recursive: true })
@@ -168,6 +142,7 @@ export async function atomicWrite(realRoot, rel, buf, { precondition } = {}) {
     throw containedError(rel)
   }
   const target = join(realParent, basename(abs))
+  // Next to the target, so that the rename stays on one file system.
   const tmp = join(realParent, `.${basename(abs)}.${process.pid}.${tmpCounter++}.tmp`)
   const fh = await open(tmp, 'w')
   try {
@@ -182,7 +157,7 @@ export async function atomicWrite(realRoot, rel, buf, { precondition } = {}) {
       try {
         await unlink(tmp)
       } catch {
-        // leave the stray temp; it is a dot-file both faces ignore
+        // A stray temp file stays. It is a dot-file that both faces ignore.
       }
       const err = new Error(`MODIFIED: '${rel}' changed on disk before rename`)
       err.code = 'MODIFIED'
@@ -198,16 +173,15 @@ export async function atomicWrite(realRoot, rel, buf, { precondition } = {}) {
       await dh.close()
     }
   } catch {
-    // directory fsync is best-effort (not supported on every platform)
+    // Not every platform supports a directory fsync.
   }
   return abs
 }
 
 /**
- * Delete a contained file if present (materialize reconciliation, §9). The
- * parent must be in the root by its real path (containedParent), and the
- * unlink goes through that real parent, so a symlinked parent never leads
- * it out of the root. Throws UNSAFE_PATH.
+ * Delete a contained file if present. The unlink goes through the real
+ * parent (containedParent), so that a symlinked parent never leads it out
+ * of the root. Throws UNSAFE_PATH.
  */
 export async function atomicUnlink(realRoot, rel) {
   const abs = join(await containedParent(realRoot, rel), basename(rel))
@@ -220,9 +194,9 @@ export async function atomicUnlink(realRoot, rel) {
   }
 }
 
-/** Remove now-empty directories bottom-up (skips the root). */
+/** Remove the empty directories among relDirs. Skips the root. */
 export async function pruneEmptyDirs(realRoot, relDirs) {
-  // Deepest first so a parent can become empty after its child is removed.
+  // Deepest first, so that a parent can become empty after its child.
   for (const rel of [...new Set(relDirs)].filter(Boolean).sort((a, b) => b.length - a.length)) {
     const abs = containedPath(realRoot, rel)
     try {
@@ -257,18 +231,16 @@ export async function saveManifest(realRoot, manifest) {
   return manifest
 }
 
-/** True for paths the faces never treat as concept notes (dot-files, temps). */
+/** True for a path that is never a concept note: a dot-file or a temp file. */
 export function isIgnoredPath(rel) {
   const segs = String(rel).split(/[\\/]/)
   return segs.some((s) => s.startsWith('.')) || rel.endsWith('.tmp')
 }
 
 /**
- * True when any segment of `rel`, casefolded (NFC, then lowercase), is a
- * dot name that the faces reserve for their own state: `.okf-*`, such as
- * MANIFEST_FILE. The import of a face (§10) takes dot-segment concept
- * paths, and refuses a note at such a name or under a directory with one
- * (D-060 F08): the faces write their state files at these names.
+ * True when a casefolded segment of `rel` starts with `.okf-`, the names
+ * of the state files of the faces. import takes dot-segment concept paths,
+ * but refuses a note at or under such a name. See SPEC §10.
  */
 export function hasReservedSegment(rel) {
   return String(rel)
@@ -276,7 +248,7 @@ export function hasReservedSegment(rel) {
     .some((seg) => casefoldPath(seg).startsWith('.okf-'))
 }
 
-/** True when the terminal component is a reserved OKF face (index.md/log.md). */
+/** True when the last component is index.md or log.md. */
 export function isReservedFile(rel) {
   const name = String(rel).split('/').pop().toLowerCase()
   return name === 'index.md' || name === 'log.md'
@@ -292,7 +264,7 @@ export async function statOrNull(abs) {
   }
 }
 
-/** Recursively collect concept `.md` files (relative, forward-slash). */
+/** Collect the `.md` files under root into `out`, relative with forward slashes. */
 export async function walkNotes(root, rel, out) {
   const abs = rel === '' ? root : join(root, rel)
   let entries

@@ -1,22 +1,6 @@
-// @auto-okf/faces — the generated faces of auto-okf (okf SPEC §9, §13):
-//   - materialize(vault, dir, opts): byte-deterministic OKF v0.1 bundle
-//     (one file per live concept, per-directory index.md, root log.md),
-//     reconciled through an emission manifest that never deletes or
-//     overwrites human-authored files (N3).
-//   - createIngestWatcher(vault, dir, opts): human edits re-enter as minimal
-//     ops (per-key frontmatter diff, body diff citing _rev, the §6 _id
-//     rules, conflict-copy awareness, guarded deletes).
-//   - wanted(vault): the ranked demand index from wanted/ + wantedrank/.
-//   - status(vault, dir): read-only per-file bundle state porcelain
-//     (in-log / pending-ingest / dirty / absent / foreign, ADR-002).
-//   - importFace(initBundle, faceDir, dir, opts): a new vault in a new
-//     directory, filled from a face on disk (§10: a generation is
-//     materialize, then import), with an in-memory byte-fidelity check.
-//
-// The bundle format is normative to the OKF v0.1 SPEC; the canonical YAML
-// emitter is hand-rolled for byte-determinism (I9). Nothing here imports
-// autobee — a @auto-okf/store Bundle (or any { val, scan, update } + content
-// helpers) is passed in.
+// @auto-okf/faces: the generated faces of auto-okf. See SPEC §9 and §13.
+// Nothing here imports autobee. The caller passes a @auto-okf/store Bundle,
+// or any { val, scan, update } surface with the content helpers.
 export { materialize, renderIndex, renderLog } from './lib/materialize.js'
 export { createIngestWatcher, IngestWatcher } from './lib/ingest.js'
 export { importFace } from './lib/import.js'
