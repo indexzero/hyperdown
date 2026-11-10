@@ -110,14 +110,11 @@ the invite. Share it with the vault key.
 - New storage needs `[vault-key]` and `--metadata`, the creator's
   `okf-vault.json`. Without one of them, `join` refuses by name (exit 2)
   and creates nothing.
-- The reason: the vault key alone pins metadata that is not the
-  creator's, with no swarm key of the invite. Pinned metadata never
-  changes.
 - A `--metadata` file that is not metadata of this release fails by name,
   with its path (exit 1).
-- A directory that the store API joined with the vault key alone refuses
-  the invite later with `VAULT_JOINED_WITHOUT_INVITE` (exit 1). Join
-  again in a new directory, with the invite.
+- A directory that the store API joined with the vault key alone fails
+  `VAULT_JOINED_WITHOUT_INVITE` (exit 1). See the
+  [store README](../store/README.md#api) for the reason and the repair.
 - When `<dir>` already holds the vault, the key and `--metadata` are
   optional. `join` opens the vault and prints the keys again.
 - `--encryption-key <hex64>` is the key of an encrypted vault.
@@ -161,8 +158,7 @@ The flags of `add-writer`:
 - The promotion of a bound writer needs no flag, because the record keeps
   its key.
 
-`remove-writer` stops cooperating clients only. A revoked key with a
-modified client can keep writing until the next generation. See SPEC §8,
+`remove-writer` stops cooperating clients only. See SPEC §8,
 "Revocation", and [SECURITY_MODEL.md](../SECURITY_MODEL.md), "The
 eviction ladder".
 
@@ -403,8 +399,7 @@ nodes of hyperdht instead: the public DHT. You must ask for it by name.
 ### A late joiner
 
 [Joining a vault](#joining-a-vault) shows the commands. The joiner needs
-a peer of the invite online, or it never learns its admission. The swarm
-key of the creator is always in the invite.
+a peer of the invite online, such as the creator.
 
 When no peer of the invite is online, the indexer that admits the joiner
 hands it its own swarm key, with the invite. The joiner lists that key
@@ -449,9 +444,8 @@ $ auto-okf init ./vault --swarm-allow 9e41d2a7… --swarm-allow 52c0f1e8…
 $ auto-okf join ./peer-1 <vault-key> --metadata ./vault/okf-vault.json
 ```
 
-The invite binds only the creator's key to a writer key. So `add-writer`
-needs `--swarm-key` for each writer of the fleet too. A later
-`remove-writer` then takes its swarm key out of every allowlist.
+`add-writer` needs `--swarm-key` for each writer of the fleet too. See
+[`add-writer` and `remove-writer`](#add-writer-and-remove-writer).
 
 ## Verifying content is in the log
 
@@ -484,9 +478,9 @@ make sure that its contents never become plaintext without a word. SPEC
    `<bundle-dir>`.
 2. `import` of a bundle that holds `.okf-encrypted` needs
    `--encryption-key <hex64>` for the new vault. Without a key it refuses
-   with `IMPORT_ENCRYPTION_KEY_REQUIRED` and exits 1, before it creates
-   or writes anything, also without `--metadata`. With `--metadata` of an
-   encrypted predecessor and no key, it refuses the same way.
+   with `IMPORT_ENCRYPTION_KEY_REQUIRED`, also without `--metadata`. With
+   `--metadata` of an encrypted predecessor and no key, it refuses the
+   same way.
 
 A key is never carried over, so you name the key of the new generation:
 the same key or a new one. `init`, `join` and `import` take the key. A
@@ -590,9 +584,8 @@ is encrypted too.
 
 ### The writers of the new vault
 
-A generation is the eviction point, so `--metadata` never carries the
-swarm allowlist (`metadata.swarm.allow`) into the new vault. The invite
-of the new vault lists only the swarm key of the peer that ran `import`.
+The new vault admits only the peer that ran `import` (SPEC §10, "Rules
+of import").
 
 1. Admit each writer of the new vault with
    `add-writer <dir> <writer-key> --swarm-key <hex64>`.
