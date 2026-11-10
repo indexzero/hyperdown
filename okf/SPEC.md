@@ -510,6 +510,21 @@ op's linearized position. It rejects a violation (reason
   indexer (`policy-governance`).
 - An `AddWriter` whose key is not 32 bytes (`bad-writer-key`).
 - An `AddWriter` whose `swarmKey` is not 32 bytes (`bad-swarm-key`).
+- A `SetWriterPolicy` whose key has no `gov/writer/<key>` record
+  (`policy-governance`).
+
+apply checks the length of a key only in an `AddWriter`. The other two
+ops take a key of any length:
+
+- A `RemoveWriter` whose key is not 32 bytes records `gov/removed/<key>`
+  (`opRemoveWriter` in `okf/core/lib/apply.js`). No writer has that key,
+  so the record names no writer.
+- A `SetWriterPolicy` whose key is not 32 bytes is rejected
+  `policy-governance` (`opSetWriterPolicy`). No `gov/writer` record has
+  that key, because apply rejects the `AddWriter` that names it.
+
+The store refuses such a key before the append (`VAULT_BAD_WRITER_KEY`),
+so only a modified client sends one.
 
 A rejected governance op changes no `gov/` key. An accepted `AddWriter`
 stores its `swarmKey` on `gov/writer/<key>` (`opAddWriter` in
