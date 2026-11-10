@@ -245,13 +245,8 @@ only from an indexer (SPEC §8, "Governance ops").
 - `rateCeiling` defaults to the pinned `metadata.rate.defaultCeiling`, so
   a `writers.setPolicy` call before open waits for open.
 
-A modified client can skip the store's key checks. Core checks the wire
-keys of an `add-writer` only (SPEC §8: `bad-writer-key`, `bad-swarm-key`).
-It does not check the key of a `remove-writer` or a `set-writer-policy`.
-A short key in a `remove-writer` writes a `gov/removed` record that names
-no writer (`opRemoveWriter` in `okf/core/lib/apply.js`). A short key in a
-`set-writer-policy` is rejected `policy-governance`, because no record has
-that key (`opSetWriterPolicy`).
+A modified client can skip the store's key checks. SPEC §8, "Governance
+ops", states what apply does with a key that is not 32 bytes.
 
 ### Substrate admission comes before the first write
 
