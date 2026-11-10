@@ -5,6 +5,9 @@ counts, PR stack and open items as they stood then. The store now runs on
 autobee@2.12.1, writes vault metadata version 2 and opens no other version
 (see [store/README.md](store/README.md)).
 
+The delivery records that this file names under ../orchestration/ are not
+in this repository.
+
 ## The round of 2026-10-28
 
 A generation is now two commands, `materialize`, then
@@ -27,14 +30,14 @@ revocation stops cooperating clients only.
 ## Bottom line
 
 **Shipped.** All four gates pass, verified from an independent clean clone
-(G6 FINAL-PASS). One [major](GLOSSARY.md#severity) awaits your
+(G6 FINAL-PASS). One major awaits your
 sign-off — C1, a memory/liveness limit under sustained flood — and it does not
 block correctness: no [view](GLOSSARY.md#view) hash diverges under any
 seed. Everything below defends those two sentences.
 
 The overnight pipeline (milestone **auto-okf v1**) reached **COMPLETE**
-2026-07-14, driven by `/goal` under `../orchestration/OKF-STATE.md`. Final
-verification: `../orchestration/results/OKF-FINAL-VERIFICATION.md`
+2026-07-14, driven by `/goal` under ../orchestration/OKF-STATE.md. Final
+verification: ../orchestration/results/OKF-FINAL-VERIFICATION.md
 (independent clean clone of the stack tip).
 
 ## What was delivered
@@ -55,7 +58,7 @@ is a real op-log projection.
 | Artifact | Path |
 |---|---|
 | SPEC-FINAL (v1.2, SPEC-PASS) | `SPEC.md` (PR #20) |
-| Spec review chain | `../orchestration/results/OKF-SPEC-REVIEW-{1,2,3}.md`, `OKF-SPEC-DISPOSITIONS-1.md` |
+| Spec review chain | ../orchestration/results/OKF-SPEC-REVIEW-{1,2,3}.md, OKF-SPEC-DISPOSITIONS-1.md |
 | Core (ops, apply, keyspace/canonical/revhash copies, MemView) | `core` (`@auto-okf/core`) |
 | Store (vault lifecycle on autobee, metadata, governance, replication) | `store` (`@auto-okf/store`) |
 | Faces (materialize +index.md/log.md, ingest, wanted, import) | `faces` (`@auto-okf/faces`) |
@@ -63,8 +66,8 @@ is a real op-log projection.
 | Invariant + regression suite (I1..I11) | `*/test` |
 | Multi-process fault harness + S1..S10 + fuzz + soak | `harness` |
 | Examples: agent-session (flagship), slop-archive, vlurp-library | `examples/*` (committed `out/`) |
-| Deviations / backlog | `DEVIATIONS.md` / `../orchestration/BACKLOG.md` |
-| Code review + final verification | `../orchestration/results/OKF-CODE-REVIEW.md`, `OKF-FINAL-VERIFICATION.md` |
+| Deviations / backlog | `DEVIATIONS.md` / ../orchestration/BACKLOG.md |
+| Code review + final verification | ../orchestration/results/OKF-CODE-REVIEW.md, OKF-FINAL-VERIFICATION.md |
 | Intent contract | `~/Git/indexzero/0x/slop/intent/autokf.intent.md` |
 
 ## PR stack (owner reviews; supervisor merged nothing)
@@ -111,8 +114,8 @@ to `main` cleanly as its base merges, exactly as the vault-ld stack did.
   flat, no crash). Substrate-entangled (autobee under flood), no isolated okf
   repro; okf-attributable lead is uncoalesced OR-set add-tokens. Deliberately
   not auto-fixed overnight (a fix is architectural and risks determinism on
-  green code). Full analysis + waiver line in `../orchestration/BACKLOG.md` and
-  `OKF-CODE-REVIEW.md`.
+  green code). Full analysis + waiver line in ../orchestration/BACKLOG.md and
+  OKF-CODE-REVIEW.md.
 - **P7 (minor):** double `.conflict-<hex>` suffix → permanent pending-ingest.
   GitHub issue #28.
 - Lint noise across okf packages (behavior-neutral).
