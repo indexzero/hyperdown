@@ -103,17 +103,11 @@ SPEC §8 is the home of these rules. The symbols are in
   `policy-governance` otherwise.
 - The ops of a writer take effect only after an indexer's `add-writer`
   admits it. Admission revives no earlier op.
-- apply rejects a content op from a key with no `gov/writer` record as
-  `not-a-writer`, if the op passes the earlier checks (`applyNode`).
-- apply rejects a governance op from that key as `policy-governance`,
-  because the indexer-issuer check comes first (`applyNode`).
 - apply calls `host.addWriter(key, { weight: 0 })` for every `add-writer`
   op it folds, accepted or rejected (`grant`). So a reorder never undoes a
   substrate grant. okf membership comes only from `gov/`.
 - Revocation is causal. It compares clocks, never positions, and it
   cross-checks the seq at removal. apply never calls `host.removeWriter`.
-- The revocation check binds only the ops that sort after the removal
-  (`applyNode`). So revocation stops cooperating clients only (SPEC §8).
 - apply rejects an `add-writer` whose key or swarm key is not 32 bytes, as
   `bad-writer-key` or `bad-swarm-key` (`opAddWriter`).
 - apply rejects an `add-writer` that demotes the last live indexer as
