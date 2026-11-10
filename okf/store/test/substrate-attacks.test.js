@@ -117,7 +117,7 @@ function assertOutsiderShut(rows) {
 // optimistic: true the node reaches apply, its approval adds the stranger
 // to autobee's system, and the stranger becomes writable.
 // ---------------------------------------------------------------------------
-test('A1 G3: a stranger cannot admit itself with a forged approval (s1)', { timeout: TIMEOUT }, async (t) => {
+test('a stranger cannot admit itself with a forged approval', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a1-a')))
   const s = quiet(await Bundle.join(await tmpDir('a1-s'), a.key)) // never admitted
   const applied = { a: watchApply(a), s: watchApply(s) }
@@ -172,7 +172,7 @@ test('A1 G3: a stranger cannot admit itself with a forged approval (s1)', { time
 // weight 2 the next honest append of genesis approves that key, and the key
 // climbs to 2.
 // ---------------------------------------------------------------------------
-test('A2 G4: a key that a member names in a forged approval stays at weight 0', { timeout: TIMEOUT }, async (t) => {
+test('a key that a member names in a forged approval stays at weight 0', { timeout: TIMEOUT }, async (t) => {
   const aDir = await tmpDir('a2-a')
   const a = quiet(await Bundle.init(aDir))
   const b = quiet(await Bundle.join(await tmpDir('a2-b'), a.key)) // an okf member
@@ -368,7 +368,7 @@ function assertNoLivelock(out) {
   assert.equal(out.reopen.update, 'ok', 'genesis reopens and folds (no brick)')
 }
 
-test('A3 G1: no livelock driven by a member (s4)', { timeout: 2 * TIMEOUT }, async (t) => {
+test('a member drives no livelock', { timeout: 2 * TIMEOUT }, async (t) => {
   const out = await livelock(t)
   await record(t, 'A3-G1-livelock-member', out)
   assertNoLivelock(out)
@@ -383,7 +383,7 @@ test('A3 G1: no livelock driven by a member (s4)', { timeout: 2 * TIMEOUT }, asy
 // A Bundle outsider can write j only. No peer applies j, so the witness
 // link of N is in no system. The autobee of the carrier never gets past j
 // (attack-helpers.js outsiderAppend). So the test sends j alone.
-test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', { timeout: TIMEOUT }, async (t) => {
+test('strangers put no node into apply, so they drive no livelock', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a4-a'))) // genesis
   const c1 = quiet(await Bundle.join(await tmpDir('a4-c1'), a.key)) // the carrier, never admitted
   const c2 = quiet(await Bundle.join(await tmpDir('a4-c2'), a.key)) // the claimant, never admitted
@@ -446,7 +446,7 @@ test('A4 G1: strangers put no node into apply, so they drive no livelock (s5)', 
 // autobee drops the node before `_applyBatch`, which reads the approvals.
 // A child process runs it, so an exhausted heap spares the test runner.
 // ---------------------------------------------------------------------------
-test('A5 G2: an outsider approval at weight 1e9 reaches no apply (child process)', { timeout: 2 * TIMEOUT }, async (t) => {
+test('an outsider approval at weight 1e9 reaches no apply (child process)', { timeout: 2 * TIMEOUT }, async (t) => {
   const run = await runChild(['huge-approval', 'outsider', '1000000000'], 180000)
   const r = run.result
   await record(t, 'A5-G2-huge-approval-outsider', {
@@ -482,7 +482,7 @@ test('A5 G2: an outsider approval at weight 1e9 reaches no apply (child process)
 // resolves the weight of the node before the drop (`nextPendingNode`), so a
 // returning update() also shows that this resolution ends.
 // ---------------------------------------------------------------------------
-test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }, async (t) => {
+test('an outsider forged witness reaches no apply', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a6-a')))
   const b = quiet(await Bundle.join(await tmpDir('a6-b'), a.key)) // a member, the cited writer
   const s = quiet(await Bundle.join(await tmpDir('a6-s'), a.key)) // the outsider
@@ -545,9 +545,9 @@ test('A6 G43: an outsider forged witness reaches no apply', { timeout: TIMEOUT }
 // one side and carries no system hash. A receiver then sorts it into the
 // middle (autobee `prepareBatch`). With optimistic: true the node of an
 // outsider does this, and it flips the LWW winner on every peer. The member
-// variant is a residual, "A7b G5" below.
+// variant is a residual, and a test below measures it.
 // ---------------------------------------------------------------------------
-test('A7 G5: an outsider backdated node flips no winner', { timeout: TIMEOUT }, async (t) => {
+test('an outsider backdated node flips no winner', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a7-a')))
   const b = quiet(await Bundle.join(await tmpDir('a7-b'), a.key)) // a member
   const s = quiet(await Bundle.join(await tmpDir('a7-s'), a.key)) // the outsider
@@ -629,7 +629,7 @@ test('A7 G5: an outsider backdated node flips no winner', { timeout: TIMEOUT }, 
 // so promotions stall with more than 32 pending. At weight 0 no peer
 // collects an approval at all.
 // ---------------------------------------------------------------------------
-test('G35: no peer collects an approval, with more than 32 promotions pending', { timeout: TIMEOUT }, async (t) => {
+test('no peer collects an approval, with more than 32 promotions pending', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('g35-a')))
   const b = quiet(await Bundle.join(await tmpDir('g35-b'), a.key))
   const unpair = pair(a, b)
@@ -690,7 +690,7 @@ test('G35: no peer collects an approval, with more than 32 promotions pending', 
 // A forged higher-tier approval suppresses the climb of a member. At weight
 // 0 no writer climbs, with or without it.
 // ---------------------------------------------------------------------------
-test('G50: no writer climbs, also when a member forges a higher-tier approval', { timeout: TIMEOUT }, async (t) => {
+test('no writer climbs, also when a member forges a higher-tier approval', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('g50-a')))
   const b = quiet(await Bundle.join(await tmpDir('g50-b'), a.key)) // an okf indexer
   const c = quiet(await Bundle.join(await tmpDir('g50-c'), a.key)) // a plain okf writer
@@ -782,10 +782,10 @@ async function rejectionsOf(v, w) {
 // This test covers the SENDER only. A member folds its own node
 // (`_bumpPendingWriters`) before the drain flushes it (`_flushLocal`). At
 // 1e9 the attacker dies first, and its node never leaves its core. That is
-// the drain order of the sender, never a bound on the attack. "A5c G2"
-// below sends the same approval from a client that folds nothing.
+// the drain order of the sender, never a bound on the attack. The next
+// test sends the same approval from a client that folds nothing.
 // ---------------------------------------------------------------------------
-test('A5b G2: a member approval at weight 1e9 kills the sender that folds it first (residual, child process)', { timeout: 2 * TIMEOUT }, async (t) => {
+test('a member approval at weight 1e9 kills the sender that folds it first (residual, child process)', { timeout: 2 * TIMEOUT }, async (t) => {
   const run = await runChild(['huge-approval', 'member', '1000000000'], 180000)
   const r = run.result
   await record(t, 'A5b-G2-huge-approval-member', {
@@ -841,15 +841,16 @@ test('A5b G2: a member approval at weight 1e9 kills the sender that folds it fir
 // ---------------------------------------------------------------------------
 // The member arm through a client that folds nothing: the adversary of
 // SECURITY_MODEL.md "The adversaries", who appends arbitrary bytes to the
-// core it owns. The order that saves the sender in "A5b G2" does not apply,
-// and the block replicates (attack-helpers.js forgeRawNode).
+// core it owns. The order that saves the sender in the test before this
+// one does not apply, and the block replicates (attack-helpers.js
+// forgeRawNode).
 //
 // okf cannot filter it. The apply of okf runs for that node, because its
 // block holds a create-concept value. But `_applyBatch` calls
 // `Systembee.flush` after apply, and nothing that apply returns stops the
 // tier walk (`Promotions.flushPending`).
 // ---------------------------------------------------------------------------
-test('A5c G2: a member client that folds nothing delivers the weight 1e9 approval, and the victim dies (residual, child process)', { timeout: 4 * TIMEOUT }, async (t) => {
+test('a member client that folds nothing delivers the weight 1e9 approval, and the victim dies (residual, child process)', { timeout: 4 * TIMEOUT }, async (t) => {
   const run = await runChild(['huge-approval', 'member-raw', '1000000000'], 300000)
   const r = run.result
   await record(t, 'A5c-G2-huge-approval-member-raw', {
@@ -895,7 +896,7 @@ test('A5c G2: a member client that folds nothing delivers the weight 1e9 approva
 // linearization order, so the reorder picks the winner. The reorder is
 // uniform, so the peers still converge.
 // ---------------------------------------------------------------------------
-test('A7b G5: a member backdated node flips the winner on every peer (residual)', { timeout: TIMEOUT }, async (t) => {
+test('a member backdated node flips the winner on every peer (residual)', { timeout: TIMEOUT }, async (t) => {
   const a = quiet(await Bundle.init(await tmpDir('a7b-a')))
   const b = quiet(await Bundle.join(await tmpDir('a7b-b'), a.key)) // a member
   const s = quiet(await Bundle.join(await tmpDir('a7b-s'), a.key)) // the attacker, a member
@@ -1003,7 +1004,7 @@ test('A7b G5: a member backdated node flips the winner on every peer (residual)'
 // no firewall. So it measures the cost of a flood from any connected peer,
 // a member too.
 // ---------------------------------------------------------------------------
-test('A8 G44: an outsider wakeup flood opens one writer core per announced key (residual)', { timeout: 4 * TIMEOUT }, async (t) => {
+test('an outsider wakeup flood opens one writer core per announced key (residual)', { timeout: 4 * TIMEOUT }, async (t) => {
   const N = Number(process.env.OKF_FLOOD_N || 200)
   const CAP = 128 // DEFAULT_MAX_UNTRUSTED_WRITERS in autobee lib/writers.js
   const aDir = await tmpDir('a8-a')
@@ -1115,7 +1116,7 @@ test('A8 G44: an outsider wakeup flood opens one writer core per announced key (
 // AddWriter op it folds, before any check that can reject it (SPEC §8). So
 // a granted non-member can make more autobee writers at weight 0.
 // ---------------------------------------------------------------------------
-test('G32: a key that a member approves costs one flag per op, no rate token and no c/ change (residual)', { timeout: 2 * TIMEOUT }, async (t) => {
+test('a key that a member approves costs one flag per op, no rate token and no c/ change (residual)', { timeout: 2 * TIMEOUT }, async (t) => {
   const OPS = 12 // content ops from the approved key
   const GRANTS = 3 // AddWriter ops from the approved key
   const a = quiet(await Bundle.init(await tmpDir('g32-a')))

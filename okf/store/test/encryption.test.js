@@ -78,7 +78,7 @@ test('at rest: no stored block of the system, writer or view core holds plaintex
   assert.ok(p.view.raw > 0, 'an unencrypted view core holds the body in its stored blocks')
 })
 
-test('encrypted vault: reopen from disk without the key, invited peer reads', async (t) => {
+test('an encrypted vault reopens from disk without the key, and a peer that joins with the key reads it', async (t) => {
   const open = new Set()
   let unpair = () => {}
   t.after(async () => {

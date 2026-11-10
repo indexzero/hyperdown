@@ -1,13 +1,14 @@
-// Writer add and remove on real autobee: causal revocation (SPEC §8), the
-// seqAtRemoval rule on a partitioned op, the local guard on a revoked
-// append, equal views on every peer (I10), isIndexer from gov/, and weight
-// 0 for every writer.
+// Adding, removing and policing writers through the store, on real
+// autobee: the writers API and the keys that it refuses, the store-built
+// clock of a removal, the local guard on a revoked append, isIndexer from
+// gov/, weight 0 for every writer, and the governance race. The rules of
+// apply live in okf/core/lib/apply.js, and okf/core/test/apply proves them.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bundle, K, tmpDir, pair, until, sleep, converged } from './helpers.js'
 import { forgeNext, sys, linearized, carriers, hex } from './attack-helpers.js'
 
-test('writer add/remove round trip: causal revocation, uniform on every peer', async (t) => {
+test('writers.add and writers.remove round trip: the removal records the position that the store observed, every peer flags the later op revoked, and the next append of the removed writer fails VAULT_REVOKED', async (t) => {
   const a = await Bundle.init(await tmpDir('wr-a'))
   const b = await Bundle.join(await tmpDir('wr-b'), a.key)
   let unpair = pair(a, b)
@@ -65,8 +66,6 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
   assert.ok(hash, 'peers converge after revocation')
   for (const v of [a, b]) {
     assert.deepEqual(await v.val(K.flagRejected(bHex, 1)), { reason: 'revoked' })
-    assert.equal(await v.val(K.cField(id, 'status')), undefined, 'rejected op never mutated c/ (I10)')
-    assert.deepEqual((await v.val(K.cMeta(id))).created, id, 'pre-revocation op survives')
   }
 
   await b.update()
@@ -80,7 +79,7 @@ test('writer add/remove round trip: causal revocation, uniform on every peer', a
   assert.equal(aOthers.indexer, false)
 })
 
-test('addWriter carries the swarm key onto gov/writer, and refuses a bad one before it appends (T25)', async (t) => {
+test('addWriter carries the swarm key onto gov/writer, and refuses a bad one before it appends', async (t) => {
   const a = await Bundle.init(await tmpDir('wr-swarm-a'))
   const b = await Bundle.join(await tmpDir('wr-swarm-b'), a.key)
   const c = await Bundle.join(await tmpDir('wr-swarm-c'), a.key)
@@ -114,7 +113,7 @@ test('addWriter carries the swarm key onto gov/writer, and refuses a bad one bef
   assert.equal(a.db.local.length, length, 'a refused swarm key appends no node')
 })
 
-test('an append from a writer that is not writable fails fast: VAULT_NOT_WRITABLE, autobee stays open, no seq used (G12)', async (t) => {
+test('an append from a writer that is not writable fails fast: VAULT_NOT_WRITABLE, autobee stays open, no seq used', async (t) => {
   // autobee's own append refuses only a writer that it records as removed
   // (`append` in index.js). A writer that it never added gets past that
   // refusal. Its node then fails the local flush with 'Not writable' (`_next`
@@ -160,7 +159,10 @@ test('an append from a writer that is not writable fails fast: VAULT_NOT_WRITABL
   assert.ok(await c.val(K.cMeta(id)), 'c still reads the view')
 })
 
-test('remove-writer that would leave zero indexers is rejected (§8)', async (t) => {
+test('writers.remove of the only indexer returns a seq, leaves a policy-governance flag at that seq, and the vault stays writable (§8)', async (t) => {
+  // okf/core/test/apply/governance.test.js proves the rule of apply. This
+  // test holds the store's part: the flag key at the returned seq, and no
+  // VAULT_REVOKED from the local guard on the next append.
   const a = await Bundle.init(await tmpDir('wr-last'))
   t.after(() => a.close())
   const aHex = a.localKey.toString('hex')
@@ -168,13 +170,12 @@ test('remove-writer that would leave zero indexers is rejected (§8)', async (t)
   const r = await a.writers.remove(a.localKey)
   await a.update()
   assert.deepEqual(await a.val(K.flagRejected(aHex, r.seq)), { reason: 'policy-governance' })
-  assert.equal(await a.val(K.govRemoved(aHex)), undefined, 'genesis indexer not removed')
   const c = await a.createConcept('still/alive', 'note')
   await a.update()
   assert.ok(await a.val(K.cMeta(c.tag)))
 })
 
-test('setWriterPolicy round trip: namespace prefixes enforced at apply', async (t) => {
+test('writers.setPolicy round trip: the writer folds its namespace prefixes, and every peer flags its create outside them policy-namespace', async (t) => {
   const a = await Bundle.init(await tmpDir('wr-pol-a'))
   const b = await Bundle.join(await tmpDir('wr-pol-b'), a.key)
   const unpair = pair(a, b)
@@ -399,7 +400,7 @@ test('a forged approval from a member at weight 0 also adds the key, at weight 0
   }
 })
 
-test('HostAdapter returns the autobee grant, so core resumes only once the system records it, on every peer (G40)', async (t) => {
+test('HostAdapter returns the autobee grant, so core resumes only once the system records it, on every peer', async (t) => {
   // Core awaits host.addWriter for every AddWriter it folds. autobee's
   // addWriter reads the system before it records the grant
   // (`System.addWriter`), and the system flush right after apply
@@ -447,5 +448,338 @@ test('HostAdapter returns the autobee grant, so core resumes only once the syste
   }
   for (const v of [a, b]) {
     assert.deepEqual(await sys(v, b.localKey), { weight: 0, maxWeight: 0, isRemoved: false }, 'the flushed system holds the grant')
+  }
+})
+
+// ---------- the key and policy checks of the writers API ----------
+
+test('writers.add, writers.remove and writers.setPolicy refuse a key that is not 32 bytes or 64 hex characters, VAULT_BAD_WRITER_KEY, and append nothing', async (t) => {
+  // A z-base-32 id, which is how hypercore names a core (db.local.id),
+  // decodes as hex to no bytes. If writers.add does not test the key, an
+  // AddWriter of such an id writes a phantom gov/writer record.
+  const a = await Bundle.init(await tmpDir('badkey-a'))
+  const b = await Bundle.join(await tmpDir('badkey-b'), a.key)
+  t.after(async () => {
+    await a.close()
+    await b.close()
+  })
+  const before = a.db.local.length
+  const bad = [
+    ['the z-base-32 id', b.db.local.id],
+    ['63 hex characters', hex(b.localKey).slice(0, 63)],
+    ['64 characters that are not hex', 'zz'.repeat(32)],
+    ['31 bytes', Buffer.alloc(31, 1)],
+    ['33 bytes', Buffer.alloc(33, 1)]
+  ]
+  for (const [name, key] of bad) {
+    await assert.rejects(a.writers.add(key, { indexer: true }), { code: 'VAULT_BAD_WRITER_KEY' }, `writers.add: ${name}`)
+    await assert.rejects(a.writers.remove(key), { code: 'VAULT_BAD_WRITER_KEY' }, `writers.remove: ${name}`)
+    await assert.rejects(
+      a.writers.setPolicy(key, { namespacePrefixes: ['x'] }),
+      { code: 'VAULT_BAD_WRITER_KEY' },
+      `writers.setPolicy: ${name}`
+    )
+  }
+  assert.equal(a.db.local.length, before, 'no op reached the local core')
+
+  // 32 bytes and 64 hex characters, in either case, name the same writer.
+  await a.writers.add(hex(b.localKey).toUpperCase())
+  await a.writers.setPolicy(b.localKey, { namespacePrefixes: ['b'] })
+  await a.update()
+  const govKeys = []
+  for await (const { key } of a.scan(K.govWriterPrefix())) govKeys.push(key)
+  assert.deepEqual(govKeys.sort(), [K.govWriter(hex(a.localKey)), K.govWriter(hex(b.localKey))].sort())
+  assert.deepEqual((await a.val(K.govWriter(hex(b.localKey)))).namespacePrefixes, ['b'])
+})
+
+test('writers.setPolicy before open waits for open, and takes the default ceiling from the pinned metadata', async (t) => {
+  // The default rateCeiling comes from the metadata, which open loads. A
+  // setPolicy that reads it before open throws a TypeError.
+  const dir = await tmpDir('policy-before-open')
+  const v = await Bundle.init(dir, { metadata: { rate: { defaultCeiling: 8 } } })
+  const self = hex(v.localKey)
+  await v.close()
+
+  const a = new Bundle(dir)
+  t.after(() => a.close())
+  const res = await a.writers.setPolicy(self, { namespacePrefixes: ['team'] })
+  assert.equal(res.seq, 0, 'the policy op is the first op of the vault')
+  await a.update()
+  assert.deepEqual(await a.val(K.govWriter(self)), { indexer: true, namespacePrefixes: ['team'], rateCeiling: 8 })
+})
+
+test('an AddWriter grant leaves no pending promotion on any peer: HostAdapter grants at weight 0, not at autobee\'s default', async (t) => {
+  // autobee's host addWriter (lib/apply-calls.js) defaults to weight 2.
+  // The carrier stands at weight 0, so autobee caps every weight at 0, but
+  // a grant at the default weight still records a pending promotion to 2
+  // (System.addWriter, `pending`). That promotion brings back a livelock.
+  // No documented autobee surface shows the promotion, so the test reads
+  // db.system, as the attack tests do.
+  const a = await Bundle.init(await tmpDir('grant-a'))
+  const b = await Bundle.join(await tmpDir('grant-b'), a.key)
+  const c = await Bundle.join(await tmpDir('grant-c'), a.key)
+  const unpairs = [pair(a, b), pair(a, c)]
+  t.after(async () => {
+    for (const un of unpairs) un()
+    for (const v of [a, b, c]) await v.close()
+  })
+  await a.writers.add(b.localKey, { indexer: false })
+  await a.writers.add(c.localKey, { indexer: true })
+  assert.ok(await until(async () => (await b.update(), await c.update(), b.writable && c.writable)), 'b and c are granted')
+  await b.createConcept('b/x', 'note')
+  await c.createConcept('c/x', 'note')
+  assert.ok(
+    await until(async () => {
+      for (const v of [a, b, c]) {
+        await v.update()
+        for (const w of [b, c]) if ((await v.val(K.seen(hex(w.localKey)))) !== 1) return false
+      }
+      return true
+    }),
+    'every peer folds the ops of b and c'
+  )
+  const grants = {}
+  for (const [name, v] of [['a', a], ['b', b], ['c', c]]) {
+    for (const [wname, w] of [['b', b], ['c', c]]) {
+      const r = await v.db.system.get(w.localKey)
+      grants[`${name}:${wname}`] = { weight: r.weight, maxWeight: r.maxWeight, pending: await v.db.system.pendingPromotion(w.localKey) }
+    }
+  }
+  const zero = { weight: 0, maxWeight: 0, pending: 0 }
+  assert.deepEqual(grants, { 'a:b': zero, 'a:c': zero, 'b:b': zero, 'b:c': zero, 'c:b': zero, 'c:c': zero })
+})
+
+// ---------- the governance race (SPEC §8) ----------
+//
+// b revokes a while a and b are partitioned. 100 ms later a admits c, and
+// c appends Y. The RemoveWriter has the earlier timestamp, so after the
+// heal it sorts first and every peer rejects the AddWriter revoked. On a
+// and c, that reorder flips an AddWriter that core first accepted.
+
+const DEADLINE = 30000
+const GAP_MS = 100
+
+/** Poll until fn() is truthy. Throws when the deadline passes. */
+async function waitFor(label, fn, ms = DEADLINE, step = 25) {
+  const t0 = Date.now()
+  for (;;) {
+    if (await fn()) return
+    if (Date.now() - t0 >= ms) throw new Error(`deadline ${ms} ms passed: ${label}`)
+    await sleep(step)
+  }
+}
+
+async function hashes(peers) {
+  const hs = []
+  for (const v of peers) {
+    await v.update()
+    hs.push(await v.snapshotHash())
+  }
+  return hs
+}
+
+const allEqual = (hs) => hs.every((h) => h === hs[0])
+
+/** Wait for equal view hashes, then make sure they stay equal. */
+async function converge(label, peers) {
+  let hs = []
+  await waitFor(`${label}: equal view hashes`, async () => allEqual((hs = await hashes(peers))))
+  await sleep(300)
+  hs = await hashes(peers)
+  assert.ok(allEqual(hs), `${label}: the hashes stay equal: ${hs.map((h) => h.slice(0, 16))}`)
+  return hs[0]
+}
+
+async function rejections(v) {
+  await v.update()
+  const out = []
+  for await (const { key, value } of v.scan(K.flagPrefix('rejected'))) out.push([key, value.reason])
+  return out
+}
+
+/** State of one peer for the diagnostics. db.system is read here only. */
+async function report(name, v, cKey) {
+  await v.update()
+  const sys = await v.db.system.get(cKey)
+  return {
+    peer: name,
+    hash: (await v.snapshotHash()).slice(0, 16),
+    seenC: (await v.val(K.seen(hex(cKey)))) ?? null,
+    govWriterC: (await v.val(K.govWriter(hex(cKey)))) !== undefined,
+    rejected: (await rejections(v)).map(([k, r]) => [k.split('/').slice(2).join('/').slice(-24), r]),
+    systemC: sys ? { length: sys.length, isRemoved: sys.isRemoved } : null
+  }
+}
+
+/** Wait until every peer has folded c's ops up to and with `op`. */
+async function everyPeerFolds(label, peers, cHex, op) {
+  await waitFor(label, async () => {
+    for (const v of peers) {
+      await v.update()
+      if (((await v.val(K.seen(cHex))) ?? 0) < op.seq + 1) return false
+    }
+    return true
+  })
+}
+
+test('the governance race converges, and every op of the race writer leaves a flag (I2, I3, I4)', { timeout: 240000 }, async (t) => {
+  const outcome = { steps: {} }
+  const peers = []
+  let cKey = null
+  const links = []
+  t.after(async () => {
+    for (const unlink of links) unlink()
+    for (const v of peers) await v.close().catch(() => {})
+  })
+  const link = (x, y) => {
+    const unlink = pair(x, y)
+    links.push(unlink)
+    return unlink
+  }
+
+  try {
+    // a and b are indexers. c joins and folds the seed, but cannot write.
+    const a = await Bundle.init(await tmpDir('race-a'))
+    peers.push(a)
+    const b = await Bundle.join(await tmpDir('race-b'), a.key)
+    peers.push(b)
+    const unAB = link(a, b)
+    await a.writers.add(b.localKey, { indexer: true })
+    await waitFor('b becomes writable', async () => (await b.update(), b.writable))
+    const seed = await a.createConcept('seed/a1', 'note')
+    await waitFor('b folds the seed', async () => {
+      await b.update()
+      return (await b.val(K.cMeta(seed.tag))) !== undefined
+    })
+    const c = await Bundle.join(await tmpDir('race-c'), a.key)
+    peers.push(c)
+    link(a, c)
+    await waitFor('c folds the seed', async () => {
+      await c.update()
+      return (await c.val(K.cMeta(seed.tag))) !== undefined
+    })
+    assert.equal(c.writable, false, 'c cannot write before its admission')
+    cKey = c.localKey
+    const aHex = hex(a.localKey)
+    const cHex = hex(cKey)
+
+    // The partition: b revokes a first, then a admits c, and c appends Y.
+    unAB()
+    await sleep(50)
+    await b.removeWriter(a.localKey)
+    await b.update()
+    await sleep(GAP_MS)
+    const add = await a.writers.add(c.localKey, { indexer: false })
+    await waitFor('c becomes writable', async () => (await c.update(), c.writable))
+    const Y = await c.createConcept('c/y', 'note')
+    await c.update()
+    await waitFor('a accepts Y before the heal', async () => {
+      await a.update()
+      return (await a.val(K.cMeta(Y.tag))) !== undefined
+    })
+
+    // The heal. Every peer folds the revocation, and a's AddWriter(c) in
+    // its final disposition.
+    link(a, b)
+    link(b, c)
+    await waitFor('every peer folds the revocation and the AddWriter', async () => {
+      for (const v of peers) {
+        await v.update()
+        if ((await v.val(K.govRemoved(aHex))) === undefined) return false
+        if (((await v.val(K.seen(aHex))) ?? 0) < add.seq + 1) return false
+      }
+      return true
+    })
+    for (const v of peers) {
+      assert.deepEqual(
+        await v.val(K.flagRejected(aHex, add.seq)),
+        { reason: 'revoked' },
+        'the RemoveWriter sorts first, so every peer rejects the AddWriter revoked'
+      )
+    }
+
+    // Core grants every AddWriter it folds, accepted or rejected, so Y
+    // reaches apply on every peer and leaves a flag. With a grant on accept
+    // only, autobee keeps Y in the systems of a and c, and b never sees
+    // it: Y vanishes with no flag (I4). okf/core/lib/apply.js
+    // holds the grant rule.
+    const flagged = async (op) => {
+      for (const v of peers) {
+        assert.deepEqual(
+          await v.val(K.flagRejected(cHex, op.seq)),
+          { reason: 'not-a-writer' },
+          `c's op at seq ${op.seq} leaves a flag on every peer (I4)`
+        )
+        assert.equal(await v.val(K.cMeta(op.tag)), undefined, `c's op at seq ${op.seq} takes no effect`)
+      }
+    }
+
+    // After Y.
+    await everyPeerFolds('every peer folds Y', peers, cHex, Y)
+    outcome.steps.afterY = { hash: (await converge('after Y', peers)).slice(0, 16) }
+    await flagged(Y)
+
+    // After c's next op Z.
+    const Z = await c.createConcept('c/z', 'note')
+    await c.update()
+    await everyPeerFolds('every peer folds Z', peers, cHex, Z)
+    const hz = await converge('after Z', peers)
+    outcome.steps.afterZ = {
+      hash: hz.slice(0, 16),
+      peers: await Promise.all(peers.map((v, i) => report('abc'[i], v, c.localKey)))
+    }
+    await flagged(Y)
+    await flagged(Z)
+
+    // An indexer admits c again, and c appends R. R takes effect.
+    await b.writers.add(c.localKey, { indexer: false })
+    await waitFor('c folds its re-admission', async () => {
+      await c.update()
+      return (await c.val(K.govWriter(cHex))) !== undefined
+    })
+    const R = await c.createConcept('c/r', 'note')
+    await waitFor('R takes effect on every peer', async () => {
+      for (const v of peers) {
+        await v.update()
+        if ((await v.val(K.cMeta(R.tag))) === undefined) return false
+      }
+      return true
+    })
+    const hr = await converge('after R', peers)
+    for (const v of peers) {
+      assert.equal(await v.val(K.flagRejected(cHex, R.seq)), undefined, 'R is not rejected')
+      assert.equal((await v.val(K.cPath(R.tag))).path, 'c/r', 'R takes effect')
+    }
+
+    // A fresh peer rebuilds from nothing (I3).
+    const d = await Bundle.join(await tmpDir('race-d'), a.key)
+    peers.push(d)
+    link(b, d)
+    await waitFor('the fresh peer folds R', async () => {
+      await d.update()
+      return (await d.val(K.cMeta(R.tag))) !== undefined
+    })
+    const hd = await converge('fresh peer', peers)
+    assert.equal(hd, hr, 'the fresh peer gives the same view hash as the three peers')
+    const want = await rejections(a)
+    for (const v of peers) {
+      assert.deepEqual(await rejections(v), want, 'the same rejection records on every peer')
+    }
+    assert.deepEqual(
+      want.filter(([k]) => k.startsWith(`flag/rejected/${cHex}/`)).map(([, reason]) => reason),
+      ['not-a-writer', 'not-a-writer'],
+      'the rejected ops of c are Y and Z'
+    )
+    assert.equal((await d.val(K.cPath(R.tag))).path, 'c/r', 'R takes effect on the fresh peer')
+    outcome.steps.fresh = {
+      hash: hd.slice(0, 16),
+      peers: await Promise.all(peers.map((v, i) => report('abcd'[i], v, c.localKey)))
+    }
+  } finally {
+    // On a failure, the state of every peer at that moment.
+    if (cKey && !outcome.steps.fresh) {
+      outcome.atFailure = await Promise.all(peers.map((v, i) => report('abcd'[i], v, cKey))).catch(String)
+    }
+    t.diagnostic(`outcome ${JSON.stringify(outcome)}`)
   }
 })

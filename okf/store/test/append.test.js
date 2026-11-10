@@ -10,7 +10,7 @@ import { Bundle, K, tmpDir, sleep, pair, until } from './helpers.js'
 
 const hex = (k) => k.toString('hex')
 
-test('G11 (s9): a close during an append returns no tag for a node that is missing after a reopen, and an append that it rejects wrote nothing, in 50 of 50 runs', { timeout: 300000 }, async (t) => {
+test('a close during an append returns no tag for a node that is missing after a reopen, and an append that it rejects wrote nothing, in 50 of 50 runs', { timeout: 300000 }, async (t) => {
   // The error says that the op is not written, and a retry depends on it.
   // So for each rejected append, the reopened local core holds x/0 only.
   const RUNS = 50
@@ -269,7 +269,7 @@ test('an append that waits behind a missing link fails VAULT_CLOSED_BEFORE_DURAB
   }
 })
 
-test('close() resolves only after every in-flight append has settled: each append whose node waits for the local core fails VAULT_CLOSED_BEFORE_DURABLE before close() resolves, and none is in the core after a reopen (D-047 F10)', { timeout: 60000 }, async (t) => {
+test('close() resolves only after every in-flight append has settled: each append whose node waits for the local core fails VAULT_CLOSED_BEFORE_DURABLE before close() resolves, and none is in the core after a reopen', { timeout: 60000 }, async (t) => {
   // Each append hands autobee its node, which waits behind S, so only
   // close() ends the wait. _lengthAfterClose() reads the local core
   // through the root corestore, which step 3 of close() closes. Without
@@ -307,7 +307,7 @@ test('close() resolves only after every in-flight append has settled: each appen
   assert.equal(s.b3.db.local.length, 2, 'after the reopen the local core holds only b0 and S')
 })
 
-test('close() returns while an append waits for a drain that reads an absent block, and the append fails VAULT_CLOSED_BEFORE_DURABLE (G3-P3 F01)', { timeout: 60000 }, async (t) => {
+test('close() returns while an append waits for a drain that reads an absent block, and the append fails VAULT_CLOSED_BEFORE_DURABLE', { timeout: 60000 }, async (t) => {
   // a folds b0, writes a node that links b0, closes, and loses its stored
   // copy of b0 but not its boot record, system or view. a reopens with b
   // offline. c sends c0, made before b0, so autobee reorders and reads b0,

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Corestore from '../node_modules/corestore/index.js'
 import { Bundle, K, tmpDir, pair, until, converged } from './helpers.js'
 
-test('restart from disk: reopened view equals the pre-close view (I3)', async (t) => {
+test('a vault that reopens from disk holds the view that it held before the close (I3)', async (t) => {
   const dir = await tmpDir('restart')
   const a = await Bundle.init(dir)
   const { tag: id } = await a.createConcept('guides/home', 'guide')
@@ -112,7 +112,7 @@ test('a reopen folds every node that the local core holds before open resolves',
   assert.deepEqual((await a2.val(K.cField(id, 'title'))).values, ['After the boot record'])
 })
 
-test('fresh peer rebuild from the log equals the restarted view (I3)', async (t) => {
+test('a fresh peer that rebuilds from the log reaches the view hash of the restarted vault (I3)', async (t) => {
   const dir = await tmpDir('rebuild-a')
   const a = await Bundle.init(dir)
   const { tag: id } = await a.createConcept('guides/rebuild', 'guide')
@@ -145,7 +145,7 @@ test('fresh peer rebuild from the log equals the restarted view (I3)', async (t)
 
 const hex = (k) => k.toString('hex')
 
-test('a peer that closes during a heal, and reopens in a quiet vault, converges: open wakes each writer with a gov/writer record (D-047 F02)', { timeout: 120000 }, async (t) => {
+test('a peer that closes during a heal, and reopens in a quiet vault, converges: open wakes each writer with a gov/writer record', { timeout: 120000 }, async (t) => {
   // b is away while a, b and c write. b reconnects and closes as soon as
   // its cores of a and c hold every new block, while its fold can still
   // run. After the reopen, no peer writes. The trials run at once, so most
@@ -243,7 +243,7 @@ test('a peer that closes during a heal, and reopens in a quiet vault, converges:
   )
 })
 
-test('open wakes each key with a gov/writer record, and never a key that only seen/ holds (D-047 F02, G32)', { timeout: 60000 }, async (t) => {
+test('open wakes each key with a gov/writer record, and never a key that only seen/ holds', { timeout: 60000 }, async (t) => {
   // m is a member and no indexer, so core rejects its AddWriter of j
   // policy-governance and grants j at weight 0 all the same. The op of j
   // then reaches apply: a holds seen/<j>, and j has no gov/writer record.

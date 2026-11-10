@@ -135,7 +135,7 @@ test('leaveSwarm() leaves the auto-okf/2 topic and the listed peers, and destroy
   assert.equal(a.swarmInstance, null)
 })
 
-test('swarm() refuses to run without a DHT choice: bootstrap for a private DHT, or publicDht for the commons (T25)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('swarm() refuses to run without a DHT choice: bootstrap for a private DHT, or publicDht for the commons', { timeout: TEST_TIMEOUT }, async (t) => {
   const a = await Bundle.init(await tmpDir('swarm-no-dht'))
   t.after(() => a.close())
   for (const opts of [undefined, {}, { bootstrap: [] }, { publicDht: false }, { bootstrap: ['127.0.0.1:1'], publicDht: true }, { bootstrap: 'x' }]) {
@@ -202,7 +202,7 @@ test('a stand-in peer on the bare discovery key never replicates with a namespac
   assert.ok(await folds(c, id), 'the stand-in folds the op once it joins the auto-okf/2 topic')
 })
 
-test('a peer with the vault key and the invite, and a swarm key outside the allowlist, never connects (T25, G44)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('a peer with the vault key and the invite, and a swarm key outside the allowlist, never connects', { timeout: TEST_TIMEOUT }, async (t) => {
   const tn = await testnet()
   const a = await Bundle.init(await tmpDir('fw-a'))
   const b = await Bundle.join(await tmpDir('fw-b'), a.key, { metadata: a.metadata })
@@ -251,7 +251,7 @@ test('a peer with the vault key and the invite, and a swarm key outside the allo
   assert.ok(seenA.bans.includes(dHex), "a's firewall rejected the outsider's key")
 })
 
-test("a removed writer's connection is destroyed when the removal folds, though the invite lists its key (T25)", { timeout: TEST_TIMEOUT }, async (t) => {
+test("a removed writer's connection is destroyed when the removal folds, though the invite lists its key", { timeout: TEST_TIMEOUT }, async (t) => {
   const tn = await testnet()
   // b is pre-provisioned in the invite and admitted with its swarm key, so
   // the removal must take b out of the static list too.
@@ -285,7 +285,7 @@ test("a removed writer's connection is destroyed when the removal folds, though 
   assert.equal(leaked, false, 'b gets no new connection and no new op')
 })
 
-test("a removed writer's swarm key leaves the allowlist though a live record carries the same key, also after a reopen (G3-P9 F01)", { timeout: TEST_TIMEOUT }, async (t) => {
+test("a removed writer's swarm key leaves the allowlist though a live record carries the same key, also after a reopen", { timeout: TEST_TIMEOUT }, async (t) => {
   const tn = await testnet()
   const dirA = await tmpDir('shared-a')
   let a = await Bundle.init(dirA)
@@ -337,7 +337,7 @@ test("a removed writer's swarm key leaves the allowlist though a live record car
   assert.equal(swarmA.peers.get(bHex)?.banned, true, "the reopened a's firewall rejected b")
 })
 
-test("a folded RemoveWriter of the creator cuts the creator's swarm key, which the invite binds to genesisKey, also after a reopen and on a fresh joiner (D-060 F01, D-061 R01)", { timeout: 180000 }, async (t) => {
+test("a folded RemoveWriter of the creator cuts the creator's swarm key, which the invite binds to genesisKey, also after a reopen and on a fresh joiner", { timeout: 180000 }, async (t) => {
   const tn = await testnet()
   const a = await Bundle.init(await tmpDir('genesis-rm-a')) // the creator
   const dirB = await tmpDir('genesis-rm-b')
@@ -414,7 +414,7 @@ test("a folded RemoveWriter of the creator cuts the creator's swarm key, which t
   assert.equal(connected(c, a), false, 'the fresh joiner holds no connection to the removed creator')
 })
 
-test('a flood of fresh swarm keys leaves at most 64 ban records, and the firewall still rejects every key (G3-P9 F02)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('a flood of fresh swarm keys leaves at most 64 ban records, and the firewall still rejects every key', { timeout: TEST_TIMEOUT }, async (t) => {
   // The bound that bundle.js names (MAX_BANNED_PEERS). The test pins it.
   const N = 64
   const tn = await testnet()
@@ -472,7 +472,7 @@ test('a flood of fresh swarm keys leaves at most 64 ban records, and the firewal
   assert.ok(retained() <= N, `after the second attempts, ${retained()} records stay, at most ${N}`)
 })
 
-test('revokePeer cuts a live connection, leaves the peer, and keeps the key out across later folds (T25)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('revokePeer cuts a live connection, leaves the peer, and keeps the key out across later folds', { timeout: TEST_TIMEOUT }, async (t) => {
   const tn = await testnet()
   const a = await Bundle.init(await tmpDir('rv-a'))
   const b = await Bundle.join(await tmpDir('rv-b'), a.key, { metadata: a.metadata })
@@ -502,7 +502,7 @@ test('revokePeer cuts a live connection, leaves the peer, and keeps the key out 
   assert.equal(leaked, false, 'b gets no new connection and no new op')
 })
 
-test('a pre-provisioned pair connects through joinPeer, with no topic (T25)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('a pre-provisioned pair connects through joinPeer, with no topic', { timeout: TEST_TIMEOUT }, async (t) => {
   const tn = await testnet()
   // Take the topic away: every join keeps its session, but neither
   // announces nor looks up. Only joinPeer and listen() can connect the pair.
@@ -533,7 +533,7 @@ test('a pre-provisioned pair connects through joinPeer, with no topic (T25)', { 
   assert.equal(swarmB.peers.get(hex(a.swarmKey)).explicit, true, 'b joinPeered a')
 })
 
-test('a joiner that a firewall rejected before its admission connects once the admission folds (T25)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('a joiner that a firewall rejected before its admission connects once the admission folds', { timeout: TEST_TIMEOUT }, async (t) => {
   const tn = await testnet()
   const a = await Bundle.init(await tmpDir('late-a'))
   const b = await Bundle.join(await tmpDir('late-b'), a.key, { metadata: a.metadata })
@@ -558,7 +558,7 @@ test('a joiner that a firewall rejected before its admission connects once the a
   )
 })
 
-test('a late joiner whose creator is offline connects to the admitting indexer through a local allow, and becomes writable (G3-P9 F03)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('a late joiner whose creator is offline connects to the admitting indexer through a local allow, and becomes writable', { timeout: TEST_TIMEOUT }, async (t) => {
   const tn = await testnet()
   const origin = await Bundle.init(await tmpDir('offline-origin'))
   const invite = origin.metadata // lists the creator's swarm key alone
@@ -618,26 +618,22 @@ test('a late joiner whose creator is offline connects to the admitting indexer t
   assert.equal(late.metadata.swarm.allow.includes(iHex), false)
 })
 
-test('swarm({ allow }) refuses a malformed local list by name, before it makes a swarm (G3-P9 F03)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('swarm({ allow }) refuses a malformed local list by name, before it makes a swarm', { timeout: TEST_TIMEOUT }, async (t) => {
   const a = await Bundle.init(await tmpDir('swarm-bad-allow'))
   t.after(() => a.close())
+  // metadata.test.js holds the rules of a list of swarm keys. One bad
+  // list here shows that swarm() applies them to the local list.
   const k1 = 'ab'.repeat(32)
-  for (const [allow, re] of [
-    ['not-an-array', /allow must be an array of swarm keys/],
-    [null, /allow must be an array of swarm keys/],
-    [[k1, 'xyz'], /allow\[1\] is not a swarm key/],
-    [[k1, Buffer.from(k1, 'hex')], new RegExp(`allow lists the swarm key ${k1} twice`)]
-  ]) {
-    await assert.rejects(
-      a.swarm({ bootstrap: ['127.0.0.1:1'], allow }),
-      (err) => err.code === 'VAULT_BAD_SWARM_ALLOW' && re.test(err.message),
-      `refused: ${JSON.stringify(allow)}`
-    )
-  }
+  const allow = [k1, 'xyz']
+  await assert.rejects(
+    a.swarm({ bootstrap: ['127.0.0.1:1'], allow }),
+    (err) => err.code === 'VAULT_BAD_SWARM_ALLOW' && /allow\[1\] is not a swarm key/.test(err.message),
+    `refused: ${JSON.stringify(allow)}`
+  )
   assert.equal(a.swarmInstance, null, 'a refusal makes no swarm')
 })
 
-test('loadLocalAllow refuses a file that is not JSON by name, with its path; saveLocalAllow replaces the file whole, through a rename (D-060 F20)', async () => {
+test('loadLocalAllow refuses a file that is not JSON by name, with its path; saveLocalAllow replaces the file whole, through a rename', async () => {
   const dir = await tmpDir('local-allow')
   const path = join(dir, LOCAL_ALLOW_FILE)
   const k1 = 'ab'.repeat(32)
@@ -663,7 +659,7 @@ test('loadLocalAllow refuses a file that is not JSON by name, with its path; sav
   assert.deepEqual(await readdir(dir), [LOCAL_ALLOW_FILE], 'no temporary file stays')
 })
 
-test('a vault derives its swarm key from its own store, so the key is stable across a reopen (T25)', { timeout: TEST_TIMEOUT }, async (t) => {
+test('a vault derives its swarm key from its own store, so the key is stable across a reopen', { timeout: TEST_TIMEOUT }, async (t) => {
   const dir = await tmpDir('swarm-key')
   const a = await Bundle.init(dir)
   const key = a.swarmKey
@@ -689,7 +685,7 @@ test('a vault derives its swarm key from its own store, so the key is stable acr
   assert.notDeepEqual(other.swarmKey, key, 'another store has another key')
 })
 
-test("a new vault lists its creator's swarm key in metadata.swarm.allow, and the invite carries it (T25)", { timeout: TEST_TIMEOUT }, async (t) => {
+test("a new vault lists its creator's swarm key in metadata.swarm.allow, and the invite carries it", { timeout: TEST_TIMEOUT }, async (t) => {
   const dirA = await tmpDir('swarm-creator')
   const listed = 'ab'.repeat(32)
   const a = await Bundle.init(dirA, { metadata: { swarm: { allow: [listed] } } })

@@ -63,7 +63,7 @@ test('vault metadata is deterministic and identical across peers', async (t) => 
   )
 })
 
-test('appendOnly is immutable: unrepresentable off, refused when tampered', async (t) => {
+test('appendOnly is immutable: createMetadata refuses false, and Bundle.open refuses a metadata file that sets it false', async (t) => {
   assert.throws(
     () => createMetadata({ genesisKey: 'a'.repeat(64), appendOnly: false }),
     /appendOnly/
@@ -119,7 +119,7 @@ test('validateMetadata accepts a version 2 document whose rate holds only defaul
   assert.equal(validateMetadata(doc), doc)
 })
 
-test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys, and it is in the hash (T25)', () => {
+test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys, and it is in the hash', () => {
   const k1 = '1'.repeat(64)
   const k2 = 'ab'.repeat(32)
   assert.deepEqual(createMetadata({ genesisKey: 'a'.repeat(64) }).swarm, { allow: [], genesis: null })
@@ -177,7 +177,7 @@ test('the swarm group is closed: allow is a sorted list of distinct 64-hex keys,
   }
 })
 
-test('swarm.genesis binds one key of the allowlist to genesisKey: null or a listed 64-hex key, and it is in the hash (D-060 F01)', async (t) => {
+test('swarm.genesis binds one key of the allowlist to genesisKey: null or a listed 64-hex key, and it is in the hash', async (t) => {
   const k1 = '1'.repeat(64)
   const k2 = 'ab'.repeat(32)
   const bound = createMetadata({ genesisKey: 'a'.repeat(64), swarm: { allow: [k1, k2], genesis: k2.toUpperCase() } })
@@ -237,13 +237,14 @@ test('swarm.genesis binds one key of the allowlist to genesisKey: null or a list
   await assert.rejects(access(join(dirC, METADATA_FILE)), 'nothing is pinned')
 })
 
-test('Bundle.init refuses a malformed metadata.swarm.allow by name, before it adds the creator key (G3-P9 F04)', async (t) => {
+test('Bundle.init refuses a malformed metadata.swarm.allow by name, before it adds the creator key', async (t) => {
+  // The test above holds the rules of the list. These two lists are the
+  // ones that the creator key can hide: init cannot add a key to a list
+  // that is not an array.
   const k1 = 'ab'.repeat(32)
   const cases = [
     [{ allow: 'not-an-array' }, /metadata\.swarm\.allow must be an array of swarm keys/],
-    [{ allow: null }, /metadata\.swarm\.allow must be an array of swarm keys/],
-    [{ allow: [k1, 'xyz'] }, /metadata\.swarm\.allow\[1\] is not a swarm key/],
-    [{ allow: [k1, k1.toUpperCase()] }, new RegExp(`metadata\\.swarm\\.allow lists the swarm key ${k1} twice`)]
+    [{ allow: null }, /metadata\.swarm\.allow must be an array of swarm keys/]
   ]
   for (const [swarm, re] of cases) {
     const dir = await tmpDir('init-bad-allow')
@@ -294,7 +295,7 @@ test('limits and rate are closed: a key that metadata version 2 does not define 
   await assert.rejects(() => Bundle.open(dir), /metadata\.rate\.extra is not a metadata version 2 field/)
 })
 
-test('version 2 metadata is a closed document: an unknown top-level key, the deleted predecessorCheckpoint too, is refused by name (D-060 F22)', async (t) => {
+test('version 2 metadata is a closed document: an unknown top-level key, the deleted predecessorCheckpoint too, is refused by name', async (t) => {
   const good = createMetadata({ genesisKey: 'a'.repeat(64) })
   for (const key of ['predecessorCheckpoint', 'extra']) {
     const re = new RegExp(`metadata\\.${key} is not a metadata version 2 field`)
@@ -329,7 +330,7 @@ test('a mismatched invite is refused (metadata is convergence-relevant)', async 
   )
 })
 
-test('a directory that joined with the vault key alone refuses the invite later, by name, with the fix; any other difference stays VAULT_METADATA_MISMATCH (D-060 F11)', async (t) => {
+test('a directory that joined with the vault key alone refuses the invite later, by name, with the fix; any other difference stays VAULT_METADATA_MISMATCH', async (t) => {
   const a = await Bundle.init(await tmpDir('late-invite-a'))
   t.after(() => a.close())
   const dir = await tmpDir('late-invite-b')
@@ -394,7 +395,7 @@ test('generation chain: predecessorKey alone pins a deterministic writer namespa
   await assert.rejects(() => loadMetadata(path), /metadata\.generation does not match its predecessorKey/)
 })
 
-test('same corestore directory, different generations → fresh writer keypairs (§10)', async (t) => {
+test('a second generation in the same corestore directory gets a fresh writer key pair (§10)', async (t) => {
   // An operator re-inits in a reused directory. The per-generation
   // namespace must still give a fresh writer key pair (SPEC §10).
   const dir = await tmpDir('meta-reuse')

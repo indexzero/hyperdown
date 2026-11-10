@@ -188,7 +188,7 @@ test('store: the seq of an op is its node\'s position in the local core, also af
   assert.deepEqual((await a2.val(K.cField(c0.tag, 'title'))).values, ['after the restart'])
 })
 
-test('G8 (s5): an empty block does not inflate seqAtRemoval, so an op made after the revocation is rejected (I10)', { timeout: 60000 }, async (t) => {
+test('an empty block does not inflate seqAtRemoval, so an op made after the revocation is rejected (I10)', { timeout: 60000 }, async (t) => {
   const a = await Bundle.init(await tmpDir('g8-a'))
   const b = await Bundle.join(await tmpDir('g8-b'), a.key)
   const bHex = hex(b.localKey)
@@ -227,7 +227,7 @@ test('G8 (s5): an empty block does not inflate seqAtRemoval, so an op made after
   assert.deepEqual((await a.val(K.cField(id, 'title'))).values, ['b0'])
 })
 
-test('G10 (s6): after a crash that loses the boot record, each next op takes its own position, never a used seq', { timeout: 60000 }, async (t) => {
+test('after a crash that loses the boot record, each next op takes its own position, never a used seq', { timeout: 60000 }, async (t) => {
   const a = await Bundle.init(await tmpDir('g10-a'))
   const bdir = await tmpDir('g10-b')
   const b = await Bundle.join(bdir, a.key)
@@ -310,7 +310,7 @@ test('G10 (s6): after a crash that loses the boot record, each next op takes its
   assert.equal(await b2.snapshotHash(), await a.snapshotHash(), 'equal view hashes')
 })
 
-test('G9a (s4): after the governance race, the race writer\'s next op claims its position, and every peer flags it not-a-writer', { timeout: 120000 }, async (t) => {
+test('after the governance race, the race writer\'s next op claims its position, and every peer flags it not-a-writer', { timeout: 120000 }, async (t) => {
   const links = []
   const peers = []
   t.after(async () => {
@@ -381,7 +381,7 @@ test('G9a (s4): after the governance race, the race writer\'s next op claims its
 
 // ---------- the clock carries self and the writers with a gov/writer record ----------
 
-test('T12: the clock carries self and each writer with a gov/writer record, a revoked one too, and no other key', { timeout: 60000 }, async (t) => {
+test('the clock carries self and each writer with a gov/writer record, a revoked one too, and no other key', { timeout: 60000 }, async (t) => {
   const a = await Bundle.init(await tmpDir('t12-a')) // the genesis indexer
   const b = await Bundle.join(await tmpDir('t12-b'), a.key) // admitted, then revoked
   const m = await Bundle.join(await tmpDir('t12-m'), a.key) // a member
@@ -429,7 +429,7 @@ test('T12: the clock carries self and each writer with a gov/writer record, a re
   assert.equal(clock[aHex], r.seq, 'its self entry is its own position')
 })
 
-test('G33 (s7): with 1,000 keys that a member approves, of one op each, an honest op stays under maxOpBytes', { timeout: 300000 }, async (t) => {
+test('with 1,000 keys that a member approves, of one op each, an honest op stays under maxOpBytes', { timeout: 300000 }, async (t) => {
   const N = 1000
   const a = await Bundle.init(await tmpDir('g33-a')) // the genesis indexer
   const m = await Bundle.join(await tmpDir('g33-m'), a.key) // a member
@@ -530,7 +530,7 @@ test('G33 (s7): with 1,000 keys that a member approves, of one op each, an hones
   assert.deepEqual(Object.keys(clock).sort(), [aHex, mHex].sort(), 'its clock carries self and m, and no junk key')
 })
 
-test('G13: with autobee\'s default ackThreshold, a writer that falls 40 flushes behind appends no empty block', { timeout: 60000 }, async (t) => {
+test('with autobee\'s default ackThreshold, a writer that falls 40 flushes behind appends no empty block', { timeout: 60000 }, async (t) => {
   // An ack is an empty node in the local core (`_appendAck`). A threshold
   // ack needs a head that the local writer does not trust
   // (`_allHeadsTrusted`). okf passes no isTrusted and no mostRecentTrusted
@@ -591,7 +591,7 @@ function undocumentedReads(line) {
   return [...line.matchAll(/\bdb\.([A-Za-z_$][\w$]*)/g)].filter((m) => !AUTOBEE_DOCUMENTED.has(m[1])).map((m) => m[0])
 }
 
-test('the store, core, faces and cli read no undocumented autobee property (RAILS 22a)', async () => {
+test('the store, core, faces and cli read no undocumented autobee property', async () => {
   for (const line of ['void this.db.encryptionKey', 'const heads = this.db.system.heads', 'db.writers.active', 'db._wakeup']) {
     assert.notDeepEqual(undocumentedReads(line), [], `the check flags: ${line}`)
   }
