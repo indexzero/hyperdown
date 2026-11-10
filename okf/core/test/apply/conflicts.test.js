@@ -1,5 +1,6 @@
 // I7 (SPEC §5, §7, §11): the lifecycle of conflicts, wanted/ entries and
-// pathcollision flags.
+// pathcollision flags. Also the base rule of SetBody (§5): a base that no
+// revision holds makes a conflict, never a head.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Env, writerKey, keysUnder, rejectedReasons } from '../helpers.js'
@@ -103,4 +104,45 @@ test('I7: pathcollision clears when the winner vacates (rename / delete)', async
   const view = await env.run()
   assert.equal(keysUnder(view, 'flag/pathcollision/').length, 0, 'loser freed by vacation')
   assert.equal(view.dump('path/q%2Fspot')['path/q%2Fspot'], loser, 'loser promoted to holder')
+})
+
+test('§5: a fabricated base is stored + flagged against the head and never becomes head', async () => {
+  const env = new Env({ genesis: 'A' })
+  env.op('A', 'create-concept', { path: 'm5/doc', type: 'note' })
+  const id = env.tag('A', 0)
+  env.op('A', 'set-body', { id, base: null, text: 'real head' })
+  const realHead = revHash(null, 'real head')
+  const fake = 'ab'.repeat(32) // well-formed, absent from c/<id>/rev/
+  env.op('A', 'set-body', { id, base: fake, text: 'forged ancestry' })
+  const forged = revHash(fake, 'forged ancestry')
+  const view = await env.run()
+  assert.equal(view.dump(`c/${id}/body`)[`c/${id}/body`], realHead, 'head undisplaced')
+  assert.notEqual(view.dump(`c/${id}/rev/`)[`c/${id}/rev/${forged}`], undefined, 'stored (I4)')
+  assert.notEqual(view.dump(`flag/conflict/${id}/`)[`flag/conflict/${id}/${realHead}/${forged}`], undefined)
+
+  // only ResolveConflict can elevate it
+  env.op('A', 'resolve-conflict', { id, keep: forged, supersede: [realHead] })
+  const view2 = await env.run()
+  assert.equal(view2.dump(`c/${id}/body`)[`c/${id}/body`], forged)
+  assert.equal(keysUnder(view2, `flag/conflict/${id}/`).length, 0)
+})
+
+test('§5: fabricated base with NO head flags against `-` and stays bodyless', async () => {
+  const env = new Env({ genesis: 'A' })
+  env.op('A', 'create-concept', { path: 'm5/fresh', type: 'note' })
+  const id = env.tag('A', 0)
+  const fake = 'cd'.repeat(32)
+  env.op('A', 'set-body', { id, base: fake, text: 'orphan' })
+  const view = await env.run()
+  assert.equal(view.dump(`c/${id}/body`)[`c/${id}/body`], undefined, 'bodyless until resolve')
+  assert.equal(keysUnder(view, `flag/conflict/${id}/-/`).length, 1)
+})
+
+test('§5: a non-hash-shaped base is rejected outright', async () => {
+  const env = new Env({ genesis: 'A' })
+  env.op('A', 'create-concept', { path: 'm5/garbage', type: 'note' })
+  const id = env.tag('A', 0)
+  env.op('A', 'set-body', { id, base: 'not-a-hash', text: 'x' })
+  const view = await env.run()
+  assert.deepEqual(Object.values(rejectedReasons(view)), ['bad-base'])
 })

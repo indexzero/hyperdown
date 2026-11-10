@@ -16,7 +16,7 @@ const BAD_LEXICALS = [
 ]
 
 for (const lit of BAD_LEXICALS) {
-  test(`poison SetField (${lit.datatype}) is contained, apply does not throw`, async () => {
+  test(`§3: a SetField with a bad ${lit.datatype} lexical is rejected bad-value, apply does not throw, and the next op applies`, async () => {
     const env = new Env({ genesis: 'A' })
     env.op('A', 'create-concept', { path: 'notes/x', type: 'note' })
     const id = env.tag('A', 0)
@@ -35,7 +35,7 @@ for (const lit of BAD_LEXICALS) {
   })
 }
 
-test('poison op containment is convergent across apply order (I1/I2)', async () => {
+test('§3: a rejected bad-value op gives the same view under one-batch and per-node apply (I1/I2)', async () => {
   // Containment must not depend on batching.
   function build() {
     const env = new Env({ genesis: 'A' })

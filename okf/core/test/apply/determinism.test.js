@@ -1,12 +1,15 @@
-// I1 (SPEC §11): apply is a pure function of the linearized op sequence. A
-// source scan makes sure that apply reads no clock, randomness or
-// peer-local state.
+// I1, I2, I3 (SPEC §11): apply is a pure function of the linearized op
+// sequence. I1: apply reads no clock, randomness or peer-local state. I2:
+// one linearization gives bit-identical views. I3: a rebuild from scratch
+// equals the incremental view, so apply carries no state between calls
+// beyond the view.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Env, writerKey } from '../helpers.js'
+import { MemView } from '../../index.js'
 
 const LIB = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'lib')
 
@@ -71,4 +74,64 @@ test('I1: `at` is informational only — different timestamps, same semantic sta
     return d
   }
   assert.deepEqual(strip(v1), strip(v2))
+})
+
+test('I2: independent applies of one linearization converge bit-identically', async () => {
+  const env = new Env({ genesis: 'A' })
+  env.op('A', 'create-concept', { path: 'p/one', type: 'note' })
+  const id = env.tag('A', 0)
+  env.op('A', 'add-writer', { key: writerKey('B'), indexer: true })
+  env.op('B', 'set-body', { id, base: null, text: 'x [w](/p/wanted)' })
+  env.op('A', 'add-tag', { id, value: 't1' })
+  env.op('B', 'add-tag', { id, value: 't2' })
+
+  const v1 = await env.run(env.nodes, { view: new MemView() })
+  const v2 = await env.run(env.nodes, { view: new MemView() })
+  assert.equal(v1.hash(), v2.hash())
+})
+
+test('I2/I5: concurrent tag adds converge to identical bytes under either interleaving', async () => {
+  const env = new Env({ genesis: 'A' })
+  env.op('A', 'create-concept', { path: 'p/tags', type: 'note' })
+  const id = env.tag('A', 0)
+  env.op('A', 'add-writer', { key: writerKey('B'), indexer: false })
+  const setup = [...env.nodes]
+
+  // concurrent: neither observes the other's add
+  const base = env.observedAll()
+  const a = env.op('A', 'add-tag', { id, value: 'shared' }, { clock: base })
+  const b = env.op('B', 'add-tag', { id, value: 'shared' }, { clock: base })
+
+  const v1 = await env.run([...setup, a, b], { view: new MemView() })
+  const v2 = await env.run([...setup, b, a], { view: new MemView() })
+  // the element map is keyed by tag, so its content does not depend on order
+  const K = `c/${id}/f/tags`
+  assert.deepEqual(v1.dump(K), v2.dump(K))
+  assert.equal(Object.keys(v1.dump(K)[K].els).length, 2)
+})
+
+function scenario() {
+  const env = new Env({ genesis: 'A' })
+  env.op('A', 'create-concept', { path: 'wiki/home', type: 'page' })
+  const home = env.tag('A', 0)
+  env.op('A', 'add-writer', { key: writerKey('B'), indexer: false })
+  env.op('A', 'set-body', { id: home, base: null, text: '[next](/wiki/next) and [gone](/wiki/gone)' })
+  env.op('B', 'create-concept', { path: 'wiki/next', type: 'page' })
+  const next = env.tag('B', 0)
+  env.op('B', 'add-tag', { id: next, value: 'todo' })
+  env.op('B', 'set-path', { id: next, path: 'wiki/renamed' })
+  env.op('A', 'delete-concept', { id: next })
+  env.op('B', 'undelete-concept', { id: next })
+  env.raw('A', Buffer.alloc(70000)) // oversize, rejected but counted in seen/
+  env.op('A', 'set-field', { id: home, key: 'status', value: ['live'] })
+  return env
+}
+
+test('I3: incremental (per-node applies) equals one-shot rebuild', async () => {
+  const env = scenario()
+  const incremental = await env.run(env.nodes, { view: new MemView(), chunk: 1 })
+  const oneShot = await env.run(env.nodes, { view: new MemView() })
+  const chunked = await env.run(env.nodes, { view: new MemView(), chunk: 3 })
+  assert.equal(incremental.hash(), oneShot.hash())
+  assert.equal(chunked.hash(), oneShot.hash())
 })

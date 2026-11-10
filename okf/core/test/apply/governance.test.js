@@ -116,7 +116,7 @@ test('I10: an AddWriter whose swarm key is not 32 bytes is rejected bad-swarm-ke
   )
 })
 
-test('I10: an AddWriter whose key is not 32 bytes is rejected bad-writer-key, writes no gov/ key, gets no grant, and never counts as an indexer (D-047 F18)', async () => {
+test('I10: an AddWriter whose key is not 32 bytes is rejected bad-writer-key, writes no gov/ key, gets no grant, and never counts as an indexer', async () => {
   // A z-base-32 id passed where a hex key belongs decodes to no bytes
   // (b4a.from(id, 'hex')). A gov/writer record for it is a phantom indexer,
   // and that phantom lets the only real indexer remove itself.
@@ -242,7 +242,7 @@ test('I10: a RemoveWriter that would leave zero indexers is rejected', async () 
   assert.notEqual((await view2.get('gov/removed/' + env.hex('A'))), null)
 })
 
-test('I10: an AddWriter that would demote the last live indexer is rejected policy-governance (D-047 F19)', async () => {
+test('I10: an AddWriter that would demote the last live indexer is rejected policy-governance', async () => {
   // Bundle.addWriter defaults to indexer: false, so `writers.add` of its
   // own key by the only indexer is a demotion. Without this rule the vault
   // has no indexer left and no governance.
