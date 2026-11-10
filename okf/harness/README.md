@@ -15,7 +15,7 @@ writer op vocabulary and the scenarios change.
 ## Quick start
 
 ```sh
-pnpm test:okf-harness:clean          # S1..S10, clean 0ms links
+pnpm test:okf-harness:clean          # every scenario, clean 0ms links
 pnpm test:okf-harness:lossy          # 200ms ±150ms jitter, 5% stalls
 pnpm test:okf-harness:partitioned    # write-during-partition, heal-after
 pnpm test:okf-harness:fuzz           # seeded fuzz (HARNESS_FUZZ_ITERS iters)
@@ -31,7 +31,7 @@ Reproduce a specific run by exporting its seed and profile:
 
 ```sh
 HARNESS_SEED=7 HARNESS_PROFILE=partitioned \
-  node --test okf/harness/scenarios/s01-lww.test.js
+  node --test okf/harness/scenarios/merge-across-peers.test.js
 ```
 
 ## Environment
@@ -40,7 +40,7 @@ HARNESS_SEED=7 HARNESS_PROFILE=partitioned \
 | -------------------- | ------------------------------------------- | ------- |
 | `HARNESS_PROFILE`    | `clean` \| `lossy` \| `partitioned`         | `clean` |
 | `HARNESS_SEED`       | run seed (uint32); logged and replayable    | clock   |
-| `HARNESS_FUZZ_ITERS` | S10 fuzz iterations                         | `3`     |
+| `HARNESS_FUZZ_ITERS` | `fuzz.test.js` iterations                   | `3`     |
 
 Scratch lives under `sslop/036/tmp/<run>/<writer>/` — unique per run, never
 `/tmp`, never deleted (handles are closed; files stay for post-mortem). Each
@@ -48,20 +48,20 @@ run also writes `harness.log` (fault schedule + convergence events).
 
 ## Scenario ↔ invariant map
 
-| scenario                | invariant | what it stimulates                                 |
-| ----------------------- | --------- | -------------------------------------------------- |
-| S1 `s01-lww`            | I6        | concurrent same-key SetField; permutation replay   |
-| S2 `s02-orset`          | I5        | tag OR-set add/remove race (SU-set); staletag      |
-| S3 `s03-wanted`         | I7/I8     | demand lifecycle: link + late create, both orders  |
-| S4 `s04-body-conflict`  | I4/I7     | same-base SetBody siblings; ResolveConflict drains |
-| S5 `s05-rename-edit`    | I6        | rename + concurrent edit merge (Kleppmann)         |
-| S6 `s06-rename-rename`  | I6        | concurrent rename; loser flag/clobber              |
-| S7 `s07-path-collision` | I8/I9     | two ids one path; conflict copy; byte-identical    |
-| S8 `s08-revocation`     | I10       | revocation race under partition — the vault-ld     |
-|                         |           | blocker; asserts convergence + replay-stability    |
-| S9 `s09-generation`          | I11       | a generation (materialize, then import) under concurrency; fresh peer converge |
-| S10 `s10-fuzz`          | I1/I2/I8  | seeded random schedules + independent coherence    |
-|                         |           | + shrink to a committed regression                 |
+| scenario file                | invariant | what it stimulates                                 |
+| ---------------------------- | --------- | -------------------------------------------------- |
+| `merge-across-peers.test.js` | I6        | concurrent same-key SetField; permutation replay   |
+| `merge-across-peers.test.js` | I5        | tag OR-set add/remove race (SU-set); staletag      |
+| `merge-across-peers.test.js` | I7/I8     | demand lifecycle: link + late create, both orders  |
+| `merge-across-peers.test.js` | I4/I7     | same-base SetBody siblings; ResolveConflict drains |
+| `merge-across-peers.test.js` | I6        | rename + concurrent edit merge (Kleppmann)         |
+| `merge-across-peers.test.js` | I6        | concurrent rename; loser flag/clobber              |
+| `merge-across-peers.test.js` | I8/I9     | two ids one path; conflict copy; byte-identical    |
+| `revocation.test.js`         | I10       | revocation race under partition — the vault-ld     |
+|                              |           | blocker; asserts convergence + replay-stability    |
+| `generation.test.js`         | I11       | a generation (materialize, then import) under concurrency; fresh peer converge |
+| `fuzz.test.js`               | I1/I2/I8  | seeded random schedules + independent coherence    |
+|                              |           | + shrink to a committed regression                 |
 
 All scenarios run at every profile; the profile only varies healed-link
 quality (the partition schedule is the scenario's, not the link's).
@@ -108,8 +108,9 @@ quality (the partition schedule is the scenario's, not the link's).
 - **Late join to a populated vault**: the fresh joiner must *initiate* the
   replication link (harness side 0) — autobee backfills an already-populated
   vault to a new peer only when the joiner pulls. Setup-time joins work
-  either way because links form before any data exists. See S9.
-- **Revocation (S8)**: the I10 guarantee is convergence + a replay-stable
+  either way because links form before any data exists. See
+  `scenarios/generation.test.js`.
+- **Revocation (`scenarios/revocation.test.js`)**: the I10 guarantee is convergence + a replay-stable
   applied/rejected partition, not "every partitioned op rejects". C's
   partitioned ops are *concurrent* with the removal; one that linearizes
   before the removal has no `gov/removed` to check yet and lands. No

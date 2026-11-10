@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { setupVaultCluster } from '../lib/setup.js'
 import { checkCoherence } from '../lib/coherence.js'
 
-test('smoke: two writers converge through the fault proxy + coherence holds', async () => {
+test('two writers converge through the fault proxy, and coherence holds', async () => {
   const { ctl, writers } = await setupVaultCluster('smoke', 2)
   const [a, b] = writers
   try {

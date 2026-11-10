@@ -1,4 +1,4 @@
-// S9 (I11): one generation under the harness, then a fresh peer joins the
+// I11: one generation under the harness, then a fresh peer joins the
 // new vault. `_rev` and log.md re-derive, so the test compares `_id`, type,
 // path, tags and head text. See SPEC §10.
 import { test } from 'node:test'
@@ -29,7 +29,7 @@ function liveState(dump) {
   return out
 }
 
-test('S9: a generation (materialize, then import) preserves _id/type/path/tags/head + new peers converge identically', async () => {
+test('a generation (materialize, then import) preserves _id, type, path, tags and head, and new peers converge identically', async () => {
   const { ctl, writers } = await setupVaultCluster('s09-generation', 2)
   const [w0, w1] = writers
   try {

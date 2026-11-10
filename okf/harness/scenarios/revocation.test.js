@@ -1,4 +1,4 @@
-// S8 (I10): an indexer removes C while C has unreplicated ops behind a
+// I10: an indexer removes C while C has unreplicated ops behind a
 // partition. Those ops are concurrent with the removal, so which ones land
 // depends on the linearization alone (SPEC §8). The test asserts
 // convergence and one applied/rejected partition on every peer, not that
@@ -18,7 +18,7 @@ function partitionOfC(dump, id, cHex) {
   return { landed, rejected }
 }
 
-test('S8: revocation race — every peer agrees which of C’s partitioned ops landed; converge', async () => {
+test('revocation race: every peer agrees which of C’s partitioned ops landed, and the peers converge', async () => {
   const { ctl, writers } = await setupVaultCluster('s08-revocation', 3)
   const [w0, w1, c] = writers // w0 genesis indexer, w1 plain, c the target
   const cHex = c.info.localKey // localKey is already hex

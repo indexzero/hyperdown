@@ -1,4 +1,4 @@
-// S10: seeded fuzz over 3 to 7 real writer processes with random
+// Seeded fuzz over 3 to 7 real writer processes with random
 // partitions. After every heal, the convergence hash and a coherence check
 // that never calls the code under test. A failure shrinks to a minimal
 // repro in okf/harness/regressions/. HARNESS_FUZZ_ITERS sets the iterations,
@@ -11,7 +11,7 @@ import { generateSchedule, runSchedule, shrinkSchedule, saveRegression } from '.
 
 const ITERS = Number(process.env.HARNESS_FUZZ_ITERS || 3)
 
-test(`S10: seeded fuzz x${ITERS} (convergence + independent I8 after every heal)`, async () => {
+test(`seeded fuzz x${ITERS}: the peers converge and pass an independent I8 check after every heal`, async () => {
   const profile = resolveProfile()
   const baseSeed = resolveSeed()
   console.log(`[fuzz] baseSeed=${baseSeed} iters=${ITERS} profile=${profile.name}`)
