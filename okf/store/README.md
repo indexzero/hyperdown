@@ -67,7 +67,7 @@ requires `b4a`. The store loads only where both resolve from those
 packages. A package manager that links only declared dependencies, such as
 pnpm with `hoist=false`, must hoist both publicly. This workspace does that
 with `publicHoistPattern: [hypercore-crypto, b4a]` in `pnpm-workspace.yaml`,
-and `okf/test/store-deps.test.js` checks it.
+and `okf/store/test/pins.test.js` checks it.
 
 ## Vaults this release opens
 
@@ -252,7 +252,7 @@ rejected`). Read it in your write loop, because a reorder can change it
 and reports each rejected op (`okf/faces/lib/ingest.js:677-686`, test "a
 body that core rejects on an established concept is not recorded as
 ingested: it stays pending, materialize keeps it, and ingest names the
-rejection (D-048 F02)").
+rejection").
 
 ### One process per vault directory
 
@@ -335,7 +335,7 @@ hyperswarm. The vault key is not a capability to connect:
   README describes as the connected peers (hyperswarm 4.17.0
   `lib/peer-info.js:24`, `:110-115`, `index.js:312-319`). So
   `okf/store/package.json` pins hyperswarm at exactly `4.17.0`, and
-  `okf/test/store-deps.test.js` fails when the store declares or
+  `okf/store/test/pins.test.js` fails when the store declares or
   resolves another version.
 - **Revocation.** `revokePeer(swarmKey)` takes a key out of this peer's
   allowlist, destroys its open connections, and stops the direct dials to

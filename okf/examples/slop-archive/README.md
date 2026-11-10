@@ -46,7 +46,8 @@ deliberate human act, never something an agent can do mid-session.
    contract, printed as proof.
 
 The committed [`out/`](./out) tree is the readable dump — all four sessions
-live, because the deleted one was recovered. `okf/test/example-slop-archive.test.js`
+live, because the deleted one was recovered.
+`okf/examples/test/regenerate.test.js`
 runs the script into a scratch dir and asserts `out/` regenerates
 byte-identically (a fixed writer key pair and pinned `at` timestamps make it
 deterministic). **Do not hand-edit `out/`.**

@@ -17,7 +17,7 @@ The implementation is a single line — `return report.ok ? 0 : 1`
 (`okf/cli/lib/run.js`, the N3 comment) — and the amendment window was
 verified open (proposals doc Q2, resolved 2026-07-31):
 
-- Library tests (`okf/test/faces-preservation.test.js`) assert on the
+- Library tests (`okf/faces/test/preservation.test.js`) assert on the
   `report.pendingIngest` object, not the exit code — unaffected.
 - The CLI test asserts exit 1 only for "not a vault" (real failure) and
   exit 0 for clean materialize — both preserved.

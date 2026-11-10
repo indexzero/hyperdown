@@ -82,8 +82,14 @@ view path that the record saw. A record whose file a delete pass found
 gone takes back only the same bytes. The record goes when an ingest of the
 file or of the concept completes, or when the delete of the file takes
 effect. A rename and an edit in one step, while no watcher runs, mints
-again. Tests: the two "D-055 Q2" tests and the three "D-060 F04" tests in
-`okf/test/faces-ingest.test.js`.
+again. Tests: "a later ingest of a pending new file reuses the concept that
+its first ingest created, also in a new watcher: core rejected a later op", "a
+later ingest of a new file whose ingest failed after its create reuses that
+concept", "a renamed pending file keeps its concept: scan() moves the concept
+with it and attaches no second one", "a stale pending record attaches no file:
+its concept moved with a note that carries its _id, or another writer moved
+it" and "a pending record whose file a scan found gone attaches only the same
+bytes back, never a new note" in `okf/faces/test/ingest.test.js`.
 
 **okf §9 materialize path-safety violations are reported, never written to
 the view.** §7 notes a materialize-time containment violation "is reported on
@@ -158,7 +164,7 @@ What stays, in another form:
   `index.md` (a regenerated face, §9), and a collision resolved in the face
   leaves the face's `index.md` stale. The I11 round-trip test still
   compares a materialize of the new vault with the face, `index.md`
-  included (`okf/test/i11-roundtrip.test.js`).
+  included (`okf/faces/test/generation.test.js`).
 
 ---
 
@@ -173,7 +179,7 @@ resolves autobee 2.12.1, corestore 7.16.1, hypercore 11.39.2 and hyperbee2
 the entry names breaks. Each entry names the tests that cover it. okf
 reads no undocumented autobee property (test: "the store, core, faces and
 cli read no undocumented autobee property" in
-`okf/test/store-ordinal.test.js`). Where an entry relies on a part of
+`okf/store/test/ordinal.test.js`). Where an entry relies on a part of
 autobee that the README does not document, it says so.
 
 **The pins, and the corestore floor.** `okf/store/package.json` pins
@@ -195,8 +201,8 @@ store-wide version (corestore 7.12.5 `index.js:670`), which is 1 by
 default (corestore `index.js:258`). autobee's view encryption refuses a
 view core below version 3 (`lib/encryption.js:83-86`). So 7.12.6 is the
 floor, and the exact pin `7.16.1` is above it. Tests:
-`okf/test/store-deps.test.js` (the exact pins and the resolved
-versions) and `okf/test/store-encryption.test.js` (the floor).
+`okf/store/test/pins.test.js` (the exact pins and the resolved versions) and
+`okf/store/test/encryption.test.js` (the floor).
 
 **The apply contract.** autobee calls `apply(nodes, view, host)`
 (`README.md:74`, `:185-208`, `lib/apply-view.js:17-19`). `view` is what
@@ -222,8 +228,9 @@ system records nothing. A plain node of such a writer stops earlier, in
 `Writer._next` (`lib/writers.js:613-615`). SPEC §8 needs this: an
 outsider puts no op and no approval into apply. autobee still reads such a
 node and checks its links before the drop (`lib/writers.js:547-618`). The
-wakeup cost of an outsider is G44 in `SECURITY_MODEL.md`. Tests: `A4` to
-`A7` in `okf/test/store-substrate-attacks.test.js`.
+wakeup cost of an outsider is G44 in `SECURITY_MODEL.md`. Tests: "strangers
+put no node into apply, so they drive no livelock" to "an outsider backdated
+node flips no winner" in `okf/store/test/substrate-attacks.test.js`.
 
 **`bootstrapWeight: 0` and grants at weight 0: every writer stands at
 weight 0.** `bootstrapWeight` is a constructor option that autobee reads
@@ -260,9 +267,11 @@ gives okf these results:
 A member can still forge a node with approvals. autobee then adds each
 named key at weight 0, because the weight of the carrier caps the grant
 (`index.js:1432-1441`, `lib/system.js:75`). `SECURITY_MODEL.md` lists this
-residual. Tests: "every writer stands at weight 0 on every peer" in
-`okf/test/store-writers.test.js`, and `G35` and `G50` in
-`okf/test/store-substrate-attacks.test.js`.
+residual. Tests: "every writer stands at weight 0 on every peer, and no honest
+node carries approvals or a witness" in `okf/store/test/writers.test.js`, and
+"no peer collects an approval, with more than 32 promotions pending" and "no
+writer climbs, also when a member forges a higher-tier approval" in
+`okf/store/test/substrate-attacks.test.js`.
 
 **The grant at every `AddWriter` op (AD7).** Core grants the key of every
 `AddWriter` op that it folds, at weight 0, whatever the outcome of the op
@@ -284,14 +293,15 @@ residual. Tests: "every writer stands at weight 0 on every peer" in
 - autobee copies a writer key into a fixed 34-byte system key
   (`lib/encoding.js:64-69`). So core grants only a 32-byte key.
 
-Test: `okf/test/store-governance-race.test.js`.
+Test: "the governance race converges, and every op of the race writer leaves a
+flag (I2, I3, I4)" in `okf/store/test/writers.test.js`.
 
 **The `update` handler.** The constructor option `update (view, changes)`
 is in the README (`README.md:77`). autobee calls it after apply, once
 `db.view` holds the new state (`index.js:793-794`, `:840`,
 `:1051-1058`). The Bundle refreshes `isIndexer` from `gov/` there, and once
-at open. Test: "isIndexer answers from gov/" in
-`okf/test/store-writers.test.js`.
+at open. Test: "isIndexer answers from gov/: a live gov/writer record with
+indexer true" in `okf/store/test/writers.test.js`.
 
 **`fastForward: false`: every peer folds every op through its own apply.**
 autobee reads the option at `index.js:105-108`. The README shows only an
@@ -302,8 +312,8 @@ onto a head that another writer stamped, with no apply for that prefix
 from no head (`index.js:111`), runs no network boot (`index.js:601-604`),
 and queues no fast-forward from a wakeup hint (`index.js:922-923`). okf
 never calls `moveTo` (`index.js:1607-1618`). I2 and I3 need this. Test: "a
-joiner folds every op through its own apply" in
-`okf/test/store-convergence.test.js`.
+joiner folds every op through its own apply, never a stamped view (I2/I3)" in
+`okf/store/test/convergence.test.js`.
 
 **The position is the per-writer ordinal (AD4).** The README documents
 `node.length` as the "position in the writer's core" (`README.md:194`).
@@ -315,8 +325,8 @@ node, it is `appendLength`, which starts at the core length plus one
 the system (`index.js:1430`). Apply gets only the nodes with a non-empty
 value (`index.js:1444`). So an empty node takes a position and reaches no
 apply, and the seqs of the ops of a writer can have gaps (SPEC §3). Tests:
-the position tests in `okf/test/store-ordinal.test.js`, and
-`okf/test/store-restart.test.js`.
+the position tests in `okf/store/test/ordinal.test.js` and
+`okf/core/test/apply/position.test.js`, and `okf/store/test/restart.test.js`.
 
 **The length of the local core gives the next position.** The store takes
 the seq of a new op from `db.local` before it encodes the op. The README
@@ -347,8 +357,10 @@ The local writer appends through that core (`index.js:257`,
 Between the read of the length and the append inside `db.append`, autobee
 awaits (`index.js:1529-1561`). If a later autobee appends a local node in
 that window, the op lands one position later. Every peer then rejects it
-`forged-clock`, and the views stay equal. Tests: `G10` and `G13` in
-`okf/test/store-ordinal.test.js`.
+`forged-clock`, and the views stay equal. Tests: "after a crash that loses the
+boot record, each next op takes its own position, never a used seq" and "with
+autobee's default ackThreshold, a writer that falls 40 flushes behind appends
+no empty block" in `okf/store/test/ordinal.test.js`.
 
 **An append returns only once its node is durable.** `Bundle.append`
 resolves only once `db.local` holds the position of its node. This relies
@@ -378,7 +390,7 @@ on five behaviours:
   corestore.
 
 An append that the close stops fails `VAULT_CLOSED_BEFORE_DURABLE`, and it
-wrote nothing. Tests: `okf/test/store-append.test.js`.
+wrote nothing. Tests: `okf/store/test/append.test.js`.
 
 **`db.writable` is the substrate admission signal.** `db.writable` is
 `true` once autobee has added this writer (`README.md:114-116`). autobee
@@ -391,8 +403,9 @@ and then autobee closes (`index.js:669-690`). So the store checks
 `db.writable` is not okf membership. Core grants the key of every
 `AddWriter` op that it folds, a rejected one too (AD7 above,
 `okf/core/lib/apply.js:375`). So a key can be writable with no
-`gov/writer` record, and apply then rejects each of its ops. Test: the
-`G12` test in `okf/test/store-writers.test.js`.
+`gov/writer` record, and apply then rejects each of its ops. Test: "an append
+from a writer that is not writable fails fast: VAULT_NOT_WRITABLE, autobee
+stays open, no seq used" in `okf/store/test/writers.test.js`.
 
 **`host.removeWriter` is never called.** SPEC §8 revocation is causal, in
 okf's apply. A removal at the substrate records the writer as removed
@@ -419,7 +432,7 @@ writer (`index.js:1411-1413`). autobee keeps the encryption key in the user
 data of the local core (`lib/boot.js:108-131`), so a reopen needs no key.
 `encryptionKey` encrypts the writer cores, the system and the view
 (`README.md:308-320`, `index.js:52`, `:219`, `:263`, `lib/writers.js:269`).
-Tests: `okf/test/store-encryption.test.js`.
+Tests: `okf/store/test/encryption.test.js`.
 
 **The store session, replication and close.** The Bundle hands autobee a
 per-generation namespace of its root corestore (corestore
@@ -442,4 +455,7 @@ until somebody writes. The Bundle open calls the documented
 `db.wakeup({ key, length: 0 })` (`README.md:165-167`) for each key with a
 `gov/writer` record. It wakes no key that only `seen/` holds, because each
 wakeup opens a core, and a member can make any number of such keys (G32).
-Tests: the two "D-047 F02" tests in `okf/test/store-restart.test.js`.
+Tests: "a peer that closes during a heal, and reopens in a quiet vault,
+converges: open wakes each writer with a gov/writer record" and "open wakes
+each key with a gov/writer record, and never a key that only seen/ holds" in
+`okf/store/test/restart.test.js`.

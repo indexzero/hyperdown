@@ -51,6 +51,6 @@ edit you can review, exactly as if a human had changed the file.
 
 A fixed writer key pair, pinned `at` timestamps, and the content-hash-pinned
 fixture make every byte under `out/` identical on every run.
-`okf/test/example-vlurp-library.test.js` runs the script **fully offline**
+`okf/examples/test/regenerate.test.js` runs the script **fully offline**
 (fixture path) and asserts `out/` regenerates byte-identically and is
 OKF-conformant. **Do not hand-edit `out/`.**

@@ -142,7 +142,7 @@ record carries it. Its open connections close. The bound key is the key
 on the writer's record (`add-writer --swarm-key`), and for the creator
 the key that the invite binds to the vault key (`metadata.swarm.genesis`,
 which `init` writes). So a removal of the creator cuts it too. A peer that holds the vault key and the invite, but no
-admitted swarm key, never connects (`okf/test/store-swarm.test.js`).
+admitted swarm key, never connects (`okf/store/test/swarm.test.js`).
 
 **A private DHT.** One `auto-okf bootstrap` node is the hub. Every peer
 passes its address to `--bootstrap`:
@@ -416,7 +416,7 @@ per command) and exits 0.
   bytes encoded; maxOpBytes is 65,536`. Split
   the document into smaller linked concepts. Test: "the oversize preflight
   encodes the set-body op: a body just below maxOpBytes whose op is over
-  it appends nothing and stays pending (D-048 F02)".
+  it appends nothing and stays pending".
 - `auto-okf` refuses vault-ld storage by marker file (`vault-ld.json`),
   naming the right tool (exit 1, storage untouched); `autovault-ld` refuses
   `okf-vault.json` symmetrically — the twin CLIs never open each other's
@@ -424,40 +424,13 @@ per command) and exits 0.
 
 ## Tests
 
-From the repo root: `pnpm test` (or `pnpm test:okf`). The CLI smoke suite
-(`okf/test/cli.test.js`) spawns the real `auto-okf` binary against real
-vaults on disk: init→materialize produces a bundle; a hand-authored file
-ingests to the expected ops; path-scoped ingest folds only the named files;
-`status` reports the five per-file states read-only; add-writer/remove-writer round trip; `wanted`
-lists an unresolved link; `flags` lists a seeded conflict, and after
-`resolve` a generation runs as `materialize`, then `import`; `materialize`
-exits 1 and names each value that the face cannot hold, by the `_id`
-alone for an encrypted vault, and a path whose spelling folds together
-with another one; `materialize` warns when it writes an encrypted
-vault as plaintext, before the first plaintext write; `import` prints its counts and its fidelity check, writes
-nothing to the face, carries `--metadata` and records `--predecessor`;
-`import --encryption-key` makes a vault in which no file holds the
-plaintext of the face, checked against an unencrypted control, and prints
-no warning; `import` refuses a pinned or non-empty `<dir>`, a vault-ld
-`<dir>`, a face with an open collision, a missing face, and an encrypted
-predecessor without a key, before it writes; `materialize` marks the face
-of an encrypted vault, and `import` of that face without a key refuses,
-also without `--metadata`; its usage errors exit 2;
-`IMPORT_FIDELITY` names every difference; an unadmitted peer cannot issue
-`add-writer`; `undelete` restores a tombstone; `watch` ingests a foreground
-edit and exits cleanly on SIGINT;
-`keys` prints the writer key and the swarm key, and the swarm key before a
-vault exists; `init --swarm-allow` pins every key, and refuses a bad or repeated key before the store exists; `add-writer --swarm-key`
-puts the key on `gov/writer`, and `add-writer` refuses a writer with no
-bound swarm key; `join` refuses fresh storage without the invite, reads
-the invite by name, and a directory that joined without it refuses it
-later by name; `join --swarm-allow` keeps a local list apart
-from the invite, and refuses a bad or repeated key; `watch --swarm` refuses
-by name without `--bootstrap` or `--public-dht`; `bootstrap` refuses a bad
-port or host, and runs a node through which `watch --swarm --bootstrap`
-replicates to an admitted peer; with the local list of `join
---swarm-allow`, a late joiner whose creator is offline connects to the
-admitting indexer and becomes writable.
+From the repo root: `pnpm test` (or `pnpm test:okf`).
+`okf/cli/test/commands.test.js` runs the real `auto-okf` binary against
+vaults on disk. It tests the contract of each command: the arguments and
+the usage errors, the exit codes, and the exact lines that a caller
+parses. It does not test what a command does to a vault. The tests of
+`@auto-okf/faces` and `@auto-okf/store` test that, in `okf/faces/test` and
+`okf/store/test`.
 
 ## License
 

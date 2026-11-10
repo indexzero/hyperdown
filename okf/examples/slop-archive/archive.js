@@ -22,7 +22,7 @@
 //
 // Determinism: a fixed writer key pair and pinned `at` timestamps make every
 // byte under out/ identical on every run (I9; asserted by
-// okf/test/example-slop-archive.test.js). Do not hand-edit out/.
+// okf/examples/test/regenerate.test.js). Do not hand-edit out/.
 import { mkdir } from 'node:fs/promises'
 import { join, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'

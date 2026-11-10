@@ -25,7 +25,7 @@
 //
 // Determinism: a fixed writer key pair, pinned `at` timestamps, and the
 // content-hash-pinned fixture make every byte under out/ identical on every
-// run (I9; asserted by okf/test/example-vlurp-library.test.js, which runs
+// run (I9; asserted by okf/examples/test/regenerate.test.js, which runs
 // fully offline). Do not hand-edit out/.
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'

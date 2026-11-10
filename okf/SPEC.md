@@ -128,7 +128,7 @@ paths.
   read `index.js`). The contract below is verified against the installed
   **autobee@2.12.1**, pinned at exactly `2.12.1` in
   `okf/store/package.json` (test: "the store pins autobee at exactly
-  2.12.1" in `okf/test/store-deps.test.js`): a standalone multiwriter
+  2.12.1" in `okf/store/test/pins.test.js`): a standalone multiwriter
   Hyperbee on hyperbee2 and hypercore 11, with no autobase dependency
   (autobee `package.json`). A citation such as
   `index.js:95` is relative to the autobee package root. `DEVIATIONS.md`
@@ -581,8 +581,10 @@ saga is the cautionary tale). The rules are frozen:
   (autobee@2.12.1 `lib/topo.js:168-179`), and its op takes effect. No
   `flag/rejected` entry records it. okf cannot stop that without changing
   autobee. The store of a revoked writer refuses its own appends
-  (`VAULT_REVOKED`, test "writer add/remove round trip: causal
-  revocation, uniform on every peer"), so a cooperating client stops.
+  (`VAULT_REVOKED`, test "writers.add and writers.remove round trip: the
+  removal records the position that the store observed, every peer flags the
+  later op revoked, and the next append of the removed writer fails
+  VAULT_REVOKED"), so a cooperating client stops.
   `SECURITY_MODEL.md` (the trust model, G5, G34) states the residual and
   the eviction ladder.
 - **Re-admission.** An accepted `AddWriter` that names a revoked writer
@@ -692,8 +694,8 @@ saga is the cautionary tale). The rules are frozen:
   (`lib/writers.js:15`, `:595-597`, `:649`). That node waits, with each
   node that links it, until the peer's clock reaches it. autobee bounds no
   timestamp in the past, so a writer can choose where its node sorts
-  (test "A7b G5: a member backdated node flips the winner on every peer
-  (residual)"; `SECURITY_MODEL.md`, G5). The op field `at` (§3) orders
+  (test "a member backdated node flips the winner on every peer (residual)";
+  `SECURITY_MODEL.md`, G5). The op field `at` (§3) orders
   nothing.
 - Rate limiting is a writer-local token bucket (vault-ld §8.5 ancestry —
   never a global window): each writer's bucket gains 1 token per accepted
@@ -972,10 +974,10 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   refuses it as not empty. A successful import removes the claim at both
   places, and a failed one removes it with the rest of what it created
   (`okf/faces/lib/import.js:311-353`, `claimDir`; tests
-  "G3-P8 F01 (T24): a second import into the same <dir> refuses by name
+  "a second import into the same <dir> refuses by name
   before its initBundle and deletes nothing; the vault, pin and files of
   the first import stay, for an absent and an existing empty <dir>" and
-  "F05 (D-060): a successful import leaves no claim file, at the top of
+  "a successful import leaves no claim file, at the top of
   <dir> or in <dir>/db/, where the store moves it at init").
 - **Import-mode ingest.** import reads every regular `.md` file of the
   face at any depth, dot segments included, except the regenerated faces
@@ -1027,9 +1029,8 @@ Rules of import (`okf/faces/lib/import.js`, `IngestWatcher.importNote` in
   what it created while it held the claim, and then the claim. A `<new-dir>` that
   import made is removed. An existing empty `<new-dir>` stays, empty
   (`okf/faces/lib/import.js:165-176`, `release()` at `:341-347`; test
-  "T13 (T24): a truncated note
-  fails the import by name with IMPORT_FIDELITY, and import removes the
-  new directory").
+  "a truncated note fails the import by name with IMPORT_FIDELITY, and import
+  removes the new directory").
 - **Encryption.** `--encryption-key` encrypts the new vault. import reads
   plaintext and writes none, so it prints no plaintext warning.
 

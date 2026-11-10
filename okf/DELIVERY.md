@@ -14,7 +14,8 @@ firewall admits only the swarm keys of the invite, of live `gov/writer`
 records and of the peer's local list. The public DHT needs
 `--public-dht` (`store/lib/bundle.js` `swarm()`). The store pins autobee
 at exactly 2.12.1, corestore at exactly 7.16.1 and hyperswarm at exactly
-4.17.0 (`store/package.json`, `test/store-deps.test.js`). A reopen wakes each writer with a
+4.17.0 (`store/package.json`, `store/test/pins.test.js`). A reopen wakes each
+writer with a
 `gov/writer` record. The ingest preflight measures the encoded op, and a
 file with an op that core rejects stays pending. Core rejects an
 `AddWriter` whose writer key or swarm key is not 32 bytes, and one that
@@ -59,7 +60,7 @@ is a real op-log projection.
 | Store (vault lifecycle on autobee, metadata, governance, replication) | `store` (`@auto-okf/store`) |
 | Faces (materialize +index.md/log.md, ingest, wanted, import) | `faces` (`@auto-okf/faces`) |
 | CLI | `cli` (`@auto-okf/cli`, bin `auto-okf`) |
-| Invariant + regression suite (I1..I11) | `test`, `test/regressions` |
+| Invariant + regression suite (I1..I11) | `*/test` |
 | Multi-process fault harness + S1..S10 + fuzz + soak | `harness` |
 | Examples: agent-session (flagship), slop-archive, vlurp-library | `examples/*` (committed `out/`) |
 | Deviations / backlog | `DEVIATIONS.md` / `../orchestration/BACKLOG.md` |

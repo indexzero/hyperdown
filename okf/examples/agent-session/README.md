@@ -78,6 +78,6 @@ Writer key pairs derive from fixed seeds and every concurrent phase starts from
 a fully converged barrier, so the final view — and therefore every byte under
 `out/`, including the `_id` frontmatter, the `log.md` dates (from each op's
 informational `at`), and the wanted ranking — is identical on every run.
-`okf/test/example-agent-session.test.js` runs this script into a scratch dir
+`okf/examples/test/regenerate.test.js` runs this script into a scratch dir
 and asserts the output is byte-identical to the committed `out/`. **Do not
 hand-edit `out/`** — regenerate it with the command above.

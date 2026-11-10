@@ -177,9 +177,15 @@ path, and a new note there gets a concept of its own. The record of a
 concept goes when an ingest of its file or of the concept completes, or
 when the delete of the file takes effect. A rename and an edit in one
 step, while no watcher runs, is a new file, and the old concept waits for
-the delete of the old path (`okf/faces/lib/ingest.js:809-838`). Tests:
-the two "D-055 Q2" tests and the three "D-060 F04" tests in
-`okf/test/faces-ingest.test.js`.
+the delete of the old path (`okf/faces/lib/ingest.js:809-838`). Tests: "a
+later ingest of a pending new file reuses the concept that its first ingest
+created, also in a new watcher: core rejected a later op", "a later ingest of
+a new file whose ingest failed after its create reuses that concept", "a
+renamed pending file keeps its concept: scan() moves the concept with it and
+attaches no second one", "a stale pending record attaches no file: its concept
+moved with a note that carries its _id, or another writer moved it" and "a
+pending record whose file a scan found gone attaches only the same bytes back,
+never a new note" in `okf/faces/test/ingest.test.js`.
 
 > The note codec keeps body bytes exactly: `parseNote(renderNote(pairs,
 > body)).body === body` for every body and every non-empty `pairs` (a note
@@ -356,7 +362,8 @@ a replicated peer, and a from-scratch rebuild (I9); ingest minimality (one
 field edit → one op); the full `materialize → edit → ingest → materialize`
 round-trip; a rename + concurrent-edit merge across the round-trip; the N3
 human-file-preservation case; conflict-copy round-trip; the **I11 generation**
-suite (`okf/test/i11-roundtrip.test.js`: a non-trivial bundle round-trips
+suite (`okf/faces/test/generation.test.js` and
+`okf/faces/test/import.test.js`: a non-trivial bundle round-trips
 through materialize and import byte-identically modulo `_rev`/`log.md`,
 identity + state fidelity per live concept, history shed positively
 asserted, a second generation that keeps even `_rev`, the values that
@@ -365,7 +372,7 @@ exact body bytes, the carried `limits`, `rate` and `schemaVersion`, the
 encoded-op preflight and core rejections, a truncated note that fails
 `IMPORT_FIDELITY`, the refusals, and a second import into the same `dir`
 that refuses `IMPORT_DIR_CLAIMED` while the first keeps its vault); and an
-**independent** OKF v0.1 conformance check (`okf/test/okf-conformance.js`,
+**independent** OKF v0.1 conformance check (`okf/faces/test/okf-conformance.js`,
 written from scratch against the OKF spec — it does not call this package's
 emitter).
 
