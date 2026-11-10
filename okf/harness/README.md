@@ -98,7 +98,7 @@ quality (the partition schedule is the scenario's, not the link's).
 - **`lib/fuzz.js`** — seeded schedule generation (incl. malformed ops,
   oversized paths, unknown op types, garbage bases, adversarial `_id` mint
   attempts), `runSchedule`, greedy `shrinkSchedule`, and `saveRegression`
-  (writes `okf/test/regressions/*.json`).
+  (writes `okf/harness/regressions/*.json`).
 - **`lib/rng.js` / `lib/profiles.js` / `lib/setup.js`** — seeded PRNG, the
   three fault profiles, and cluster bring-up (genesis indexer + §8 in-log
   `AddWriter` onboarding).

@@ -2,7 +2,7 @@
 // partitions, malformed ops included. After every heal it makes sure that
 // the peers converge and, independently, that the indexes cohere
 // (coherence.js). On failure it shrinks the schedule to a minimal repro
-// and writes it to okf/test/regressions/.
+// and writes it to okf/harness/regressions/.
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -200,7 +200,7 @@ export async function shrinkSchedule(schedule, { profile, maxRuns = 40, predicat
 
 /** Write a failing schedule as a regression fixture. */
 export async function saveRegression(schedule, failure) {
-  const dir = join(ROOT, 'okf', 'test', 'regressions')
+  const dir = join(ROOT, 'okf', 'harness', 'regressions')
   await mkdir(dir, { recursive: true })
   const name = `fuzz-seed-${schedule.seed}.json`
   await writeFile(join(dir, name), JSON.stringify({ failure, schedule }, null, 2) + '\n')

@@ -10,9 +10,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\" \"okf/test/*.test.js\" \"okf/test/regressions/*.test.js\"",
-    "test:okf": "node --test \"okf/test/*.test.js\" \"okf/test/regressions/*.test.js\"",
-    "test:regressions": "node --test \"test/regressions/*.test.js\" \"okf/test/regressions/*.test.js\"",
+    "test": "node --test \"test/*.test.js\" \"okf/*/test/**/*.test.js\"",
+    "test:okf": "node --test \"okf/*/test/**/*.test.js\"",
+    "test:regressions": "node --test \"test/regressions/*.test.js\"",
     "test:okf:soak": "node okf/harness/soak/soak.js",
     "test:harness:clean": "HARNESS_PROFILE=clean node --test --test-concurrency=1 \"vault-ld/harness/scenarios/*.test.js\"",
     "test:harness:lossy": "HARNESS_PROFILE=lossy node --test --test-concurrency=1 \"vault-ld/harness/scenarios/*.test.js\"",
@@ -22,7 +22,7 @@
     "test:okf-harness:clean": "HARNESS_PROFILE=clean node --test --test-concurrency=1 \"okf/harness/scenarios/*.test.js\"",
     "test:okf-harness:lossy": "HARNESS_PROFILE=lossy node --test --test-concurrency=1 \"okf/harness/scenarios/*.test.js\"",
     "test:okf-harness:partitioned": "HARNESS_PROFILE=partitioned node --test --test-concurrency=1 \"okf/harness/scenarios/*.test.js\"",
-    "test:okf-harness:fuzz": "HARNESS_PROFILE=clean HARNESS_FUZZ_ITERS=10 node --test \"okf/harness/scenarios/s10-fuzz.test.js\""
+    "test:okf-harness:fuzz": "HARNESS_PROFILE=clean HARNESS_FUZZ_ITERS=10 node --test \"okf/harness/scenarios/fuzz.test.js\""
   },
   "devDependencies": {
     "@auto-okf/core": "workspace:*",
