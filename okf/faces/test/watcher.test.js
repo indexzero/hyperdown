@@ -145,3 +145,21 @@ test('the ingest of a file restored on disk undeletes its concept', async () => 
   await w.close()
   await v.close()
 })
+
+test('a watcher that watches the directory ingests a saved edit by itself, with no call to scan() or ingestFile()', async () => {
+  // Every other test passes `watch: false` and drives the watcher by hand.
+  // This one fails if the fs.watch events stop reaching the ingest.
+  const { v, id, bdir } = await seededBundle('E')
+  const w = await createIngestWatcher(v, bdir, { debounce: 20, settle: 10 })
+  const seen = []
+  w.on('ops', ({ path, ops }) => seen.push(`${path}: ${ops.map((o) => o.type).join(', ')}`))
+
+  const file = join(bdir, 'Recipes/Soup.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('title: Soup', 'title: Stew'))
+  assert.ok(await until(() => seen.length > 0), 'the watcher ingested nothing')
+  assert.deepEqual(seen, ['Recipes/Soup.md: set-field'])
+  await v.update()
+  assert.deepEqual((await v.val(K.cField(id, 'title'))).values, ['Stew'])
+  await w.close()
+  await v.close()
+})

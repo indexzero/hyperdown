@@ -1,10 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, rename, symlink } from 'node:fs/promises'
+import { mkdir, readFile, realpath, rename, stat, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   Bundle,
+  K,
   materialize,
+  readView,
   wanted,
   parseNote,
   renderNote,
@@ -18,6 +20,8 @@ import {
   pair,
   converged
 } from './helpers.js'
+import { planBundle } from '../lib/materialize.js'
+import { atomicWrite, hashFile, sha256, statOrNull } from '../lib/fsatomic.js'
 
 /** Seed three concepts that link to each other. Returns their ids. */
 async function seed(v) {
@@ -249,5 +253,196 @@ test('a symlink in the face that leads out of it fails materialize by name befor
   assert.deepEqual(await entries(elsewhere), [], 'materialize created something outside the face')
   assert.deepEqual(await entries(face2), ['new'], 'materialize wrote to the face')
   assert.deepEqual(await entries(base2), ['elsewhere', 'face', 'vault'])
+  await v.close()
+})
+
+// ---------- the bundle of an encrypted vault ----------
+
+const SECRET = 'TOP-SECRET-PAYLOAD'
+
+/**
+ * An open encrypted vault that holds concept `a` (body SECRET) and concept
+ * `z`. materialize writes a.md, index.md and log.md before z.md, in byte order.
+ */
+async function encryptedAZ(storage) {
+  const v = await Bundle.init(storage, { encryptionKey: Buffer.alloc(32, 0xcd) })
+  const { tag } = await v.createConcept('a', 'note')
+  await v.setBody(tag, null, SECRET)
+  await v.createConcept('z', 'note')
+  await v.update()
+  return v
+}
+
+/** A face directory whose z.md is a directory: materialize writes a.md, then fails with EISDIR on z.md. */
+async function faceWithDirAtZ(face) {
+  await mkdir(join(face, 'z.md'), { recursive: true })
+  return face
+}
+
+/** Does `face`/a.md hold SECRET? */
+async function secretIn(face) {
+  return (await readFile(join(face, 'a.md'), 'utf8').catch(() => '')).includes(SECRET)
+}
+
+test('materialize announces the plaintext directory before the first write, and a failure partway carries the warning', async () => {
+  // materialize must call onPlaintext, and await it, before the first write,
+  // and carry the warning in the report and in a later error.
+  const base = await tmpDir('enc-announce')
+  const v = await encryptedAZ(join(base, 'vault'))
+  const warning = (dir) => ({ kind: 'plaintext', path: dir, message: 'now holds the contents of an encrypted vault as plaintext' })
+  try {
+    /** An onPlaintext that records each warning, and what the face held at that moment. */
+    const recorder = (face) => {
+      const calls = []
+      return { calls, onPlaintext: async (w) => calls.push({ w, secretWritten: await secretIn(face) }) }
+    }
+
+    const ok = join(base, 'mat-ok')
+    const okRec = recorder(ok)
+    const report = await materialize(v, ok, { onPlaintext: okRec.onPlaintext })
+    assert.deepEqual(report.warnings, [warning(ok)])
+    assert.deepEqual(okRec.calls, [{ w: warning(ok), secretWritten: false }])
+    assert.equal(await secretIn(ok), true)
+
+    const face = await faceWithDirAtZ(join(base, 'partial-materialize'))
+    const rec = recorder(face)
+    await assert.rejects(
+      () => materialize(v, face, { onPlaintext: rec.onPlaintext }),
+      (err) => {
+        assert.equal(err.code, 'EISDIR', err.stack)
+        assert.deepEqual(err.warnings, [warning(face)])
+        return true
+      }
+    )
+    assert.deepEqual(rec.calls, [{ w: warning(face), secretWritten: false }])
+    assert.equal(await secretIn(face), true, 'setup: a.md must hold the plaintext')
+  } finally {
+    await v.close()
+  }
+
+  const plain = await Bundle.init(join(base, 'plain'))
+  const calls = []
+  const plainReport = await materialize(plain, join(base, 'plain-bundle'), { onPlaintext: (w) => calls.push(w) })
+  assert.deepEqual(plainReport.warnings, [])
+  assert.deepEqual(calls, [])
+  await plain.close()
+})
+
+test('materialize marks the bundle of an encrypted vault with .okf-encrypted before it writes a note, and does not write the mark again; the bundle of an unencrypted vault gets no mark', async () => {
+  // import refuses a marked bundle without a key. Without the mark, a
+  // generation of an encrypted vault can come out unencrypted.
+  const base = await tmpDir('enc-mark')
+  const v = await encryptedAZ(join(base, 'vault'))
+  try {
+    // a.md is a directory, so materialize fails at the first note of the
+    // plan. The mark must be there already.
+    const early = join(base, 'early')
+    await mkdir(join(early, 'a.md'), { recursive: true })
+    await assert.rejects(() => materialize(v, early), { code: 'EISDIR' })
+    assert.deepEqual(await entries(early), ['.okf-encrypted', 'a.md'])
+
+    const face = join(base, 'face')
+    assert.equal((await materialize(v, face)).ok, true)
+    const first = await stat(join(face, '.okf-encrypted'))
+    // atomicWrite renames a new file into place, so a second write gives a
+    // new inode.
+    const again = await materialize(v, face)
+    assert.deepEqual([again.written, again.removed, again.stale], [[], [], []])
+    assert.equal((await stat(join(face, '.okf-encrypted'))).ino, first.ino, 'materialize wrote the mark again')
+  } finally {
+    await v.close()
+  }
+
+  const plain = await Bundle.init(join(base, 'plain'))
+  await plain.createConcept('a', 'note')
+  assert.equal((await materialize(plain, join(base, 'plain-face'))).ok, true)
+  assert.ok(!(await entries(join(base, 'plain-face'))).includes('.okf-encrypted'))
+  await plain.close()
+})
+
+// ---------- the guards of the write and of the plan ----------
+
+test('atomicWrite stops with MODIFIED when the file does not hold the hash that the caller observed, and leaves the file as it is and no temp file', async () => {
+  // materialize passes the hash that it read under the path lock. Without
+  // this check, a file that a human saves between that read and the rename
+  // is overwritten.
+  const root = await realpath(await tmpDir('atomic-modified'))
+  const file = join(root, 'note.md')
+  await writeFile(file, 'a human edit\n')
+  const planned = Buffer.from('planned\n')
+  for (const [name, hash] of [['another hash', sha256(Buffer.from('the bytes before the edit\n'))], ['no file', null]]) {
+    await assert.rejects(
+      () => atomicWrite(root, 'note.md', planned, { precondition: { hash } }),
+      (err) => {
+        assert.equal(err.code, 'MODIFIED', `${name}: ${err.stack}`)
+        assert.match(err.message, /'note\.md' changed on disk before rename/)
+        return true
+      }
+    )
+    assert.equal(await readFile(file, 'utf8'), 'a human edit\n', name)
+    assert.deepEqual(await entries(root), ['note.md'], `${name}: the refusal left a temp file`)
+  }
+
+  await atomicWrite(root, 'note.md', planned, { precondition: { hash: await hashFile(file) } })
+  assert.equal(await readFile(file, 'utf8'), 'planned\n')
+  assert.deepEqual(await entries(root), ['note.md'])
+})
+
+test('statOrNull gives null for a path that does not exist, and rejects with every other error of the file system', async () => {
+  // ingest reads null as "the file is gone" and can then delete the concept.
+  // An error that is not ENOENT must not look like a deleted file.
+  const root = await tmpDir('stat-or-null')
+  await writeFile(join(root, 'note.md'), 'a file\n')
+  assert.equal(await statOrNull(join(root, 'absent.md')), null)
+  assert.equal((await statOrNull(join(root, 'note.md'))).isFile(), true)
+  await assert.rejects(() => statOrNull(join(root, 'note.md', 'child.md')), { code: 'ENOTDIR' })
+})
+
+/**
+ * The reader of `v`, with `extra` ([key, value] pairs) added to each scan
+ * whose prefix they match. It gives a view that apply cannot produce.
+ */
+function withKeys(v, extra) {
+  return {
+    update: () => v.update(),
+    val: (key) => v.val(key),
+    async *scan(prefix) {
+      yield* v.scan(prefix)
+      for (const [key, value] of extra) if (key.startsWith(prefix)) yield { key, value }
+    }
+  }
+}
+
+test('readView ignores a key of a kind that it does not know under a concept', async () => {
+  const v = await Bundle.init(await tmpDir('view-unknown-kind'))
+  const { sales } = await seed(v)
+  const known = await readView(v)
+  const read = await readView(withKeys(v, [[`${K.cPrefix(sales)}later`, { any: 'value' }]]))
+  assert.deepEqual(read, known)
+  await v.close()
+})
+
+test('the plan never puts two concepts in one file: a concept at the path of a conflicted copy does not replace the copy', async () => {
+  // apply rejects a path that ends in .conflict-<hex> (reserved-path), so
+  // only a corrupt view holds one. The plan is a Map by file, and without
+  // the guard the second concept takes the place of the first in silence.
+  const v = await Bundle.init(await tmpDir('plan-one-file'))
+  await v.createConcept('shared/note', 'note')
+  const { tag: loser } = await v.createConcept('shared/note', 'note')
+  await v.update()
+  const copy = `shared/note.conflict-${sha256(loser).slice(0, 8)}`
+  const plan = await planBundle(v)
+  assert.ok(plan.has(`${copy}.md`), 'setup: the collision loser must be a conflicted copy')
+
+  // The id sorts after every real id, so the scan gives the squatter last.
+  const squatter = 'f'.repeat(64) + 'ff'
+  const corrupt = await planBundle(
+    withKeys(v, [
+      [K.cMeta(squatter), { created: 1, type: 'note' }],
+      [K.cPath(squatter), { path: copy, ord: 99 }]
+    ])
+  )
+  assert.deepEqual([...corrupt.keys()].sort(), [...plan.keys()].sort())
+  assert.deepEqual(corrupt.get(`${copy}.md`), plan.get(`${copy}.md`), 'the squatter replaced the conflicted copy')
   await v.close()
 })

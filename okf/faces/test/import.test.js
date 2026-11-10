@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   Bundle,
@@ -455,4 +455,165 @@ test('the new vault carries limits, rate and schemaVersion, so a 100 KB body and
   assert.equal(rejected.path, `${deep}.md`)
   assert.equal(rejected.reason, 'depth-exceeded')
   await old.close()
+})
+
+test('import refuses a <dir> that is a dangling symlink, by name, and rejects with the error of the file system when it cannot read <dir>; it writes nothing', async () => {
+  const old = await Bundle.init(await tmpDir('imp-dir-link-vault'))
+  await old.createConcept('notes/a', 'note')
+  await old.update()
+  const base = await tmpDir('imp-dir-link')
+  const face = join(base, 'face')
+  await materialize(old, face)
+  await old.close()
+
+  // mkdir cannot make a directory at a dangling symlink, and a symlink is
+  // not a new directory: the vault would land at its target.
+  await symlink(join(base, 'nowhere'), join(base, 'dangling'))
+  const err = await expectRefusal(() => importFace(Bundle.init, face, join(base, 'dangling')), 'IMPORT_DIR_NOT_EMPTY', base, [face])
+  assert.match(err.message, /dangling is not a directory/)
+
+  // A symlink to itself: readdir fails ELOOP, which is not "absent".
+  await symlink(join(base, 'loop'), join(base, 'loop'))
+  await expectRefusal(() => importFace(Bundle.init, face, join(base, 'loop')), 'ELOOP', base, [face])
+})
+
+// ---------- encryption ----------
+
+const SECRET = 'TOP-SECRET-PAYLOAD'
+const NEW_KEY = 'ef'.repeat(32) // a generation has a key of its own
+
+/** Seed one concept whose body is SECRET. Returns its _id. */
+async function seedSecret(v) {
+  const { tag } = await v.createConcept('secret/plan', 'note')
+  await v.setBody(tag, null, SECRET)
+  await v.update()
+  return tag
+}
+
+/** A vault at `<base>/old` seeded by `seed(v)`, and its face at `<base>/face`. Returns the vault's metadata and seed result. */
+async function oldWithFace(base, seed, opts = {}) {
+  const v = await Bundle.init(join(base, 'old'), opts)
+  try {
+    const seeded = await seed(v)
+    await v.update()
+    assert.equal((await materialize(v, join(base, 'face'))).ok, true)
+    return { keyHex: v.keyHex, metadata: v.metadata, seeded }
+  } finally {
+    await v.close()
+  }
+}
+
+/** Every file under `dir` whose bytes hold `plain`, as relative paths. */
+async function plaintextFiles(dir, plain) {
+  const hits = []
+  for (const e of await readdir(dir, { recursive: true, withFileTypes: true })) {
+    if (!e.isFile()) continue
+    const file = join(e.parentPath, e.name)
+    if ((await readFile(file)).includes(Buffer.from(plain))) hits.push(file.slice(dir.length + 1))
+  }
+  return hits.sort()
+}
+
+test('import refuses a key that is not 32 bytes by name, false, empty and zero included, before it writes; and a factory that drops the key', async () => {
+  // The store reads a false value as no key. import must refuse every value
+  // that is not a key.
+  const base = await tmpDir('imp-badkey')
+  await oldWithFace(base, seedSecret)
+  const face = join(base, 'face')
+  const bad = [false, '', 0, NEW_KEY, Buffer.alloc(16, 1), Buffer.alloc(33, 1), [...Buffer.from(NEW_KEY, 'hex')]]
+  for (const [i, encryptionKey] of bad.entries()) {
+    await assert.rejects(
+      () => importFace(Bundle.init, face, join(base, `out-${i}`), { encryptionKey }),
+      (err) => {
+        assert.equal(err.code, 'IMPORT_ENCRYPTION_KEY_INVALID', `${JSON.stringify(encryptionKey)}: ${err.stack}`)
+        assert.ok(!err.message.includes(NEW_KEY), 'the message holds the key')
+        return true
+      }
+    )
+  }
+  assert.deepEqual(await entries(base), ['face', 'old'], 'a refusal created something')
+
+  // A factory that drops the key gives an unencrypted vault. import must read
+  // its metadata before the first note.
+  const created = []
+  const dropKey = async (dir, { encryptionKey, ...opts }) => {
+    const v = await Bundle.init(dir, opts)
+    return new Proxy(v, {
+      get(target, prop, receiver) {
+        if (prop === 'createConcept') created.push(prop)
+        return Reflect.get(target, prop, receiver)
+      }
+    })
+  }
+  await assert.rejects(
+    () => importFace(dropKey, face, join(base, 'out'), { encryptionKey: Buffer.from(NEW_KEY, 'hex') }),
+    (err) => err.code === 'IMPORT_NOT_ENCRYPTED'
+  )
+  assert.deepEqual(created, [], 'the import wrote content to the unencrypted vault')
+  assert.deepEqual(await entries(base), ['face', 'old'])
+})
+
+test('import refuses to make an unencrypted generation of an encrypted vault, by name, before it writes: the metadata of the predecessor says encrypted, or the face holds .okf-encrypted; with a key the new vault is encrypted', async () => {
+  // Without the mark, an import with no metadata and no key makes a
+  // plaintext vault of an encrypted one in silence.
+  const base = await tmpDir('imp-keyreq')
+  const { metadata, seeded: id } = await oldWithFace(base, seedSecret, { encryptionKey: Buffer.alloc(32, 0xcd) })
+  const face = join(base, 'face')
+  assert.equal(metadata.encrypted, true, 'setup: the predecessor must be encrypted')
+  assert.ok((await entries(face)).includes('.okf-encrypted'), 'setup: materialize must mark the face')
+
+  const byMark = await expectRefusal(() => importFace(Bundle.init, face, join(base, 'out')), 'IMPORT_ENCRYPTION_KEY_REQUIRED', base, [face])
+  assert.match(byMark.message, /holds \.okf-encrypted: .*opts\.encryptionKey/)
+
+  // The metadata alone refuses too: a face that lost its mark.
+  const bare = join(base, 'bare')
+  await oldWithFace(bare, seedSecret)
+  const byMetadata = await expectRefusal(
+    () => importFace(Bundle.init, join(bare, 'face'), join(bare, 'out'), { metadata }),
+    'IMPORT_ENCRYPTION_KEY_REQUIRED',
+    bare,
+    [join(bare, 'face')]
+  )
+  assert.match(byMetadata.message, /the predecessor's metadata says encrypted/)
+
+  const res = await importFace(Bundle.init, face, join(base, 'out'), { metadata, encryptionKey: Buffer.from(NEW_KEY, 'hex') })
+  assert.equal(res.vault.metadata.encrypted, true)
+  assert.equal((await liveConcepts(res.vault)).get(id).headText, SECRET)
+  await res.vault.close()
+})
+
+test('any entry at .okf-encrypted marks the face: import without a key refuses a directory or a dangling symlink at that name', async () => {
+  // import reads the mark with lstat, so it fails closed.
+  for (const [name, mark] of [
+    ['directory', (at) => mkdir(at)],
+    ['dangling symlink', (at) => symlink(join(at, '..', 'nowhere'), at)]
+  ]) {
+    const base = await tmpDir('imp-mark-kind')
+    await oldWithFace(base, seedSecret)
+    const face = join(base, 'face')
+    await mark(join(face, '.okf-encrypted'))
+    const err = await expectRefusal(() => importFace(Bundle.init, face, join(base, 'out')), 'IMPORT_ENCRYPTION_KEY_REQUIRED', base)
+    assert.match(err.message, /holds \.okf-encrypted/, name)
+  }
+})
+
+test('an import with a key makes a vault whose files hold no plaintext of the face, neither a body nor a path; an unencrypted control holds both', async () => {
+  const base = await tmpDir('imp-enc-rest')
+  const { seeded: id } = await oldWithFace(base, seedSecret)
+  const face = join(base, 'face')
+  const out = join(base, 'enc')
+  const enc = await importFace(Bundle.init, face, out, { encryptionKey: Buffer.from(NEW_KEY, 'hex') })
+  assert.equal(enc.vault.metadata.encrypted, true)
+  assert.equal((await liveConcepts(enc.vault)).get(id).headText, SECRET)
+  await enc.vault.close()
+  // Every file of the new vault, not only the cores: a side file can leak paths.
+  assert.deepEqual({ body: await plaintextFiles(out, SECRET), path: await plaintextFiles(out, 'secret/plan') }, { body: [], path: [] })
+
+  // The control shows that the checks above can see plaintext.
+  const ctl = join(base, 'plain')
+  const plain = await importFace(Bundle.init, face, ctl)
+  assert.equal(plain.vault.metadata.encrypted, false)
+  await plain.vault.close()
+  assert.notDeepEqual(await plaintextFiles(ctl, SECRET), [])
+  assert.notDeepEqual(await plaintextFiles(ctl, 'secret/plan'), [])
 })
