@@ -144,10 +144,7 @@ The `swarm` group has these rules:
   creator writes its own key there, and refuses another one
   (`VAULT_BAD_SWARM_GENESIS`). A peer that joins with the vault key alone
   pins `null`.
-- The invite binds `genesis` to `genesisKey`, so a folded `remove-writer`
-  of the creator cuts that swarm key on every peer (SPEC §8).
-- A generation never carries the group (SPEC §10, "Rules of import"). An
-  indexer admits each writer again with `writers.add(key, { swarmKey })`.
+- A generation never carries the group (SPEC §10, "Rules of import").
 
 ## API
 
@@ -168,7 +165,7 @@ A join with the vault key alone pins metadata with an empty swarm group
 then admits no key of the invite. Pinned metadata never changes, so such
 a directory refuses the invite later with `VAULT_JOINED_WITHOUT_INVITE`.
 To repair that, join again in a new directory, with the invite as
-`metadata`. `auto-okf join` needs the invite for fresh storage.
+`metadata`.
 
 `opts` has these keys:
 
@@ -211,8 +208,8 @@ Some members need more than a phrase:
   same across restarts.
 - `isIndexer` is `true` when `gov/writer/<self>` holds `indexer: true` and
   no `gov/removed/<self>` record exists. The store refreshes it at open
-  and after every view update. It is never autobee's `isIndexer`, which is
-  always false, because every writer stands at weight 0.
+  and after every view update. It is not autobee's `isIndexer`: see
+  [GLOSSARY.md](../GLOSSARY.md#indexer).
 - `append` fills `clock` and `at`. `seq` is the position of the op's node
   in the local core (§3). See [Appends and close](#appends-and-close).
 - `remTag` computes the §5 citation set from the view.
@@ -400,18 +397,17 @@ Two shapes of membership use the same swarm:
    peer in `metadata.swarm.allow`, and every peer joins with that invite.
    A peer can read its swarm key before it holds a vault
    (`auto-okf keys <dir>`). `swarm()` calls `joinPeer` for each listed
-   key, so the fleet needs no topic: its peers dial each other by key. The
-   invite binds only the creator's key to a writer key. So admit each
-   writer of the fleet with `writers.add(writerKey, { swarmKey })` too, or
-   its removal cuts nothing that the invite grants.
+   key, so the fleet needs no topic: its peers dial each other by key.
+   Admit each writer of the fleet with
+   `writers.add(writerKey, { swarmKey })` too, or its removal cuts nothing
+   that the invite grants.
 2. **A late joiner.** An indexer admits it with
    `writers.add(writerKey, { swarmKey })`. Each peer admits the swarm key
    when it folds the `add-writer`, and finds the joiner on the
    `auto-okf/2` topic, which `swarm()` still joins. A joiner folds no
    `gov/writer` record before it connects, so its firewall admits only
-   the keys of the invite. That is why the creator always lists its own
-   swarm key. So a late joiner needs a peer of the invite online, such as
-   the creator, or it never learns its admission.
+   the keys of the invite. So a late joiner needs a peer of the invite
+   online, such as the creator, or it never learns its admission.
 
 When no peer of the invite is online, the indexer that admitted the late
 joiner hands it its own swarm key with the invite. The joiner passes that
