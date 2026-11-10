@@ -100,10 +100,9 @@ fixed byte order. Ingest and the conformance checker read YAML with the
 
 ### Deletion is dangerous
 
-`materialize` reconciles the directory to the view through the emission
-manifest, never by blind mirroring. The manifest is `.okf-manifest.json`
-in `dir`. It holds the path and the hash of each file that `materialize`
-last wrote. See SPEC §9, "The emission manifest".
+The emission manifest is `.okf-manifest.json` in `dir`. It holds the path
+and the hash of each file that `materialize` last wrote. See SPEC §9,
+"The emission manifest".
 
 `materialize` never deletes or overwrites a `.md` file whose bytes differ
 from its manifest entry, or that has no entry. Such a file is the work of
@@ -157,9 +156,8 @@ The confirmation guard of a delete is on by default. Without a
 rejects emits `rejected`. Ingest then keeps the manifest entry and the
 pending record of the file.
 
-`scan()` ingests each file. Then it tries the delete of each path that
-the manifest or the pending record lists and the disk no longer holds. So
-it also finds a pending file that never reached the manifest.
+`scan()` ingests each file, and then runs the delete pass. See SPEC §9,
+"Ingest: preflight, pending files and scope".
 
 After it appends the ops of a file, the watcher reads core's verdict on
 each one at its own fold (`_rejections` in `okf/faces/lib/ingest.js`). A
@@ -247,10 +245,7 @@ out-of-band.
 - `predecessorKey`: the vault key of the predecessor, as 64 hex
   characters or 32 bytes. The new vault records it.
 
-`opts.metadata` never carries the `swarm` allowlist (`carriedMetadata` in
-`okf/faces/lib/import.js`), because a generation is the eviction point.
-The invite of the new vault lists only the swarm key of the peer that ran
-the import. An indexer must admit each writer again with
+An indexer must admit each writer to the new vault again with
 `writers.add(key, { swarmKey })`. See SPEC §10, "Rules of import", which
 also states why the new vault has new writer keypairs.
 
