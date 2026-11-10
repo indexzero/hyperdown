@@ -75,7 +75,7 @@ header that names its source: `keyspace.js`, `canonical.js` and
   - host (`ApplyCalls` in `lib/apply-calls.js`): core calls only
     `host.addWriter(key, { weight: 0 })` (§8). The README lists only the
     `isIndexer` option for that call. `weight` is an option of
-    `ApplyCalls.addWriter`. core never calls `host.removeWriter` (§8).
+    `ApplyCalls.addWriter`.
     `host.ackWriter` is a deprecated no-op. okf uses no other host call.
   - instance: `db.key`, `db.discoveryKey`, `db.id`, `db.local`,
     `db.view`, `db.writable`, `append(value)`, `update()`, `updated()`,
@@ -572,9 +572,8 @@ clients only. A revoked key with a modified client can keep writing
 until the next generation. Quorum-signed revocation epochs are the
 planned fix.** okf cannot stop that without a change to autobee.
 
-The store of a revoked writer refuses its own appends (`VAULT_REVOKED`),
-so a cooperating client stops. `SECURITY_MODEL.md`, "The trust model",
-states how a modified client evades the check and what that costs. "The
+`SECURITY_MODEL.md`, "The trust model", states how a cooperating client
+stops, how a modified client evades the check and what that costs. "The
 eviction ladder" there states what an operator can do.
 
 **Re-admission.** An accepted `AddWriter` that names a revoked writer
@@ -1211,10 +1210,8 @@ and materializes again, before the import.
   - a policy-violating op.
 - **I11 Roundtrip:** materialize, then import into a new vault (a
   generation, §10), preserves every live concept's `_id`, `type`, fields,
-  tags, path and head body, byte for byte. `materialize` reports every
-  value that the bundle cannot hold, also a path that a case-insensitive
-  file system cannot hold. An operator fixes those values before `import`
-  (§10).
+  tags, path and head body, byte for byte. §10, "What the bundle cannot
+  hold", states the values that do not survive.
 
 ## 12. Non-goals (v1)
 
