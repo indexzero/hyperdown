@@ -25,7 +25,7 @@ const exists = async (p) => {
   }
 }
 
-test('N3: a hand-authored .md is never deleted or overwritten by materialize', async () => {
+test('materialize never deletes or overwrites a hand-authored .md, and reports it as pending-ingest', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setBody(id, null, 'concept a')
@@ -46,7 +46,7 @@ test('N3: a hand-authored .md is never deleted or overwritten by materialize', a
   await v.close()
 })
 
-test('N3: a failed ingest (type-less file) never lets materialize delete the human file', async () => {
+test('a failed ingest (type-less file) never lets materialize delete the human file', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setBody(id, null, 'a')
@@ -72,7 +72,7 @@ test('N3: a failed ingest (type-less file) never lets materialize delete the hum
   await v.close()
 })
 
-test('N3: a renamed concept\'s old path is pruned from the manifest (no stale later delete)', async () => {
+test('materialize prunes the old path of a renamed concept from the manifest, so the same bytes back at that path are not deleted', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setBody(id, null, 'body')
@@ -100,7 +100,7 @@ test('N3: a renamed concept\'s old path is pruned from the manifest (no stale la
   await v.close()
 })
 
-test('N3: a human EDIT to a materialized concept file is preserved, not clobbered', async () => {
+test('materialize keeps a human edit of a materialized concept file, and does not overwrite it', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setField(id, 'title', 'A')
@@ -120,7 +120,7 @@ test('N3: a human EDIT to a materialized concept file is preserved, not clobbere
   await v.close()
 })
 
-test('materialize removes only its own prior outputs (renamed concept old path)', async () => {
+test('materialize removes its own output at the old path of a renamed concept, and prunes the empty directory', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('old/name', 'Note')
   await v.setBody(id, null, 'x')
@@ -139,7 +139,7 @@ test('materialize removes only its own prior outputs (renamed concept old path)'
   await v.close()
 })
 
-test('forceMirror overwrites and deletes unconditionally (operator escape hatch)', async () => {
+test('forceMirror overwrites a human edit of a manifest file, and leaves a file that no manifest lists', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const { tag: id } = await v.createConcept('a', 'Note')
   await v.setBody(id, null, 'body')
@@ -159,7 +159,7 @@ test('forceMirror overwrites and deletes unconditionally (operator escape hatch)
   await v.close()
 })
 
-test('conflict-copy round-trip: a pathcollision loser materializes and re-ingests stably', async () => {
+test('a pathcollision loser materializes as a conflicted copy, and its ingest emits no op', async () => {
   const a = await Bundle.init(await tmpDir('vault-a'))
   const b = await Bundle.join(await tmpDir('vault-b'), a.key)
   let unpair = pair(a, b)

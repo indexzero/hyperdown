@@ -27,7 +27,7 @@ async function hasUndeleteFlag(v, id) {
   return false
 }
 
-test('#30(1): delete-before-move ordering resurrects the moved concept (no data loss)', async () => {
+test('a delete of the old path that lands before the ingest of the moved file loses no concept: the ingest undeletes it at the new path', async () => {
   const { v, id, bdir } = await seededBundle('A')
   // The moved file keeps its _id frontmatter.
   await rename(join(bdir, 'Recipes'), join(bdir, 'Cooking'))
@@ -58,7 +58,7 @@ test('#30(1): delete-before-move ordering resurrects the moved concept (no data 
   await v.close()
 })
 
-test('#30(2): live event ordering — deferred delete never tombstones a moved concept', async () => {
+test('the watcher defers the delete of a vanished path, so a move that it sees old path first never tombstones the concept', async () => {
   const { v, id, bdir } = await seededBundle('B')
   await rename(join(bdir, 'Recipes'), join(bdir, 'Cooking'))
 
@@ -96,7 +96,7 @@ test('#30(2): live event ordering — deferred delete never tombstones a moved c
   await v.close()
 })
 
-test('#30(3): a directory event triggers a rescan that lands the move', async () => {
+test('a directory event makes the watcher rescan, and the rescan ingests the moved file', async () => {
   const { v, id, bdir } = await seededBundle('C')
   await rename(join(bdir, 'Recipes'), join(bdir, 'Cooking'))
 
@@ -122,7 +122,7 @@ test('#30(3): a directory event triggers a rescan that lands the move', async ()
   await v.close()
 })
 
-test('#30(4): restoring a deleted file on disk undeletes the concept', async () => {
+test('the ingest of a file restored on disk undeletes its concept', async () => {
   const { v, id, bdir } = await seededBundle('D', 'Notes/Keep')
   const bytes = await readFile(join(bdir, 'Notes/Keep.md'), 'utf8')
 

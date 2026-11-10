@@ -1,13 +1,20 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdir, rename, symlink } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
   Bundle,
   materialize,
   wanted,
+  parseNote,
+  renderNote,
   checkOkfConformance,
   tmpDir,
   readBundle,
   bundleDiff,
+  listFiles,
+  treeHash,
+  entries,
   pair,
   converged
 } from './helpers.js'
@@ -32,7 +39,7 @@ async function seed(v) {
   return { sales, orders, top }
 }
 
-test('materialize is byte-deterministic across two runs of the same view (I9)', async () => {
+test('I9: materialize is byte-deterministic across two runs of the same view', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   await seed(v)
   const dir1 = await tmpDir('bundle')
@@ -45,7 +52,7 @@ test('materialize is byte-deterministic across two runs of the same view (I9)', 
   await v.close()
 })
 
-test('materialize is byte-identical on a replicated peer (I9 convergence)', async () => {
+test('I9: materialize is byte-identical on a replicated peer', async () => {
   const a = await Bundle.init(await tmpDir('vault-a'))
   await seed(a)
   const b = await Bundle.join(await tmpDir('vault-b'), a.key)
@@ -65,7 +72,7 @@ test('materialize is byte-identical on a replicated peer (I9 convergence)', asyn
   await b.close()
 })
 
-test('materialize is byte-identical on a from-scratch rebuilt view (I3/I9)', async () => {
+test('I3, I9: materialize is byte-identical on a view rebuilt from the log', async () => {
   const dir = await tmpDir('vault')
   const a = await Bundle.init(dir)
   const ids = await seed(a)
@@ -85,7 +92,7 @@ test('materialize is byte-identical on a from-scratch rebuilt view (I3/I9)', asy
   await b.close()
 })
 
-test('emitted bundle passes the independent OKF v0.1 conformance check', async () => {
+test('the bundle that materialize writes passes the independent OKF v0.1 conformance check', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   await seed(v)
   const dir = await tmpDir('bundle')
@@ -146,6 +153,20 @@ test('log.md is # Update Log with ISO date headings newest-first (OKF §7)', asy
   await v.close()
 })
 
+test('parseNote inverts renderNote for every body, trailing newlines included', () => {
+  const pairs = [['type', 'note']]
+  const bodies = ['', 'text', 'text\n', 'text\n\n', 'text\n\n\n', '\n', '\n\n', '\ntext', '\n\ntext\n\n', 'a\n\nb\n', 'a\r\n']
+  for (const body of bodies) {
+    assert.deepEqual(parseNote(renderNote(pairs, body)), { fm: { type: 'note' }, body, warnings: [] }, JSON.stringify(body))
+  }
+  // The layout: the frontmatter block, one blank line, the body, one file
+  // newline. An empty body writes the frontmatter block only.
+  assert.equal(renderNote(pairs, 'text'), '---\ntype: note\n---\n\ntext\n')
+  assert.equal(renderNote(pairs, 'text\n'), '---\ntype: note\n---\n\ntext\n\n')
+  assert.equal(renderNote(pairs, 'text\n\n'), '---\ntype: note\n---\n\ntext\n\n\n')
+  assert.equal(renderNote(pairs, ''), '---\ntype: note\n---\n')
+})
+
 test('wanted() ranks unwritten concepts by referrer count (§4/§9)', async () => {
   const v = await Bundle.init(await tmpDir('vault'))
   const { tag: a } = await v.createConcept('a', 'Note')
@@ -158,5 +179,75 @@ test('wanted() ranks unwritten concepts by referrer count (§4/§9)', async () =
   assert.equal(list[0].count, 2)
   assert.ok(list.some((w) => w.path === 'cold' && w.count === 1))
   assert.ok(list[0].count >= list[list.length - 1].count)
+  await v.close()
+})
+
+// ---------- materialize writes inside the bundle directory only ----------
+
+/** A vault's state: its full-view hash. */
+async function vaultState(v) {
+  await v.update()
+  return v.snapshotHash()
+}
+
+test('a symlink in the face that leads out of it fails materialize by name before any change, and the files outside stay', async () => {
+  // notes/ in the face is a symlink to a directory outside it, and the
+  // concept moved. If materialize checks lexical containment only, it deletes
+  // the files outside through the symlink.
+  const base = await tmpDir('face-escape')
+  const old = await Bundle.init(join(base, 'vault'))
+  const { tag } = await old.createConcept('notes/a', 'note')
+  await old.setBody(tag, null, 'outside victim content')
+  await old.update()
+  const face = join(base, 'face')
+  assert.equal((await materialize(old, face)).ok, true)
+  const outside = join(base, 'outside')
+  await rename(join(face, 'notes'), outside)
+  await symlink(outside, join(face, 'notes'))
+  await old.setPath(tag, 'new/a')
+  await old.update()
+  const state = async () => ({
+    outsideFiles: await listFiles(outside),
+    outsideBytes: await treeHash(outside),
+    faceEntries: await entries(face),
+    faceBytes: await treeHash(face),
+    vault: await vaultState(old)
+  })
+  const before = await state()
+  assert.deepEqual(before.outsideFiles, ['a.md', 'index.md'])
+  await assert.rejects(
+    () => materialize(old, face),
+    (err) => {
+      assert.equal(err.code, 'UNSAFE_PATH', err.stack)
+      assert.match(err.message, /'notes\/(a|index)\.md' resolves outside the bundle root/)
+      return true
+    }
+  )
+  assert.deepEqual(await state(), before, 'materialize changed the face, the files outside it or the vault')
+  assert.deepEqual(await entries(base), ['face', 'outside', 'vault'])
+  await old.close()
+
+  // A write through a symlink: <face>/new leads outside the face. The mkdir
+  // of a parent must not run before the real-path check.
+  const base2 = await tmpDir('face-escape-write')
+  const v = await Bundle.init(join(base2, 'vault'))
+  await v.createConcept('new/sub/a', 'note')
+  await v.update()
+  const face2 = join(base2, 'face')
+  const elsewhere = join(base2, 'elsewhere')
+  await mkdir(elsewhere)
+  await mkdir(face2)
+  await symlink(elsewhere, join(face2, 'new'))
+  await assert.rejects(
+    () => materialize(v, face2),
+    (err) => {
+      assert.equal(err.code, 'UNSAFE_PATH', err.stack)
+      assert.match(err.message, /'new\/(index|sub\/a|sub\/index)\.md' resolves outside the bundle root/)
+      return true
+    }
+  )
+  assert.deepEqual(await entries(elsewhere), [], 'materialize created something outside the face')
+  assert.deepEqual(await entries(face2), ['new'], 'materialize wrote to the face')
+  assert.deepEqual(await entries(base2), ['elsewhere', 'face', 'vault'])
   await v.close()
 })

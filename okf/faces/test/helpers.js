@@ -1,12 +1,17 @@
 // Shared harness for the faces tests, on real store vaults and real bundle
 // directories. Scratch stays on disk after a run, for a post-mortem.
-import { mkdir, readdir, readFile } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { Bundle } from '../../store/index.js'
+import { materialize, importFace, readView } from '../index.js'
 
 export { Bundle } from '../../store/index.js'
 export { keyspace as K, canonical, makeTag } from '../../core/index.js'
-export { materialize, createIngestWatcher, wanted, readView } from '../index.js'
+export { materialize, createIngestWatcher, importFace, status, wanted, readView, readLog, parseNote, renderNote } from '../index.js'
 export { checkOkfConformance } from './okf-conformance.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -78,4 +83,55 @@ export function bundleDiff(a, b) {
     if (a.get(k) !== b.get(k)) return `differ: ${k}`
   }
   return null
+}
+
+/** Every file under a directory, dot-files included, as sorted relative paths. */
+export async function listFiles(root) {
+  const entries = await readdir(root, { recursive: true, withFileTypes: true })
+  return entries
+    .filter((e) => e.isFile())
+    .map((e) => relative(root, join(e.parentPath, e.name)))
+    .sort()
+}
+
+/** The entries of a directory, sorted. */
+export async function entries(dir) {
+  return (await readdir(dir)).sort()
+}
+
+/** A sha256 over every file under `root`, dot-files included: each path and its bytes. */
+export async function treeHash(root) {
+  const h = createHash('sha256')
+  for (const rel of await listFiles(root)) {
+    h.update(`${rel}\0`)
+    h.update(await readFile(join(root, rel)))
+    h.update('\0')
+  }
+  return h.digest('hex')
+}
+
+/** Write `files` (Map<rel, string>) under `root`, creating directories. */
+export async function writeTree(root, files) {
+  for (const [rel, text] of files) {
+    await mkdir(dirname(join(root, rel)), { recursive: true })
+    await writeFile(join(root, rel), text)
+  }
+}
+
+/** Live (non-tombstoned, path-bearing) concepts of a vault, by _id. */
+export async function liveConcepts(vault) {
+  const { concepts } = await readView(vault)
+  const live = new Map()
+  for (const c of concepts.values()) if (!c.deleted && c.path !== undefined) live.set(c.id, c)
+  return live
+}
+
+/**
+ * One generation of `old`: materialize it into `<base>/face`, then import
+ * that face into `<base>/vault`, carrying the metadata and the vault key.
+ */
+export async function generation(old, base, opts = {}) {
+  const face = join(base, 'face')
+  assert.equal((await materialize(old, face)).ok, true, 'setup: the face must be clean')
+  return importFace(Bundle.init, face, join(base, 'vault'), { metadata: old.metadata, predecessorKey: old.keyHex, ...opts })
 }
