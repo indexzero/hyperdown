@@ -1,15 +1,20 @@
 # @auto-okf/core
 
-The core of **auto-okf** — a multi-writer storage substrate for
+`@auto-okf/core` is the core of auto-okf, a multi-writer store for
 [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-bundles. This package is transport-agnostic: it defines the op wire
-contract, the deterministic `apply` that folds a linearized op stream into
-a view, the view keyspace, and an in-memory view double. It never imports
-autobee; `@auto-okf/store` supplies the substrate.
+bundles. This package does not depend on a transport. It defines these
+things:
+
+- The op wire contract.
+- The deterministic `apply`, which folds a linearized op stream into a view.
+- The view keyspace.
+- An in-memory view for tests.
+
+It never imports autobee. `@auto-okf/store` supplies the substrate.
 
 ## Usage
 
-Encode ops, apply them, inspect the view:
+Encode ops, apply them, then read the view:
 
 ```js
 import {
@@ -60,53 +65,63 @@ console.log(view.dump('wanted/')) // { 'wanted/guides%2Farchitecture/…': true 
 `set-path`, `delete-concept`, `undelete-concept`, `resolve-conflict`,
 `add-writer`, `remove-writer`, `set-writer-policy`.
 
-The generated codec lives in `spec/` (committed; append-only for the life
-of a vault — rebuild with `pnpm build:schema` only to APPEND new ops).
-`decodeOp` never throws: garbage decodes to `{ ok: false, reason }` and
-apply records it under `flag/rejected/<writer>/<seq>`.
+The generated codec is in `spec/`, and it is committed. It is append-only
+for the life of a vault. Run `pnpm build:schema` only to append a new op.
+`decodeOp` never throws. Bytes that it cannot decode give
+`{ ok: false, reason }`, and apply records the op under
+`flag/rejected/<writer>/<seq>`.
 
 ### Merge semantics (SPEC §5, frozen)
 
-- `tags`: OR-set (SU-set semantics; concurrent add beats
-  remove-of-unobserved; stale citations audit to `flag/staletag`).
-- every other frontmatter key: LWW-array register; cross-writer
-  supersessions audit to `flag/clobber`.
-- bodies: immutable revisions keyed by `revHash`; same-base siblings both
-  survive under `flag/conflict` until `resolve-conflict`; fabricated bases
-  can never displace real ancestry.
-- `_id` mints from the creating op's tag (squat-proof fallback per §6);
-  `_rev` is derived output — `set-field` on `tags`/`_id`/`_rev` rejects.
+- `tags` is an OR-set with SU-set semantics. A concurrent add wins over a
+  remove that did not observe it. A stale citation leaves a record under
+  `flag/staletag`.
+- Every other frontmatter key is an LWW-array register. When a writer
+  supersedes the value of another writer, apply records `flag/clobber`.
+- A body is a set of immutable revisions, keyed by `revHash`. Two
+  revisions with the same base both stay under `flag/conflict` until
+  `resolve-conflict`. A fabricated base can never displace real ancestry.
+- apply mints `_id` from the tag of the creating op, with the fallback of
+  SPEC §6 for a squat. `_rev` is derived output. apply rejects a
+  `set-field` on `tags`, `_id` or `_rev`.
 
 ### Paths (SPEC §7)
 
-`set-path` is an LWW register on the concept (renames merge with
-concurrent edits). Path collisions — exact or casefolded — are first-wins
-by apply ordinal, flagged `flag/pathcollision`, and self-heal when the
-loser is renamed or the winner vacates. `index`/`log` terminals and
-`*.conflict-<hex8+>` are reserved.
+`set-path` is an LWW register on the concept, so a rename merges with a
+concurrent edit. In a path collision, exact or casefolded, the first claim
+by apply ordinal wins. apply records `flag/pathcollision`. The collision
+clears when the loser is renamed or the winner leaves the path. The
+terminals `index` and `log`, and `*.conflict-<hex8+>`, are reserved.
 
 ### Governance (SPEC §8)
 
-Genesis key is the first indexer. Governance ops require an indexer
-issuer (else `policy-governance`). A writer's ops take effect only once an
-indexer's `add-writer` has admitted it. A content op from a key with no
-`gov/writer` record that passes the earlier checks is rejected
-`not-a-writer` (`okf/core/lib/apply.js:426`). A governance op from that
-key is rejected `policy-governance`, because the indexer-issuer check
-comes first (`okf/core/lib/apply.js:407-412`). Admission revives no
-earlier op. apply calls `host.addWriter(key, { weight: 0 })` for every
-`add-writer` op it folds, accepted or rejected, so a reorder never undoes
-a substrate grant; okf membership comes only from `gov/`. Revocation is
-causal (clock-based, never positional) with a seq-at-removal cross-check,
-and `host.removeWriter` is never called. The revocation check binds only
-the ops that sort after the removal (`okf/core/lib/apply.js:399-403`), so
-revocation stops cooperating clients only (SPEC §8). An `add-writer`
-whose key or swarm key is not 32 bytes is rejected `bad-writer-key` or
-`bad-swarm-key`. One that would demote the last live indexer is rejected
-`policy-governance` (`okf/core/lib/apply.js:554-567`). An op's seq is its node's
-position in its writer's core (`node.length - 1`); a clock whose self
-entry differs from it is rejected `forged-clock`. Per-writer token
-buckets refill on accepted indexer ops.
+SPEC §8 is the home of these rules. The symbols are in
+`okf/core/lib/apply.js`.
+
+- The genesis key is the first indexer.
+- A governance op needs an indexer issuer. apply rejects it
+  `policy-governance` otherwise.
+- The ops of a writer take effect only after an indexer's `add-writer`
+  admits it. Admission revives no earlier op.
+- apply rejects a content op from a key with no `gov/writer` record as
+  `not-a-writer`, if the op passes the earlier checks (`applyNode`).
+- apply rejects a governance op from that key as `policy-governance`,
+  because the indexer-issuer check comes first (`applyNode`).
+- apply calls `host.addWriter(key, { weight: 0 })` for every `add-writer`
+  op it folds, accepted or rejected (`grant`). So a reorder never undoes a
+  substrate grant. okf membership comes only from `gov/`.
+- Revocation is causal. It compares clocks, never positions, and it
+  cross-checks the seq at removal. apply never calls `host.removeWriter`.
+- The revocation check binds only the ops that sort after the removal
+  (`applyNode`). So revocation stops cooperating clients only (SPEC §8).
+- apply rejects an `add-writer` whose key or swarm key is not 32 bytes, as
+  `bad-writer-key` or `bad-swarm-key` (`opAddWriter`).
+- apply rejects an `add-writer` that demotes the last live indexer as
+  `policy-governance` (`opAddWriter`, `isLastLiveIndexer`).
+- The seq of an op is the position of its node in the core of its writer,
+  `node.length - 1`. apply rejects a clock whose self entry differs from
+  it as `forged-clock`.
+- Each writer has a token bucket. An accepted indexer op refills it.
 
 ## API
 
@@ -121,6 +136,6 @@ buckets refill on accepted indexer ops.
 | `extractLinks(text, dir)` | the §9 normative markdown link extraction |
 | `MemView` | hyperbee2-surface in-memory view for tests |
 
-`keyspace.js`, `canonical.js`, `revhash.js` are copied from
-`@autovault-ld/core` with provenance headers (copy-don't-depend, SPEC §0);
-this package has no dependency on `@autovault-ld/*`.
+`keyspace.js`, `canonical.js` and `revhash.js` are copies from
+`@autovault-ld/core`. Each has a header that names its source (SPEC §0).
+This package does not depend on `@autovault-ld/*`.
