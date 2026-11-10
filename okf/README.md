@@ -39,8 +39,8 @@ how you shrink the log, rotate keys, and shed a writer.
 
 | Fact | What to do | Home |
 |---|---|---|
-| Any writer, or any key a writer ever named, can halt every peer for good. | Admit only keys you would trust with the whole vault. | SECURITY_MODEL, G2 |
-| Removing a writer stops cooperating clients only. A modified client backdates past it, with no rejection flag. | To evict, import into the next generation and do not add the key again. | SECURITY_MODEL, G34 |
+| Any writer, or any key a writer ever named, can halt every peer for good. | Admit only keys you would trust with the whole vault. | SECURITY_MODEL, the unbounded approval |
+| Removing a writer stops cooperating clients only. A modified client backdates past it, with no rejection flag. | To evict, import into the next generation and do not add the key again. | SECURITY_MODEL, the revocation bypass |
 | Writers order concurrent writes by their own clocks. | Keep clocks in sync. A slow clock loses every race. Two hours ahead stalls the peer. | SPEC §8 |
 | A non-indexer writer has a budget of 1024 ops, refilled by accepted indexer ops. | Raise the ceiling, or admit the agents as indexers. | SPEC §8 |
 | `append` reports durable, not accepted. Ingest reports the verdict of its own fold, and a reorder can change it. | Read `flags rejected` in your write loop. | store README |
@@ -50,17 +50,17 @@ how you shrink the log, rotate keys, and shed a writer.
 | Tags are an OR-set. Other fields are last-writer-wins, with a flag. Two body edits both persist until `resolve`. | Run a resolve step before `materialize`. `import` refuses an open path collision, and carries only the head of a body conflict. | SPEC §5 |
 | Correctness relies on undocumented behaviour of autobee 2.12.1, pinned exactly. | Install from the lockfile. | DEVIATIONS |
 | If every indexer directory is lost, nobody can admit a writer. | Back up an indexer directory, or admit two indexers. | SECURITY_MODEL |
-| A writer can make every peer open unbounded writer cores. | Expect cost. Only 200 cores are tested. | SECURITY_MODEL, G44 |
+| A writer can make every peer open unbounded writer cores. | Expect cost. Only 200 cores are tested. | SECURITY_MODEL, the writer-core flood |
 
 ## Known issues
 
 | Trigger | What to do |
 |---|---|
-| On a case-insensitive file system, you change a path only in case, such as the fix for a path that the fold report of `materialize` names, then materialize into the same face again. That run unlinks the note, and `import` drops its concept (`okf/faces/lib/materialize.js:465-484`). | Materialize each generation into a new, empty directory (`okf/faces/test/generation.test.js:357-364`). |
-| Two paths differ only in letters that APFS folds together and `toLowerCase` does not, such as ß and SS, or σ and ς. The fold report of `materialize` misses them, and `import` can rename or drop those concepts (`okf/core/lib/apply.js:132-134`, `okf/faces/lib/materialize.js:158`). | Run `materialize` and `import` on a case-sensitive file system. |
-| You import a subdirectory of the face of an encrypted vault, or a copy of that face that skipped dot-files. `import` looks for the `.okf-encrypted` mark only at the root of the face, so an import without a key makes an unencrypted vault (`okf/faces/lib/import.js:131-133`, `:445-453`). | Pass the old vault's `okf-vault.json` with `--metadata`. `import` then refuses to run without `--encryption-key` (`okf/faces/lib/import.js:126-128`). |
-| A file whose ingest did not complete stays pending in `.okf-pending.json`. If it has an NFD name, its record goes stale, it gets a case-only rename on APFS, a conflict copy of its concept ingests, or a rename and a copy of it ingest at once, ingest can attach an edit or a delete to the wrong concept (`okf/faces/lib/ingest.js:788-794`, `:856-916`). | Give note files NFC names. Fix each file that an `error:` line of `ingest` names until it ingests, before you rename, copy or delete it, or edit its conflict copy. Run `ingest` without `--confirm-deletes` while `.okf-pending.json` exists. |
-| A peer joins through the store API with the vault key alone, so it pins `swarm.genesis: null`. When an indexer removes the creator, that peer never cuts the creator's swarm key (`okf/store/lib/bundle.js:1322-1325`). | Pass the invite as `opts.metadata` to `Bundle.join`, as `auto-okf join --metadata` does. |
+| On a case-insensitive file system, you change a path only in case, such as the fix for a path that the fold report of `materialize` names, then materialize into the same face again. That run unlinks the note, and `import` drops its concept (`reconcile` in `okf/faces/lib/materialize.js`). | Materialize each generation into a new, empty directory (`okf/faces/test/generation.test.js`). |
+| Two paths differ only in letters that APFS folds together and `toLowerCase` does not, such as ß and SS, or σ and ς. The fold report of `materialize` misses them, and `import` can rename or drop those concepts (`casefoldPath` in `okf/core/lib/apply.js`, `lossyPaths` in `okf/faces/lib/materialize.js`). | Run `materialize` and `import` on a case-sensitive file system. |
+| You import a subdirectory of the face of an encrypted vault, or a copy of that face that skipped dot-files. `import` looks for the `.okf-encrypted` mark only at the root of the face, so an import without a key makes an unencrypted vault (`importFace` and `isMarkedEncrypted` in `okf/faces/lib/import.js`). | Pass the old vault's `okf-vault.json` with `--metadata`. `import` then refuses to run without `--encryption-key` (`importFace` in `okf/faces/lib/import.js`). |
+| A file whose ingest did not complete stays pending in `.okf-pending.json`. If it has an NFD name, its record goes stale, it gets a case-only rename on APFS, a conflict copy of its concept ingests, or a rename and a copy of it ingest at once, ingest can attach an edit or a delete to the wrong concept (`_pendingConcept`, `_pendingOf` and `_keepPending` in `okf/faces/lib/ingest.js`). | Give note files NFC names. Fix each file that an `error:` line of `ingest` names until it ingests, before you rename, copy or delete it, or edit its conflict copy. Run `ingest` without `--confirm-deletes` while `.okf-pending.json` exists. |
+| A peer joins through the store API with the vault key alone, so it pins `swarm.genesis: null`. When an indexer removes the creator, that peer never cuts the creator's swarm key (`_refreshAllowlistOnce` in `okf/store/lib/bundle.js`). | Pass the invite as `opts.metadata` to `Bundle.join`, as `auto-okf join --metadata` does. |
 | Some docs and help texts are imprecise. | Where a text and the code differ, trust the code and its tests. |
 
 ## From code
@@ -78,18 +78,16 @@ await materialize(bundle, './bundle')                       // guides/getting-st
 await bundle.close()
 ```
 
-Open `./bundle` in any markdown reader and it is a plain OKF bundle;
-hand-edit a file and `ingest` folds the change back into the log as minimal
-ops. Every field write, tag, rename, and governance decision is an op in a
-shared multi-writer log; the bundle on disk and the queryable view are
-generated faces of that log, never authoritative
-([SPEC §2](./SPEC.md)).
+`./bundle` is a plain OKF bundle, and any markdown reader can open it. If
+you edit a file there, `ingest` turns the edit into the smallest set of ops.
+The op log is the source of truth. The bundle and the view are projections
+of that log, and neither is authoritative ([SPEC §2](./SPEC.md)).
 
-auto-okf is the lighter sibling of [Vault-LD](../vault-ld/README.md): no
-RDF, and its own store on autobee@2.12.1 ([`@auto-okf/store`](./store)).
-Its vocabulary (`concept`, `bundle`, `vault`, `writer`, `ingest`) is
-pinned in [GLOSSARY.md](./GLOSSARY.md); when a term feels overloaded, the
-glossary is the one place it is fixed.
+auto-okf has no RDF, and it has its own store on autobee@2.12.1
+([`@auto-okf/store`](./store)). [Vault-LD](../vault-ld/README.md) is the
+other system in this repository. [GLOSSARY.md](./GLOSSARY.md) gives each
+term of auto-okf one meaning, such as `concept`, `bundle`, `vault`,
+`writer` and `ingest`.
 
 ## Install
 
@@ -97,18 +95,20 @@ glossary is the one place it is fixed.
 pnpm add @auto-okf/store @auto-okf/faces   # and @auto-okf/cli for the auto-okf binary
 ```
 
-Node.js ≥ 20. Inside this repository: `pnpm install` at the root sets up
-the whole workspace. A consumer must make `hypercore-crypto` and `b4a`
-resolvable for the store's dependencies (see
-[`@auto-okf/store`](./store/README.md#install)).
+auto-okf needs Node.js 20 or later. In this repository, `pnpm install` at
+the root sets up the whole workspace. A consumer must make
+`hypercore-crypto` and `b4a` resolvable for the dependencies of the store.
+See [`@auto-okf/store`, "Install"](./store/README.md#install).
 
-This release writes vault metadata version 2 and opens only vaults with
-metadata version 2: vaults of an earlier release are not carried over. Its
-peers find each other on the `auto-okf/2` hyperswarm topic. A joining
-peer's ops take effect only after an indexer has admitted it with
-`add-writer`, and until autobee has added it, its store refuses every
-append (`VAULT_NOT_WRITABLE`). See
-[`@auto-okf/store`](./store/README.md#vaults-this-release-opens).
+This release writes vault metadata version 2, and it opens only vaults
+with metadata version 2. It does not carry over the vaults of an earlier
+release. Its peers find each other on the `auto-okf/2` hyperswarm topic.
+See [`@auto-okf/store`, "Vaults this release opens"](./store/README.md#vaults-this-release-opens).
+
+The ops of a joining peer take effect only after an indexer admits it with
+`add-writer`. Until autobee adds the peer, its store refuses every append
+with `VAULT_NOT_WRITABLE`. See SPEC §8 and
+[`@auto-okf/store`](./store/README.md).
 
 ## The flagship example: four agents write a session bundle
 
@@ -116,19 +116,26 @@ append (`VAULT_NOT_WRITABLE`). See
 node okf/examples/agent-session/session.js   # from the repo root
 ```
 
-Four AI agents (each a real peer with its own writer core) co-author
-findings, determinations, and an RFC on one shared vault while
-**partitioned**, then heal: tag OR-sets union across the partition, LWW
-registers pick a deterministic winner and flag the overwrite, and a human
-operator dumps the session as a readable OKF bundle. The committed
-[`examples/agent-session/out/`](./examples/agent-session/out/) tree
-regenerates byte-identically (I9). ThreadMode in, DocumentMode out — see
+Four AI agents write findings, determinations and an RFC to one shared
+vault. Each agent is a peer with its own writer core. The agents write
+while a partition separates them, and then the partition heals:
+
+- The tag OR-sets take the union of the adds from each side.
+- Each LWW register picks the same winner on every peer, and flags the
+  overwrite.
+- A human operator materializes the session as an OKF bundle.
+
+The example writes the committed
+[`examples/agent-session/out/`](./examples/agent-session/out/) tree again,
+byte for byte (I9). See
 [`examples/agent-session/README.md`](./examples/agent-session/README.md).
 
-Two smaller examples:
-[`slop-archive`](./examples/slop-archive/) (a durable LLM-output archive,
-showing off append-only) and [`vlurp-library`](./examples/vlurp-library/)
-(one script: vlurpfile → staging → `_id`-stamped bundle).
+There are two smaller examples:
+
+- [`slop-archive`](./examples/slop-archive/) is a durable archive of LLM
+  output. It shows the append-only guarantee.
+- [`vlurp-library`](./examples/vlurp-library/) is one script that turns a
+  vlurpfile into a bundle with an `_id` in each note.
 
 ## Architecture
 
@@ -150,34 +157,36 @@ showing off append-only) and [`vlurp-library`](./examples/vlurp-library/)
  index.md, log.md)          wants to be written?)       rejections…)
 ```
 
-No component ever treats a generated face as authoritative: human edits to
-the bundle re-enter as ops (§9), and a face can always be regenerated,
-byte-identically, from a converged view (I9). A
+No component treats a bundle as authoritative. An edit of a file in the
+bundle enters the log as ops (SPEC §9). From a converged view,
+`materialize` writes the same bytes again (I9). A
 [generation](./GLOSSARY.md#generation--import) is an operator act, never
-an op (§10).
+an op (SPEC §10).
 
 ## Packages
 
-| package | what it is |
+| Package | What it is |
 | --- | --- |
-| [`@auto-okf/core`](./core) | the op wire codec, the pure deterministic `apply`, the view keyspace, canonical forms |
-| [`@auto-okf/store`](./store) | vault lifecycle on autobee: op emission, §8 governance, metadata pinning (the append-only constant + generation chain), swarm replication |
-| [`@auto-okf/faces`](./faces) | materialize (bundle + `index.md`/`log.md`), the ingest watcher, the `wanted/` demand index, the import of a face into a new vault (a generation) |
+| [`@auto-okf/core`](./core) | the op wire codec, the deterministic `apply`, the view keyspace, the canonical forms |
+| [`@auto-okf/store`](./store) | the vault lifecycle on autobee: appends, governance (SPEC §8), the pinned metadata, swarm replication |
+| [`@auto-okf/faces`](./faces) | materialize, the ingest watcher, the `wanted/` demand index, the import of a bundle into a new vault |
 | [`@auto-okf/cli`](./cli) | `auto-okf init/join/add-writer/keys/remove-writer/materialize/ingest/watch/bootstrap/status/wanted/flags/import/resolve/undelete` |
 
-Each package README is usage-first, with a table of its API (for the CLI,
-its commands).
+Each package README states the usage first, then gives a table of its API.
+The CLI README gives a table of its commands. [SPEC.md](./SPEC.md) is the
+home of every rule of okf.
 
 ## Security model
 
-There are two adversaries, because okf has two doors: a writer appending
-arbitrary bytes to its own core, and anyone who can write files into the
-watched bundle directory. Every log-side defense lives in `apply`; the
-disk side is bounded by the emission manifest and the ingest rules. The
-trust model, the eviction ladder and each residual, with the evidence of
-each, are in [SECURITY_MODEL.md](./SECURITY_MODEL.md).
+okf has two adversaries, because it has two doors. The first is a writer
+that appends arbitrary bytes to its own core. The second is anyone who can
+write files into the watched bundle directory.
+[SECURITY_MODEL.md](./SECURITY_MODEL.md) is the home of the trust model,
+the eviction ladder, the defenses and each residual.
 
 ## Running the tests
+
+Run these from the repo root:
 
 ```sh
 pnpm test:okf                   # node:test; unit + invariant suite (I1..I11)
@@ -185,12 +194,11 @@ pnpm test:okf-harness:clean     # multi-process fault harness (:lossy, :partitio
 pnpm test:okf:soak              # sustained-flood soak
 ```
 
-From the repo root. The invariant suite maps each of I1–I11 (determinism,
-convergence, rebuild equivalence, no-silent-loss, OR-set law, LWW law,
-conflict lifecycle, index coherence, face determinism, governance, generation
-roundtrip) to at least one test; the harness drives real per-writer OS
-processes through a fault proxy; the example suites assert the committed
-`out/` trees regenerate byte-identically.
+The tests of each package are in `okf/<package>/test/`. The harness
+scenarios are in `okf/harness/scenarios/`, and the example tests are in
+`okf/examples/test/`. SPEC §11 maps each invariant,
+I1 to I11, to the suite. See [harness/README.md](./harness/README.md) for
+the fault harness.
 
 ## License
 
