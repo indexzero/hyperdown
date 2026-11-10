@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { Bundle, K, METADATA_FILE, loadMetadata, pair, sleep, tmpDir, until } from './helpers.js'
@@ -659,6 +659,24 @@ test('loadLocalAllow refuses a file that is not JSON by name, with its path; sav
   assert.deepEqual(await readdir(dir), [LOCAL_ALLOW_FILE], 'no temporary file stays')
 })
 
+test('loadLocalAllow returns an empty list for a directory that holds no local allow file', async () => {
+  const dir = await tmpDir('local-allow-none')
+  assert.deepEqual(await loadLocalAllow(dir), [])
+  assert.deepEqual(await readdir(dir), [], 'the read makes no file')
+})
+
+test('loadLocalAllow rejects with the read error itself when the file exists and the read fails', async () => {
+  const dir = await tmpDir('local-allow-unreadable')
+  // A directory at the path of the file makes the read fail with EISDIR.
+  // An empty list here would open the swarm without the keys of the file.
+  await mkdir(join(dir, LOCAL_ALLOW_FILE))
+  await assert.rejects(
+    loadLocalAllow(dir),
+    (err) => err.code === 'EISDIR',
+    'not an empty list, and not VAULT_BAD_SWARM_ALLOW'
+  )
+})
+
 test('a vault derives its swarm key from its own store, so the key is stable across a reopen', { timeout: TEST_TIMEOUT }, async (t) => {
   const dir = await tmpDir('swarm-key')
   const a = await Bundle.init(dir)
@@ -703,38 +721,4 @@ test("a new vault lists its creator's swarm key in metadata.swarm.allow, and the
   const again = await Bundle.open(dirA, { metadata: { swarm: { allow: [listed] } } })
   t.after(() => again.close())
   assert.deepEqual(again.metadata.swarm.allow, [own, listed].sort())
-})
-
-test('a vault of this release records metadata version 2, and loadMetadata refuses every other version', { timeout: TEST_TIMEOUT }, async (t) => {
-  const dir = await tmpDir('meta-v2')
-  const a = await Bundle.init(dir)
-  let reopened = null
-  t.after(async () => {
-    await a.close() // a no-op once the test has closed it
-    if (reopened) await reopened.close()
-  })
-  assert.equal(a.metadata.version, 2, 'the open vault records version 2')
-  await a.close()
-
-  const path = join(dir, METADATA_FILE)
-  const meta = JSON.parse(await readFile(path, 'utf8'))
-  assert.equal(meta.version, 2, `${METADATA_FILE} records version 2`)
-  assert.deepEqual(await loadMetadata(path), meta, 'loadMetadata accepts version 2')
-
-  // undefined: JSON.stringify drops the key, so the file has no version.
-  for (const version of [0, 3, '2', null, undefined]) {
-    await writeFile(path, JSON.stringify({ ...meta, version }))
-    await assert.rejects(
-      loadMetadata(path),
-      /unsupported vault metadata version/,
-      `loadMetadata refuses version ${JSON.stringify(version)}`
-    )
-  }
-  await assert.rejects(
-    async () => {
-      reopened = await Bundle.open(dir)
-    },
-    /unsupported vault metadata version/,
-    'a vault without version 2 does not open'
-  )
 })

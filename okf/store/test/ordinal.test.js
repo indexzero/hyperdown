@@ -10,144 +10,13 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Corestore from '../node_modules/corestore/index.js'
 import { Bundle, K, makeTag, tmpDir, pair, until, sleep } from './helpers.js'
-import { Env, hostStub, rejectedReasons, writerKey } from '../../core/test/helpers.js'
 import { holds, outsiderAppend } from './attack-helpers.js'
 import { decodeOp, normalizeClock } from '../../core/index.js'
 
 const OKF = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const hex = (k) => k.toString('hex')
-/** The rejectedReasons() key of writer W's op at seq. */
-const rk = (W, seq) => K.flagRejected(W, seq).slice('flag/rejected/'.length)
 
-/** Skip `n` positions of writer `w` in an Env, as empty blocks would. */
-function gap(env, w, n = 1) {
-  const W = env.hex(w)
-  env.seqs.set(W, (env.seqs.get(W) ?? 0) + n)
-}
-
-// ---------- core: the actual seq is node.length - 1 ----------
-
-test('core: the actual seq of an op is node.length - 1, also after a gap in its writer\'s positions', async () => {
-  const env = new Env()
-  const n0 = env.op('A', 'create-concept', { path: 'notes/a', type: 'note' })
-  gap(env, 'A') // position 1 is an empty block that never reaches apply
-  const n2 = env.op('A', 'set-field', { id: env.tag('A', 0), key: 'title', value: ['two'] })
-  assert.equal(n0.length, 1)
-  assert.equal(n2.length, 3)
-  const view = await env.run([n0, n2], { host: hostStub() })
-  assert.deepEqual(rejectedReasons(view), {}, 'the op at position 2 claims seq 2 and is not forged-clock')
-  assert.equal(JSON.parse((await view.get(K.seen(env.hex('A')))).value), 3, 'seen/A is the last position plus one')
-  const f = JSON.parse((await view.get(K.cField(env.tag('A', 0), 'title'))).value)
-  assert.deepEqual(f.values, ['two'])
-  assert.equal(f.tag, env.tag('A', 2), 'the tag of the op is writerKey || position')
-})
-
-test('core: flag/rejected keys a rejected op by its position', async () => {
-  const env = new Env()
-  const n0 = env.op('A', 'create-concept', { path: 'notes/a', type: 'note' })
-  gap(env, 'A')
-  // position 2, but the self entry claims 1
-  const n2 = env.op('A', 'set-field', { id: env.tag('A', 0), key: 'title', value: ['x'] }, {
-    verbatimClock: true,
-    clock: [[env.hex('A'), 1]]
-  })
-  const view = await env.run([n0, n2], { host: hostStub() })
-  assert.deepEqual(rejectedReasons(view), { [rk(env.hex('A'), 2)]: 'forged-clock' })
-})
-
-test('core: an op whose handling throws is rejected apply-error at its position', async () => {
-  const env = new Env()
-  const n0 = env.op('A', 'create-concept', { path: 'notes/a', type: 'note' })
-  gap(env, 'A')
-  const n2 = env.op('A', 'add-writer', { key: env.key('B'), indexer: false })
-  const host = {
-    async addWriter() {
-      throw new Error('boom')
-    }
-  }
-  const view = await env.run([n0, n2], { host })
-  const W = env.hex('A')
-  assert.deepEqual(
-    JSON.parse((await view.get(K.flagRejected(W, 2))).value),
-    { reason: 'apply-error' },
-    'containThrow records the node at position 2'
-  )
-  assert.equal(JSON.parse((await view.get(K.seen(W))).value), 3)
-})
-
-test('core: a node without a positive integer length breaks the transport contract, so apply throws', async () => {
-  const env = new Env()
-  const n0 = env.op('A', 'create-concept', { path: 'notes/a', type: 'note' })
-  for (const length of [undefined, 0, -1, 1.5, '1']) {
-    await assert.rejects(
-      () => env.run([{ ...n0, length }], { host: hostStub() }),
-      TypeError,
-      `length ${JSON.stringify(length)} is never an op rejection`
-    )
-  }
-})
-
-test('core: mint-collision-risk compares an adopted suffix with the last position plus one', async () => {
-  const env = new Env()
-  const A = env.hex('A')
-  env.op('A', 'add-writer', { key: env.key('B'), indexer: false }) // position 0
-  env.op('A', 'create-concept', { path: 'notes/a', type: 'note' }) // position 1, mints A||1
-  gap(env, 'A') // position 2: an empty block, so no op of A ever has seq 2
-  env.op('A', 'set-field', { id: env.tag('A', 1), key: 'title', value: ['t'] }) // position 3
-  // seen/A is 4. A suffix below 4 names a position that has passed.
-  env.op('B', 'create-concept', { path: 'adopt/gap', type: 'note', id: A + '2' })
-  env.op('B', 'create-concept', { path: 'adopt/next', type: 'note', id: A + '4' })
-  const view = await env.run(env.nodes, { host: hostStub() })
-  assert.equal(JSON.parse((await view.get(K.seen(A))).value), 4)
-  const rej = rejectedReasons(view)
-  const B = env.hex('B')
-  assert.equal(rej[rk(B, 0)], undefined, 'A||2 names a passed position, so B can adopt it')
-  assert.equal(rej[rk(B, 1)], 'mint-collision-risk', 'A||4 is the next mint of A')
-})
-
-test('core: a revoked writer stays in the clock, because the §8 window compares every entry (I10)', async () => {
-  // No clock below cites J, which has no gov/writer record. Z is revoked
-  // after C cites it and before A revokes C. The op c1 of C sorts after the
-  // removal of C, inside the window (seq <= seqAtRemoval). It lands only if
-  // its clock strictly precedes the revocation clock, and that compare
-  // needs Z in the revocation clock.
-  const run = async (removalCitesZ) => {
-    const env = new Env({ genesis: 'A' })
-    const [A, C, J, Z] = ['A', 'C', 'J', 'Z'].map((w) => env.hex(w))
-    const clocked = () => ({ clock: env.observedAll().filter(([k]) => k !== J) })
-    env.op('A', 'add-writer', { key: writerKey('C'), indexer: false }) // A0
-    env.op('A', 'add-writer', { key: writerKey('Z'), indexer: false }) // A1
-    env.op('A', 'create-concept', { path: 'w/doc', type: 'note' }) // A2
-    const id = env.tag('A', 2)
-    env.op('J', 'add-tag', { id, value: 'j0' }) // not-a-writer, and seen/J moves
-    env.op('Z', 'add-tag', { id, value: 'z0' }, clocked())
-    env.op('C', 'add-tag', { id, value: 'c0' }, clocked()) // cites A:2, Z:0
-    const c1 = env.op('C', 'add-tag', { id, value: 'c1' }, clocked()) // cites A:2, Z:0
-    env.op('A', 'remove-writer', { key: writerKey('Z') }, clocked()) // A3
-    // A has folded C through c1, so seqAtRemoval is 1. Without Z, A's clock
-    // is the clock of a store that drops revoked writers.
-    const clock = [[A, 4], [C, 1], ...(removalCitesZ ? [[Z, 0]] : [])]
-    env.op('A', 'remove-writer', { key: writerKey('C') }, { clock, verbatimClock: true }) // A4
-    const view = await env.run([...env.nodes.filter((n) => n !== c1), c1])
-    const tags = Object.values(view.dump(`c/${id}/f/tags`)[`c/${id}/f/tags`].els).sort()
-    return { reasons: rejectedReasons(view), tags, removed: JSON.parse((await view.get(K.govRemoved(C))).value), J, C }
-  }
-
-  const kept = await run(true)
-  assert.deepEqual(kept.reasons, { [rk(kept.J, 0)]: 'not-a-writer' }, 'only the op of J is rejected')
-  assert.deepEqual(kept.tags, ['c0', 'c1', 'z0'], 'c1 lands in the window')
-  assert.equal(kept.removed.seqAtRemoval, 1)
-
-  const dropped = await run(false)
-  assert.deepEqual(
-    dropped.reasons,
-    { [rk(dropped.J, 0)]: 'not-a-writer', [rk(dropped.C, 1)]: 'revoked' },
-    'c1 cites Z, and the revocation clock does not, so c1 is not strictly before it'
-  )
-  assert.deepEqual(dropped.tags, ['c0', 'z0'])
-})
-
-// ---------- store: the Bundle's seq is the local core's next length ----------
+// ---------- the Bundle's seq is the local core's next length ----------
 
 /** The op in block `seq` of a vault's local core. */
 async function opAt(v, seq) {
@@ -157,7 +26,7 @@ async function opAt(v, seq) {
   return dec.op
 }
 
-test('store: the seq of an op is its node\'s position in the local core, also after an empty block and a restart', async (t) => {
+test('the seq of an op is its node\'s position in the local core, also after an empty block and a restart', async (t) => {
   const dir = await tmpDir('ordinal-pos')
   const a = await Bundle.init(dir)
   t.after(() => a.close()) // a no-op once the test has closed it

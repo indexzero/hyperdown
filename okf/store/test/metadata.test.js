@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { access, writeFile, readFile } from 'node:fs/promises'
+import { access, mkdir, writeFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   Bundle,
@@ -410,4 +410,48 @@ test('a second generation in the same corestore directory gets a fresh writer ke
   t.after(() => v2.close())
   assert.notEqual(v2.keyHex, k1, 'writer keypair does not recur across generations')
   assert.equal(v2.metadata.predecessorKey, k1, 'chain recorded')
+})
+
+test('a vault of this release records metadata version 2, and loadMetadata refuses every other version', async (t) => {
+  const dir = await tmpDir('meta-v2')
+  const a = await Bundle.init(dir)
+  let reopened = null
+  t.after(async () => {
+    await a.close() // a no-op once the test has closed it
+    if (reopened) await reopened.close()
+  })
+  assert.equal(a.metadata.version, 2, 'the open vault records version 2')
+  await a.close()
+
+  const path = join(dir, METADATA_FILE)
+  const meta = JSON.parse(await readFile(path, 'utf8'))
+  assert.equal(meta.version, 2, `${METADATA_FILE} records version 2`)
+  assert.deepEqual(await loadMetadata(path), meta, 'loadMetadata accepts version 2')
+
+  // undefined: JSON.stringify drops the key, so the file has no version.
+  for (const version of [0, 3, '2', null, undefined]) {
+    await writeFile(path, JSON.stringify({ ...meta, version }))
+    await assert.rejects(
+      loadMetadata(path),
+      /unsupported vault metadata version/,
+      `loadMetadata refuses version ${JSON.stringify(version)}`
+    )
+  }
+  await assert.rejects(
+    async () => {
+      reopened = await Bundle.open(dir)
+    },
+    /unsupported vault metadata version/,
+    'a vault without version 2 does not open'
+  )
+})
+
+test('loadMetadata rejects with the read error itself when the file exists and the read fails', async () => {
+  const dir = await tmpDir('meta-unreadable')
+  const path = join(dir, METADATA_FILE)
+  assert.equal(await loadMetadata(path), null, 'a missing file is null')
+  // A directory at the path of the file makes the read fail with EISDIR.
+  // A null here would tell Bundle.open that the directory holds no vault.
+  await mkdir(path)
+  await assert.rejects(loadMetadata(path), (err) => err.code === 'EISDIR', 'a failed read is not a missing file')
 })

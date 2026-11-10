@@ -2,8 +2,8 @@
 // the applied/rejected partition is replay-stable.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Env, writerKey, hostStub, keysUnder, rejectedReasons } from '../helpers.js'
-import { MemView } from '../../index.js'
+import { Env, writerKey, hostStub, keysUnder, rejectedReasons, rk } from '../helpers.js'
+import { keyspace as K, MemView } from '../../index.js'
 
 test('I10: governance requires an indexer issuer; an unauthorized AddWriter still grants at weight 0 and never admits', async () => {
   const env = new Env({ genesis: 'A' })
@@ -379,4 +379,46 @@ test('I10: token buckets refill from accepted indexer ops', async () => {
   assert.equal(reasons[env.hex('B') + '/000000000002'], 'policy-rate')
   const tags = Object.values(view.dump(`c/${id}/f/tags`)[`c/${id}/f/tags`].els).sort()
   assert.deepEqual(tags, ['indexer-op', 't1', 't2', 't4'])
+})
+
+test('a revoked writer stays in the clock, because the §8 window compares every entry (I10)', async () => {
+  // No clock below cites J, which has no gov/writer record. Z is revoked
+  // after C cites it and before A revokes C. The op c1 of C sorts after the
+  // removal of C, inside the window (seq <= seqAtRemoval). It lands only if
+  // its clock strictly precedes the revocation clock, and that compare
+  // needs Z in the revocation clock.
+  const run = async (removalCitesZ) => {
+    const env = new Env({ genesis: 'A' })
+    const [A, C, J, Z] = ['A', 'C', 'J', 'Z'].map((w) => env.hex(w))
+    const clocked = () => ({ clock: env.observedAll().filter(([k]) => k !== J) })
+    env.op('A', 'add-writer', { key: writerKey('C'), indexer: false }) // A0
+    env.op('A', 'add-writer', { key: writerKey('Z'), indexer: false }) // A1
+    env.op('A', 'create-concept', { path: 'w/doc', type: 'note' }) // A2
+    const id = env.tag('A', 2)
+    env.op('J', 'add-tag', { id, value: 'j0' }) // not-a-writer, and seen/J moves
+    env.op('Z', 'add-tag', { id, value: 'z0' }, clocked())
+    env.op('C', 'add-tag', { id, value: 'c0' }, clocked()) // cites A:2, Z:0
+    const c1 = env.op('C', 'add-tag', { id, value: 'c1' }, clocked()) // cites A:2, Z:0
+    env.op('A', 'remove-writer', { key: writerKey('Z') }, clocked()) // A3
+    // A has folded C through c1, so seqAtRemoval is 1. Without Z, A's clock
+    // is the clock of a store that drops revoked writers.
+    const clock = [[A, 4], [C, 1], ...(removalCitesZ ? [[Z, 0]] : [])]
+    env.op('A', 'remove-writer', { key: writerKey('C') }, { clock, verbatimClock: true }) // A4
+    const view = await env.run([...env.nodes.filter((n) => n !== c1), c1])
+    const tags = Object.values(view.dump(`c/${id}/f/tags`)[`c/${id}/f/tags`].els).sort()
+    return { reasons: rejectedReasons(view), tags, removed: JSON.parse((await view.get(K.govRemoved(C))).value), J, C }
+  }
+
+  const kept = await run(true)
+  assert.deepEqual(kept.reasons, { [rk(kept.J, 0)]: 'not-a-writer' }, 'only the op of J is rejected')
+  assert.deepEqual(kept.tags, ['c0', 'c1', 'z0'], 'c1 lands in the window')
+  assert.equal(kept.removed.seqAtRemoval, 1)
+
+  const dropped = await run(false)
+  assert.deepEqual(
+    dropped.reasons,
+    { [rk(dropped.J, 0)]: 'not-a-writer', [rk(dropped.C, 1)]: 'revoked' },
+    'c1 cites Z, and the revocation clock does not, so c1 is not strictly before it'
+  )
+  assert.deepEqual(dropped.tags, ['c0', 'z0'])
 })

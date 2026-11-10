@@ -3,8 +3,8 @@
 // squat cannot block a genuine mint.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Env, writerKey, rejectedReasons } from '../helpers.js'
-import { makeTag } from '../../index.js'
+import { Env, writerKey, hostStub, rejectedReasons, rk, gap } from '../helpers.js'
+import { keyspace as K, makeTag } from '../../index.js'
 
 test('§6: adopting an id shaped like a KNOWN writer’s future mint is rejected', async () => {
   const env = new Env({ genesis: 'A' })
@@ -84,4 +84,22 @@ test('§6: adopting an unknown _id (generation-cycle contract) works and preserv
   const view = await env.run()
   assert.deepEqual(rejectedReasons(view), {})
   assert.equal(view.dump(`c/${carried}/meta`)[`c/${carried}/meta`].type, 'note')
+})
+
+test('mint-collision-risk compares an adopted suffix with the last position plus one', async () => {
+  const env = new Env()
+  const A = env.hex('A')
+  env.op('A', 'add-writer', { key: env.key('B'), indexer: false }) // position 0
+  env.op('A', 'create-concept', { path: 'notes/a', type: 'note' }) // position 1, mints A||1
+  gap(env, 'A') // position 2: an empty block, so no op of A ever has seq 2
+  env.op('A', 'set-field', { id: env.tag('A', 1), key: 'title', value: ['t'] }) // position 3
+  // seen/A is 4. A suffix below 4 names a position that has passed.
+  env.op('B', 'create-concept', { path: 'adopt/gap', type: 'note', id: A + '2' })
+  env.op('B', 'create-concept', { path: 'adopt/next', type: 'note', id: A + '4' })
+  const view = await env.run(env.nodes, { host: hostStub() })
+  assert.equal(JSON.parse((await view.get(K.seen(A))).value), 4)
+  const rej = rejectedReasons(view)
+  const B = env.hex('B')
+  assert.equal(rej[rk(B, 0)], undefined, 'A||2 names a passed position, so B can adopt it')
+  assert.equal(rej[rk(B, 1)], 'mint-collision-risk', 'A||4 is the next mint of A')
 })

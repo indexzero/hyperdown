@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import {
   createApply,
   encodeOp,
+  keyspace,
   MemView,
   makeTag
 } from '../index.js'
@@ -119,4 +120,13 @@ export function rejectedReasons(view) {
     out[k.slice('flag/rejected/'.length)] = v.reason
   }
   return out
+}
+
+/** The rejectedReasons() key of writer W's op at seq. */
+export const rk = (W, seq) => keyspace.flagRejected(W, seq).slice('flag/rejected/'.length)
+
+/** Skip `n` positions of writer `w` in an Env, as empty blocks would. */
+export function gap(env, w, n = 1) {
+  const W = env.hex(w)
+  env.seqs.set(W, (env.seqs.get(W) ?? 0) + n)
 }
