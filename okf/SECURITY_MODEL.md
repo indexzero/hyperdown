@@ -48,35 +48,26 @@ modified client evades it:
   `flag/rejected` entry records it. This is the revocation bypass.
 - autobee bounds a timestamp two hours ahead (`MAX_FORWARD_TIME_DRIFT`),
   and never in the past.
-- The key also stays an autobee writer, because okf never calls
-  `host.removeWriter` (the revoked autobee writer, below). So its
-  `AddWriter` ops still grant keys: `applyNode` calls `grant` before the
-  revocation check.
-- okf cannot reject such an op without changing autobee. apply runs in
-  the order that autobee sorts, after autobee sorted the node (point (e)
-  below).
+- The key also stays an autobee writer, and its `AddWriter` ops still
+  grant keys (the revoked autobee writer, below).
+- apply cannot reject such an op. It runs in the order that autobee
+  sorts, after autobee sorted the node (point (e) below).
 
 ### The eviction ladder
 
 1. **Cut the delivery.** `Bundle.revokePeer(swarmKey)` takes the key out
    of this peer's allowlist, destroys its open connections and calls
    `leavePeer`. A folded `RemoveWriter` does the same on each peer that
-   folds it, for the bound swarm key of the removed writer
-   (`_refreshAllowlistOnce` in `store/lib/bundle.js`). That is the key on
-   its record, and for the creator the key that the invite binds to
-   `genesisKey` (`metadata.swarm.genesis`). A writer that an indexer
-   admitted with no swarm key has no bound key. Its removal cuts nothing
-   that the invite or a local list grants. `auto-okf add-writer` refuses
-   such an admission.
+   folds it, for the bound swarm key of the removed writer (SPEC §8,
+   "Governance ops"). A writer that an indexer admitted with no swarm key
+   has no bound key. Its removal cuts nothing that the invite or a local
+   list grants. `auto-okf add-writer` refuses such an admission.
 2. **Evict.** A new generation is the full eviction: `materialize`, then
    `auto-okf import` into a new directory. The new vault has a new vault
    key and new writer keys. Its only member is the peer that ran the
-   import. `--metadata` carries `limits`, `rate` and `schemaVersion`, and
-   never the `swarm` allowlist (`CARRIED` and `carriedMetadata` in
-   `faces/lib/import.js`). The invite of the new vault lists only the
-   swarm key of the peer that ran the import (`_withOwnSwarmKey`). An
-   indexer admits each writer again with `add-writer --swarm-key`, and
-   leaves the evicted key out.
+   import, and it carries no swarm allowlist (SPEC §10, "Rules of
+   import"). An indexer admits each writer again, and leaves the evicted
+   key out.
 
 The tests of step 1 are in `store/test/swarm.test.js`:
 
@@ -99,7 +90,7 @@ Step 1 retracts nothing:
 - Members still replicate that block to each other. Every admitted
   connection runs `db.replicate`, which replicates the cores of the store.
   See DEVIATIONS.md, "Substrate behaviour that okf relies on".
-- okf never removes the key at the substrate.
+- The key stays an autobee writer (the revoked autobee writer, below).
 - Each peer cuts only its own connections. A peer that did not fold the
   removal still admits the key.
 - The old vault stays on each replica that holds it, until that replica
@@ -163,12 +154,10 @@ These defenses have four limits:
 
 - The revocation checks bind only the ops that sort after the removal
   (the revocation bypass, in "The trust model" above).
-- apply has no hold buffer. It rejects an op of a key with no `gov/writer`
-  record, and it never holds one. Membership is not retroactive.
-- The store refuses an append until `db.writable` is true
-  (`VAULT_NOT_WRITABLE`). `db.writable` is substrate state, and it is not
-  membership. An autobee writer with no `gov/writer` record passes that
-  gate, and apply rejects and flags each of its ops (the free identities).
+- apply has no hold buffer. Membership is not retroactive.
+- `db.writable` is substrate state, and it is not membership. An autobee
+  writer with no `gov/writer` record can append, and apply rejects and
+  flags each of its ops (the free identities).
 - The rate policy meters members only. An op that apply rejects earlier,
   such as `not-a-writer`, takes no token.
 
@@ -292,11 +281,9 @@ invite and no admitted swarm key:
 
 - `swarm()` gives hyperswarm the same `keyPair` and `firewall` on a
   private DHT (`--bootstrap`) and on the public DHT (`--public-dht`).
-- The firewall admits the keys of `metadata.swarm.allow`, the swarm keys
-  of live `gov/writer` records and the keys of the peer's local list
-  (`swarm({ allow })`). It subtracts the bound swarm key of every removed
-  writer, the creator's key that the invite binds included.
-- So the outsider gets no connection. Test: `store/test/swarm.test.js` "a
+- The outsider's swarm key is outside the allowlist (`store/README.md`,
+  "Replication"), so the outsider gets no connection. Test:
+  `store/test/swarm.test.js` "a
   peer with the vault key and the invite, and a swarm key outside the
   allowlist, never connects". The test runs on a private testnet, and the
   same code runs on the public DHT.
@@ -317,11 +304,8 @@ The outsider costs a peer four things, on either DHT, and nothing else:
    and then clears them. So a flood holds one record for each attempt of
    the last 10 s. The store does not bound them, and the suite does not
    measure them.
-4. A bounded ban table. hyperswarm bans each rejected key and keeps its
-   record in `swarm.peers` (`_handleFirewall`). The store keeps at most 64
-   such records and lifts the oldest ban past that bound
-   (`MAX_BANNED_PEERS`, `_recordBan`). The firewall still rejects a key
-   whose ban was lifted, at its next attempt. Test:
+4. A bounded ban table, of at most 64 records. See `store/README.md`,
+   "Replication". Test:
    `store/test/swarm.test.js` "a flood of fresh swarm keys leaves at most
    64 ban records, and the firewall still rejects every key".
 
@@ -483,8 +467,8 @@ reaches apply on every peer.
 Test: "a key that a member approves costs one flag per op, no rate token
 and no c/ change (residual)".
 
-**The revoked autobee writer.** okf never calls `host.removeWriter`, so a
-revoked member stays an autobee writer.
+**The revoked autobee writer.** A revoked member stays an autobee writer
+(SPEC §8, "Revocation").
 
 - Its ops that sort after the `RemoveWriter` reach apply. apply rejects
   them `revoked`, each with a flag (I4).
@@ -550,9 +534,8 @@ okf accepts these residuals, the writer-core flood with the cost in point
 (b) included: a vault trusts its members for the life of a generation.
 
 **(f) An autobee grant follows every `AddWriter` op, and membership comes
-only from `gov/`.** apply calls `host.addWriter(key, { weight: 0 })` for
-every `AddWriter` op that it folds, accepted or rejected. SPEC §8 states
-the rule, its place in apply and its limits.
+only from `gov/`.** SPEC §8 states the rule, its place in apply and its
+limits.
 
 - Without the rule, the views can split for good. A grant that a
   concurrent revocation undoes leaves the writer's consumed node in the
@@ -592,9 +575,9 @@ bytes of the bundle that the import read.
 A generation sheds history by design: old revisions, per-op attribution
 and clocks do not survive it. [I11](GLOSSARY.md#invariant-i1i11) states
 what does survive: the `_id`, type, fields, tags, path and head body of
-every live concept, byte for byte. materialize reports every value that
-the bundle cannot hold, and the operator fixes those values before import
-(§10). import refuses a bundle that holds a conflicted copy. So the
+every live concept, byte for byte. SPEC §10, "What the bundle cannot
+hold", states what the operator fixes before import. import refuses a
+bundle that holds a conflicted copy. So the
 operator resolves an open path collision in the bundle before a
 generation.
 
