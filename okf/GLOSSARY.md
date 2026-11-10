@@ -64,8 +64,7 @@ its creating op's tag).
 ### seq
 The position of an op's node in its [writer](#writer)'s core,
 `node.length - 1`. Unforgeable and the same on every peer. A writer's seqs
-increase, and can have gaps: a node that never reaches [apply](#apply), such
-as an empty block, still takes a position. One half of a [tag](#tag-opid).
+increase, and can have gaps (SPEC §3). One half of a [tag](#tag-opid).
 **Not this:** not the global order across all writers; not the view-kept
 [`seen/` entry](#ordinal--seen).
 
@@ -85,9 +84,8 @@ key, owning one input core. An [indexer](#indexer)'s `AddWriter` admits it
 **Not this:** not the *author* of prose. Not merely "the key" or "the core";
 those belong to the writer. Not an [indexer](#indexer) unless granted. Not
 merely an autobee writer: autobee also adds a key that a rejected
-`AddWriter` names, or that a member's forged approval names, and
-[apply](#apply) rejects every op of a key with no `gov/writer` record. A
-writable store (`db.writable`) is that substrate admission, not this.
+`AddWriter` names, or that a member's forged approval names. A writable
+store (`db.writable`) is that substrate admission, not this.
 
 ### member
 A [writer](#writer) with a `gov/writer` record. Only [apply](#apply) writes
@@ -96,8 +94,7 @@ that record: for the genesis key, and for each key that an accepted
 writer.
 **Not this:** not an autobee writer, which is a key that
 [autobee](#autobee) added. A member can make any key an autobee writer, so
-an autobee writer is not always a member. apply rejects every op of a key
-with no `gov/writer` record.
+an autobee writer is not always a member.
 
 ### indexer
 A [writer](#writer) with governance authority: it may emit `AddWriter`,
@@ -187,8 +184,7 @@ that bundle in a new directory, with `_id` adoption. See SPEC §10 for the
 rules of import.
 **Not this:** not an op. No op in the log reclaims bytes. Not lossless of
 history: a generation drops the old revisions and the attribution of each
-op. `materialize` reports every value that the bundle cannot hold, and the
-operator fixes those values before `import` (SPEC §10).
+op.
 
 ---
 
