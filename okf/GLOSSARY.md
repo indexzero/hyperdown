@@ -8,8 +8,8 @@ scope: >
   system.
 reference: >
   Link a term from any document with
-  `[concept](okf/GLOSSARY.md#concept)` (or a path-relative form). Ground a
-  load-bearing term once on first use, then keep the name stable. Do not
+  `[concept](okf/GLOSSARY.md#concept)` (or a path-relative form). Define a
+  term once, at its first use, then keep the name stable. Do not
   redefine a term locally; fix it here.
 sibling: vault-ld/GLOSSARY.md (the other system in this repo; different domain vocabulary)
 ---
@@ -27,13 +27,13 @@ word carries several ideas.
 
 ### concept
 A single unit of knowledge — one markdown document in a [bundle](#bundle).
-**Not this:** not the *file* on disk (that is its materialized face) and not
+**Not this:** not the *file* on disk (that is its form in the bundle) and not
 its *path* (that is a property of it). A concept survives a rename; the file
 and path do not.
 
 ### `_id`
-A concept's stable identity. Minted once, from the creating [op](#op)'s
-[tag](#tag); opaque; never derived from path or content. Unique per
+A concept's stable identity. Minted once, from the creating [op](#op--operation)'s
+[tag](#tag-opid); opaque; never derived from path or content. Unique per
 [vault](#vault). Survives deletion (a tombstone keeps it). The CouchDB `_id`
 homage.
 **Not this:** not the path, not a content hash, not the `tag` it was minted
@@ -53,7 +53,7 @@ NFC-normalized text, in a fixed byte construction.
 the `_id` names the concept across all versions.
 
 ### tag (opId)
-The identifier of one [op](#op): `writerKey ‖ seq`. Serves as the OR-set
+The identifier of one [op](#op--operation): `writerKey ‖ seq`. Serves as the OR-set
 observation token and the audit handle. Derived by [apply](#apply) from the
 node, never trusted from the op payload.
 **Not this:** not the `_id`. An `_id` is minted *from* a concept's creating tag,
@@ -65,7 +65,7 @@ its creating op's tag).
 The position of an op's node in its [writer](#writer)'s core,
 `node.length - 1`. Unforgeable and the same on every peer. A writer's seqs
 increase, and can have gaps: a node that never reaches [apply](#apply), such
-as an empty block, still takes a position. One half of a [tag](#tag).
+as an empty block, still takes a position. One half of a [tag](#tag-opid).
 **Not this:** not the global order across all writers; not the view-kept
 [`seen/` entry](#ordinal--seen).
 
@@ -88,6 +88,16 @@ merely an autobee writer: autobee also adds a key that a rejected
 `AddWriter` names, or that a member's forged approval names, and
 [apply](#apply) rejects every op of a key with no `gov/writer` record. A
 writable store (`db.writable`) is that substrate admission, not this.
+
+### member
+A [writer](#writer) with a `gov/writer` record. Only [apply](#apply) writes
+that record: for the genesis key, and for each key that an accepted
+`AddWriter` of an [indexer](#indexer) names. Every member is an autobee
+writer.
+**Not this:** not an autobee writer, which is a key that
+[autobee](#autobee) added. A member can make any key an autobee writer, so
+an autobee writer is not always a member. apply rejects every op of a key
+with no `gov/writer` record.
 
 ### indexer
 A [writer](#writer) with governance authority: it may emit `AddWriter`,
@@ -115,22 +125,23 @@ truth is the totally-ordered log of these.
 The deterministic, pure function folding the linearized op stream into the
 [view](#view). No wall clock, no randomness, no peer-local reads (invariant
 I1).
-**Not this:** not a face generator. Apply produces view state; materialize
-reads it.
+**Not this:** not the step that writes the bundle. Apply produces view
+state; materialize reads it.
 
 ### view
 The keyspace-structured key/value state [apply](#apply) produces and peers
-converge on. The queryable face.
+converge on. A caller can query it.
 **Not this:** not the on-disk [bundle](#bundle) (a projection of the view). Not
 authoritative — the op log is.
 
 ---
 
-## Faces and the flag namespace
+## The bundle and the flag namespace
 
 ### bundle
 A directory tree of markdown files with YAML frontmatter — the OKF unit of
-distribution and the on-disk materialized face.
+distribution, and what [materialize](#materialize) writes to disk. The code
+and the CLI say `face` and `<face-dir>` for the same thing.
 **Not this:** not the [vault](#vault) (the vault is the multi-writer store; the
 bundle is its projection). Not the source of truth.
 
@@ -144,11 +155,12 @@ back into a vault.
 Project the [view](#view) to an on-disk OKF [bundle](#bundle) — one markdown
 file per live concept, plus derived `index.md` and `log.md`. Byte-deterministic
 for a converged view (invariant I9).
-**Not this:** not authoritative output — it is a regenerable face. Materialize
-must never delete a human-authored file it did not itself produce.
+**Not this:** not authoritative output. Materialize can write the bundle
+again from the view. Materialize must never delete a human-authored file it
+did not itself produce.
 
 ### ingest
-Re-enter human on-disk edits as the minimal set of [ops](#op). A changed field
+Re-enter human on-disk edits as the minimal set of [ops](#op--operation). A changed field
 becomes one `SetField`; a moved file becomes one `SetPath`; never a whole-file
 op.
 **Not this:** not a bulk import — it diffs against view state and emits the
@@ -168,19 +180,14 @@ Cunningham's sense. Sorted by referrer count. Queryable work for writers.
 never an error.
 
 ### generation / import
-Operator-only byte reclamation in two commands: `materialize` the live
-vault into a face, resolve in the face what must not cross, then
-`auto-okf import` the face into a fresh vault in a new directory, with `_id`
-adoption. With `--predecessor`, the new vault's metadata records the
-predecessor's key. import checks that the new vault's notes match the
-face. The new vault has new keys, and its only member is the peer that
-ran the import. With `--metadata`, the import carries `limits`, `rate` and
-`schemaVersion`. It never carries the swarm allowlist, so an indexer
-admits each writer again. A generation is the eviction point of a revoked
-key. The CouchDB homage.
-**Not this:** not an op — no in-log operation reclaims bytes. Not lossless of
-history: old revisions and per-op attribution are shed by design.
-`materialize` reports every value that the face cannot hold, and the
+A generation is one [vault](#vault), one key set and one log. An operator
+starts the next generation with two commands. `materialize` writes the live
+view to a [bundle](#bundle). `auto-okf import` then creates a new vault from
+that bundle in a new directory, with `_id` adoption. See SPEC §10 for the
+rules of import.
+**Not this:** not an op. No op in the log reclaims bytes. Not lossless of
+history: a generation drops the old revisions and the attribution of each
+op. `materialize` reports every value that the bundle cannot hold, and the
 operator fixes those values before `import` (SPEC §10).
 
 ---
@@ -205,16 +212,7 @@ the log so it cannot be reached from inside it.
 ### invariant (I1–I11)
 A named correctness property the test suite maps to: I1 determinism, I2
 convergence, I3 rebuild equivalence, I4 no-silent-loss, I5 OR-set law, I6 LWW
-law, I7 flag/conflict lifecycle, I8 index coherence, I9 face determinism, I10
+law, I7 flag/conflict lifecycle, I8 index coherence, I9 bundle determinism, I10
 governance, I11 generation roundtrip.
 **Not this:** not a test — an invariant is the property; a test is evidence for
 it.
-
-### severity
-The weight of a defect. **Blocker:** an [invariant](#invariant-i1i11) is
-unachievable as specified, or a [view](#view) hash diverges under any seed.
-**Major:** a real defect or risk that does not by itself falsify an invariant
-(a data-preservation or scale concern — C1 is one). **Minor:** everything else.
-**Not this:** severity is about *invariant impact*, not how alarming the prose
-sounds. A data-loss bug outside the deterministic core is a major, not a
-blocker, when no hash diverges.
