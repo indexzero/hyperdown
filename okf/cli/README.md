@@ -1,31 +1,31 @@
 # @auto-okf/cli
 
-The `auto-okf` command line (okf SPEC §13): a thin veneer over
-[`@auto-okf/store`](../store) (vault lifecycle + §8 governance ops) and
-[`@auto-okf/faces`](../faces) (materialize, ingest watcher, the `wanted/`
-demand index, the import of a face into a new vault). The CLI never writes the view or the
-face itself — every effect flows through the packages, so anything it does is
-exactly what a library caller does. The command surface is declared once as a
-[paparam](https://github.com/holepunchto/paparam) command tree (Holepunch's
-own CLI parser — pear runs on it), and all help text is generated from those
-declarations.
+The `auto-okf` command line (SPEC §13). It runs
+[`@auto-okf/store`](../store) and [`@auto-okf/faces`](../faces). The CLI
+never writes the view or the bundle itself. Every effect goes through the
+packages, so a library caller gets the same result.
+
+[paparam](https://github.com/holepunchto/paparam) declares the commands
+once, and generates all help text from those declarations.
 
 ## A working example
 
-Create a vault, hand-author a note, fold it into the log, and project the
-OKF bundle back to disk:
+Create a vault, write a note by hand, ingest it, and materialize the
+bundle:
 
 ```sh
-# 1. create a vault; this peer's key is the vault key AND the genesis indexer
+# 1. Create a vault. This peer's key is the vault key, and this peer is
+#    the genesis indexer.
 $ auto-okf init ./vault
 vault key:   6671cacb…
 writer key:  6671cacb…
+swarm key:   9e41d2a7…
 storage:     ./vault
 generation:  root
-this peer is the genesis indexer (§8); share the vault key to invite peers
+this peer is the genesis indexer (§8); to invite a peer, share the vault key and
+vault/okf-vault.json (the invite: it lists the swarm keys every peer admits)
 
-# 2. there is NO content-write command — content enters through ingest (edit
-#    markdown) or the @auto-okf/store API (agents). Hand-author a note:
+# 2. No command writes content. Write a note by hand:
 $ mkdir -p ./bundle
 $ cat > ./bundle/hello.md <<'EOF'
 ---
@@ -35,25 +35,25 @@ title: Hello
 Read the [architecture](/guides/architecture) page first.
 EOF
 
-# 3. ingest — the file re-enters the log as minimal ops (mint + set-body)
+# 3. Ingest: the file enters the log as ops.
 $ auto-okf ingest ./vault ./bundle
 ingested hello.md: create-concept, set-field, set-body
 ingest complete: 3 op(s) from 1 file(s)
 
-# 4. materialize — one .md per live concept, plus derived index.md + log.md;
-#    hello.md is rewritten canonically with its _id/_rev stamped in
+# 4. Materialize: one .md file per live concept, plus index.md and log.md.
+#    hello.md now holds its _id and its _rev.
 $ auto-okf materialize ./vault ./bundle
 materialized ./bundle: 3 written, 0 unchanged, 0 removed
 
-# 5. the body linked an unwritten page — the ranked demand index shows it
+# 5. The body links a page that nobody wrote. The demand index lists it.
 $ auto-okf wanted ./vault
 1	guides/architecture	<- 6671cacb…0
 ```
 
-Ops come from **ingest** (human edits) and the `@auto-okf/store` API
-(agents); **materialize** projects the log back out. The two coordinate
-through an emission manifest so the system never echoes its own writes back
-as ops.
+No command writes content. Content enters the log through `ingest` and
+`watch`, or through the `@auto-okf/store` API. `ingest` and `materialize`
+share an emission manifest, so `ingest` never turns a file that
+`materialize` wrote into ops (SPEC §9, "The emission manifest").
 
 ## Install
 
@@ -63,34 +63,275 @@ pnpm add @auto-okf/cli    # or run the repo-local bin: okf/cli/bin/auto-okf.js
 
 ## Commands
 
-| command | what it does |
+| Command | Effect |
 | --- | --- |
-| `init <dir>` | create a new vault at `<dir>`; prints the vault key, this peer's writer key and swarm key, and the generation namespace; refuses a dir already pinned. `<dir>/okf-vault.json` is the invite: share it with the vault key. `--swarm-allow <hex64>` (repeatable, one key per value, as for `join`) pins each key in the invite (`metadata.swarm.allow`); the creator's own swarm key is always pinned. A bad or repeated key is a usage error (exit 2) before the store exists. See [Private swarm](#private-swarm) |
-| `join <dir> <vault-key> --metadata <okf-vault.json>` | join an existing vault by key, with its invite: the creator's `okf-vault.json`. Fresh storage needs `--metadata`. Without it `join` refuses by name (exit 2) and creates nothing: the vault key alone pins metadata that is not the creator's, with no swarm key of the invite, and pinned metadata never changes. A `--metadata` file that is not metadata of this release fails by name, with its path (exit 1). A directory that the store API joined with the vault key alone refuses the invite later with `VAULT_JOINED_WITHOUT_INVITE` (exit 1): join again in a new directory with the invite. `--encryption-key <hex64>` carries the encryption key; when `<dir>` is already pinned the key and `--metadata` are optional (reopen + reprint keys). `--swarm-allow <hex64>` (repeatable) keeps a local list of swarm keys in `<dir>/okf-swarm-allow.json` that this peer alone admits and dials, such as the key of the indexer that admitted it; it is never written to the invite, and each `join --swarm-allow` replaces the list (see [Private swarm](#private-swarm)). A joined peer appends nothing until autobee adds it as a writer (`VAULT_NOT_WRITABLE`, `okf/store/lib/bundle.js:915-923`), and its ops take effect only once an indexer admits it (`okf/core/lib/apply.js:426`): hand the printed writer key and swarm key to an indexer (`add-writer --swarm-key`), then replicate (`watch --swarm --bootstrap`). See [Joining a vault](#joining-a-vault) |
-| `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | append an `AddWriter` governance op; reports whether it took effect (apply rejects issuers that are not confirmed indexers, §8). An `add-writer` that apply rejects still grants the key at the substrate (`okf/core/lib/apply.js:375`): the key becomes writable, and apply rejects each of its ops (see [Joining a vault](#joining-a-vault)). `--swarm-key` puts the writer's swarm key on its `gov/writer` record, and the swarm firewall of every peer admits it once it folds the op. `--swarm-key` is required unless the writer already has a bound swarm key: a `gov/writer` record that carries one, or, for the creator, the key that the invite binds (`metadata.swarm.genesis`). Without it, `add-writer` refuses by name (exit 2) and appends nothing, because a later `remove-writer` could not cut the writer's swarm connection. A promotion of a bound writer needs no flag: the record keeps its key |
-| `keys <dir>` | print the vault key, this peer's writer key and its swarm key. A `<dir>` without a vault prints the swarm key only: it already exists (the store derives it from the directory's corestore, which `keys` creates when it is new), so a pre-provisioned fleet can collect every key before `init --swarm-allow` |
-| `remove-writer <dir> <writer-key>` | append a `RemoveWriter` op; revocation is causal, never positional (§8). It stops cooperating clients only: a revoked key with a modified client can keep writing until the next generation. Each peer that folds the op takes the writer's bound swarm key out of its allowlist: the key on its record, or the creator's key that the invite binds. The full eviction is a new generation (see [SECURITY_MODEL.md](../SECURITY_MODEL.md), the eviction ladder) |
-| `materialize <dir> <bundle-dir>` | project the OKF v0.1 bundle (concepts + per-dir `index.md` + root `log.md`); prints written/unchanged/removed counts; pending-ingest and stale files are `notice:` lines on stderr, unsafe paths `error:` lines. Exits 3 when everything owned was projected but human-authored file(s) are pending ingest (N3); an unsafe path is a real failure, exit 1. A value that the face cannot hold (a scalar `null`, a second `type` value, a reference or an object, a string with a lone UTF-16 surrogate, or a path whose spelling folds together with another one, such as `notes/b` beside `Notes/a`, which a case-insensitive file system holds in one directory) is a `warning:` line that names the note, the key and the `_id`, then an `error:` line, and exit 1: fix it in the vault before `import` (SPEC §10). For an encrypted vault the line names the `_id` only: no path, no key and no value, because stderr can reach a log. `--force-mirror` restores unconditional mirroring. `materialize` is the plaintext export: for an encrypted vault it prints a `warning:` line that names `<bundle-dir>`, and it marks the face with the file `.okf-encrypted`, which `import` reads; the exit code does not change (see [Encryption and plaintext](#encryption-and-plaintext)) |
-| `ingest <dir> <bundle-dir> [paths…]` | one-shot: fold on-disk edits under `<bundle-dir>` back into the log as minimal ops (§9). Trailing bundle-relative paths restrict the scan to exactly those concept files (ADR-001 — concurrent-writer politeness; the shell expands globs): a named path that does not exist, escapes the bundle root, or is not a `.md` file exits 1 naming the path, with zero ops appended. Zero paths = full scan, unchanged. `--confirm-deletes` lets a file deleted on disk emit `DeleteConcept` (off by default). Each op that core rejects is an `error:` line on stderr that names the file, the op and core's reason, for example `error: notes/x.md: core rejected its set-body op (policy-namespace), and the file stays pending`, and the run exits 1. Ingest does not record such a file, so it stays pending, and `materialize` keeps it. A new file that stays pending keeps the concept that its ingest created: `<bundle-dir>/.okf-pending.json` records it, and a later ingest of the file reuses it, also after a rename that keeps its bytes. A new note at the path of a pending file that is gone gets a concept of its own. When such a file is deleted, `ingest --confirm-deletes` deletes its concept too, though the emission manifest never listed the file. A `DeleteConcept` that core rejects is such a line too, and it ends `and the delete stays pending`: ingest keeps the emission manifest entry of the deleted file, so the next `ingest --confirm-deletes` tries the delete again. Sibling files still ingest |
-| `watch <dir> <bundle-dir> [--swarm --bootstrap <host:port,...> \| --swarm --public-dht]` | foreground ingest watcher: human edits re-enter as ops as files change; `--swarm` also replicates over a swarm whose firewall admits only the keys of the invite, the swarm keys of live writers and the local list of `join --swarm-allow` (see [Private swarm](#private-swarm)). `--swarm` needs exactly one DHT: `--bootstrap`, the nodes of a private DHT (`auto-okf bootstrap`), or `--public-dht`, the public DHT (the commons). Without either, `watch --swarm` refuses by name (exit 2) before it opens the vault. `--confirm-deletes`, `--debounce <ms>`. An op that core rejects prints the `error:` line of `ingest`, and `watch` keeps running. No daemon — stop with Ctrl-C |
-| `bootstrap --port <n> [--host <ipv4>]` | run a DHT bootstrap node (hyperdht `DHT.bootstrapper`) in the foreground until Ctrl-C: the hub of a private DHT. It binds `<host>` only, default `127.0.0.1`, so the default node takes no packet from another machine. Peers pass `--bootstrap <host>:<n>` |
-| `status <dir> <bundle-dir>` | read-only per-file state porcelain (ADR-002): one `<state>\t<path>` line per file, sorted by path, states `in-log`, `pending-ingest`, `dirty`, `absent`, `foreign`; `--json` for the stable `{ path, state }` rows. Appends no ops, writes no files, touches no manifest |
-| `wanted <dir>` | print the ranked demand index (`wanted/`): `<count>\t<path>\t<- <referrers>`, most-referenced first; `--json` for the structured rows |
-| `flags <dir> [family]` | list/inspect the flag queue (`flag/`), optionally one family (`conflict`, `clobber`, `pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`, `squat`, `copydetect`, …); `--json`. Nothing is ever lost silently (I4) |
-| `import <face-dir> <dir>` | a generation's second step (§10): create a new vault at `<dir>` and fill it from the notes of a face, such as one that `materialize` wrote, with `_id` adoption. Live state and identity survive; history is shed. `<dir>` must be new or empty. `--metadata <okf-vault.json>` carries `limits`, `rate` and `schemaVersion` from the predecessor's metadata, and never the swarm allowlist; `--predecessor <vault-key>` records the predecessor; `--encryption-key <hex64>` encrypts the new vault, and the face of an encrypted vault (marked `.okf-encrypted`) needs it. import refuses a face that holds a conflicted copy, and checks the new vault against the face (`IMPORT_FIDELITY`, exit 1). The face is never written. See [Generations](#generations-materialize-then-import) |
-| `resolve <dir> <id> --keep <revHash> [--supersede <h>…] [--text <s>]` | resolve open body conflicts on `<id>`: pin the head to `--keep`, clearing the cited `flag/conflict` entries (§5). `--supersede` is repeatable |
-| `undelete <dir> <id>` | restore a tombstoned concept (writes the `flag/undelete` audit, §8) |
+| `init <dir> [--encryption-key <hex64>] [--swarm-allow <hex64>]...` | Create a new vault at `<dir>`. |
+| `join <dir> [vault-key] [--metadata <okf-vault.json>] [--encryption-key <hex64>] [--swarm-allow <hex64>]...` | Join an existing vault with its key and its invite. |
+| `add-writer <dir> <writer-key> [--indexer] [--swarm-key <hex64>]` | Append an `AddWriter` op, and report its effect. |
+| `remove-writer <dir> <writer-key>` | Append a `RemoveWriter` op, and report its effect. |
+| `keys <dir>` | Print the vault key, the writer key and the swarm key. |
+| `materialize <dir> <bundle-dir> [--force-mirror]` | Write the bundle of the vault to `<bundle-dir>`. |
+| `ingest <dir> <bundle-dir> [paths...] [--confirm-deletes]` | Turn the edits under `<bundle-dir>` into ops, one time. |
+| `watch <dir> <bundle-dir> [--swarm] [--bootstrap <host:port,...>] [--public-dht] [--confirm-deletes] [--debounce <ms>]` | Ingest edits while files change. With `--swarm`, also replicate. |
+| `bootstrap --port <n> [--host <ipv4>]` | Run the bootstrap node of a private DHT. |
+| `status <dir> <bundle-dir> [--json]` | Print the state of each file. |
+| `wanted <dir> [--json]` | Print the ranked demand index (`wanted/`). |
+| `flags <dir> [family] [--json]` | Print the flag queue (`flag/`), or one family. |
+| `import <face-dir> <dir> [--metadata <okf-vault.json>] [--predecessor <vault-key>] [--encryption-key <hex64>]` | Create a new vault at `<dir>` from the notes of a bundle. |
+| `resolve <dir> <id> --keep <revHash> [--supersede <revHash>]... [--text <string>]` | Resolve the open body conflicts of a concept. |
+| `undelete <dir> <id>` | Restore a tombstoned concept. |
 
-There is no content-write command: content flows in through `ingest`/`watch`
-(edit the markdown) or through the `@auto-okf/store` API (agents).
+These rules hold for every command:
+
+- Each key is 64 hex characters. A key of another shape is a usage error
+  (exit 2).
+- A command that needs a vault exits 1 on a `<dir>` that holds none, and
+  names `init` and `join`.
+- `watch` and `bootstrap` stay in the foreground until Ctrl-C. Every
+  other command works on the local replica and returns.
+
+### `init`
+
+`init` prints the lines of the working example. `<dir>/okf-vault.json` is
+the invite. Share it with the vault key.
+
+- `--encryption-key <hex64>` encrypts the vault.
+- `--swarm-allow <hex64>` pins one swarm key in the invite
+  (`metadata.swarm.allow`). You can repeat the flag, with one key per
+  value. The invite always pins the creator's own swarm key.
+- A bad or repeated `--swarm-allow` key is a usage error (exit 2), before
+  the store exists.
+- `init` refuses a `<dir>` that already holds a vault (exit 1).
+
+### `join`
+
+[Joining a vault](#joining-a-vault) shows the lines that `join` prints.
+
+- New storage needs `[vault-key]` and `--metadata`, the creator's
+  `okf-vault.json`. Without one of them, `join` refuses by name (exit 2)
+  and creates nothing.
+- The reason: the vault key alone pins metadata that is not the
+  creator's, with no swarm key of the invite. Pinned metadata never
+  changes.
+- A `--metadata` file that is not metadata of this release fails by name,
+  with its path (exit 1).
+- A directory that the store API joined with the vault key alone refuses
+  the invite later with `VAULT_JOINED_WITHOUT_INVITE` (exit 1). Join
+  again in a new directory, with the invite.
+- When `<dir>` already holds the vault, the key and `--metadata` are
+  optional. `join` opens the vault and prints the keys again.
+- `--encryption-key <hex64>` is the key of an encrypted vault.
+- `--swarm-allow <hex64>` keeps a local list of swarm keys in
+  `<dir>/okf-swarm-allow.json`. This peer alone admits and dials those
+  keys, and `join` never writes them to the invite. You can repeat the
+  flag. Each `join --swarm-allow` replaces the list.
+
+### `add-writer` and `remove-writer`
+
+Each command appends its op, and then reads the view. On success, each
+prints one of these lines:
+
+```
+writer added: <writer-key> (indexer: <true|false>)
+swarm key:   <hex64> (each peer's swarm firewall admits it once it folds this op)
+writer removed: <writer-key> (causal revocation recorded, §8)
+```
+
+The `swarm key:` line follows `writer added:` when the record holds a
+swarm key. apply rejects a governance op whose issuer is not an indexer
+(`flag/rejected`, reason `policy-governance`, SPEC §8). The command then
+exits 1, with the reason on stderr:
+
+```
+add-writer did not take effect (rejected: policy-governance); only a confirmed indexer may issue governance ops (§8)
+```
+
+The flags of `add-writer`:
+
+- `--indexer` admits the writer as an indexer.
+- `--swarm-key <hex64>` puts the swarm key of the writer on its
+  `gov/writer` record. The firewall of each peer admits the key when the
+  peer folds the op.
+- `--swarm-key` is required unless the writer already has a bound swarm
+  key: a `gov/writer` record that holds one. For the creator, the key
+  that the invite binds (`metadata.swarm.genesis`) is a bound key too.
+- Without a bound key and without the flag, `add-writer` refuses by name
+  (exit 2) and appends nothing. A later `remove-writer` could not cut the
+  swarm connection of that writer.
+- The promotion of a bound writer needs no flag, because the record keeps
+  its key.
+
+`remove-writer` stops cooperating clients only. A revoked key with a
+modified client can keep writing until the next generation. See SPEC §8,
+"Revocation", and [SECURITY_MODEL.md](../SECURITY_MODEL.md), "The
+eviction ladder".
+
+### `keys`
+
+`keys` prints the `vault key:`, `writer key:` and `swarm key:` lines of
+`init`. For a `<dir>` that holds no vault, it prints the `swarm key:` line
+only, and exits 0. The store derives that key from the corestore of the
+directory, which `keys` creates when it is new. So each peer of a
+pre-provisioned fleet can read its key before `init --swarm-allow`.
+
+### `materialize`
+
+`materialize` prints one line on stdout:
+
+```
+materialized <bundle-dir>: <n> written, <n> unchanged, <n> removed
+```
+
+It prints these lines on stderr, one for each file or value:
+
+| Line | Exit code |
+| --- | --- |
+| `notice: pending ingest (unsaved external edit, left in place): <path>` | 3 |
+| `notice: stale (no longer produced, left in place): <path>` | no change |
+| `error: unsafe path (skipped, §9): <path> (<reason>)` | 1 |
+| `warning: <path>: the face cannot hold the value of '<key>' (_id <id>): the vault holds <json>, the face holds <json>` | 1 |
+| `warning: <bundle-dir>: now holds the contents of an encrypted vault as plaintext` | no change |
+
+Exit 1 comes before exit 3. After the `the face cannot hold` lines,
+`materialize` prints one `error:` line with their count. Fix each value in
+the vault before `import`. SPEC §10, "What the bundle cannot hold", lists
+those values.
+
+For an encrypted vault, that warning names the `_id` only, because stderr
+can reach a log. It prints no path, no key and no value:
+
+```
+warning: the face cannot hold a value of the concept with _id <id>; the path, the key and the values are not printed: the vault is encrypted
+```
+
+`--force-mirror` restores unconditional mirroring (SPEC §9, "The emission
+manifest").
+
+### `ingest`
+
+`ingest` prints one line for each file that gave ops, and then a total:
+
+```
+ingested <path>: <op>, <op>
+ingest complete: <n> op(s) from <n> file(s); <n> file(s) already up to date
+```
+
+The total holds its last clause only when `ingest` found unchanged files.
+
+- `[paths...]` restricts the scan to those concept files, as paths
+  relative to `<bundle-dir>` (ADR-001). The shell expands globs. Without
+  paths, `ingest` scans the whole bundle.
+- A named path that does not exist, that resolves outside the bundle
+  root, or that is not a `.md` file exits 1. The error names the path,
+  and `ingest` appends no op.
+- `--confirm-deletes` lets a file that is gone from the disk emit a
+  `DeleteConcept`. Without the flag, `ingest` prints
+  `delete skipped (no --confirm-deletes): <path>` on stderr.
+
+`ingest` exits 1 after each of these `error:` lines on stderr. Sibling
+files still ingest.
+
+```
+error: notes/x.md: core rejected its set-body op (policy-namespace), and the file stays pending
+error: other/x.md: core rejected its delete-concept op (policy-namespace), and the delete stays pending
+error: drafts/big.md: its set-body op is 71,290 bytes encoded; maxOpBytes is 65,536
+```
+
+- The first line names the file, the op and the reason of core. `ingest`
+  does not record that file, so it stays pending and `materialize` keeps
+  it.
+- The second line is a `DeleteConcept` that core rejected. `ingest`
+  keeps the emission manifest entry of the deleted file, so the next
+  `ingest --confirm-deletes` tries the delete again.
+- The third line is the oversize preflight. A body travels in one
+  `set-body` op, and the encoded op must not exceed `maxOpBytes` (65,536
+  bytes by default). `ingest` refuses the file before it appends
+  anything. Split the document into smaller linked concepts.
+
+SPEC §9, "Ingest: preflight, pending files and scope", states what a
+pending file keeps, and how `--confirm-deletes` deletes its concept.
+
+### `watch` and `bootstrap`
+
+`watch` scans the bundle one time, prints
+`watching <bundle-dir> (foreground; Ctrl-C to stop)`, and then ingests
+each edit. It prints the `ingested` line of `ingest` for each file. It is
+not a daemon.
+
+- `--confirm-deletes` works as for `ingest`. `--debounce <ms>` sets the
+  quiet time for a path before `watch` reads it.
+- An op that core rejects prints the `error:` line of `ingest`, and
+  `watch` keeps running.
+- `--swarm` also replicates over a private swarm. It needs exactly one
+  DHT: `--bootstrap <host:port,...>`, the nodes of a private DHT, or
+  `--public-dht`, the public DHT (the commons).
+- Without either, `watch --swarm` refuses by name (exit 2), before it
+  opens the vault. Both DHT flags, a DHT flag without `--swarm`, and a
+  bad `--bootstrap` value are usage errors too.
+
+With `--swarm`, `watch` prints these lines first. The `local allow:` line
+shows only when the local list holds a key.
+
+```
+joined the private swarm on the vault's auto-okf/2 topic (bootstrap <host:port,...>)
+swarm key:   <hex64> (the firewall admits only the keys of the invite, of live writers and of the local list)
+local allow:  <n> key(s) from <dir>/okf-swarm-allow.json
+```
+
+With `--public-dht`, the first line is
+`joined the public DHT (the commons) on the vault's auto-okf/2 topic`.
+
+`bootstrap` runs a DHT bootstrap node (hyperdht `DHT.bootstrapper`), the
+hub of a private DHT. `--port <n>` is required. `--host <ipv4>` is the
+one address that the node binds. The default is `127.0.0.1`, so the
+default node takes no packet from another machine. A missing or bad
+value is a usage error (exit 2).
+
+### `status`, `wanted` and `flags`
+
+Each command prints one line for each row on stdout, and a count on
+stderr. `--json` prints the rows as a JSON array.
+
+| Command | Line |
+| --- | --- |
+| `status` | `<state>\t<path>`, sorted by path |
+| `wanted` | `<count>\t<path>\t<- <referrers>`, most-referenced first |
+| `flags` | `<key>\t<JSON value>` |
+
+`status` is read-only (ADR-002): it appends no op, writes no file and
+touches no manifest. The states are `in-log`, `pending-ingest`, `dirty`,
+`absent` and `foreign`. SPEC §9, "Per-file state vocabulary (ADR-002)",
+gives the meaning of each one. The `{ path, state }` rows of
+`status --json` are a contract. Two runs with no op between them print
+the same bytes.
+
+`[family]` restricts `flags` to one family: `conflict`, `clobber`,
+`pathcollision`, `staletag`, `writeafterdelete`, `undelete`, `rejected`
+or `squat`. Nothing is ever lost silently (I4), so read this queue.
+
+### `resolve` and `undelete`
+
+`resolve` pins the head of `<id>` to `--keep`, and clears the
+`flag/conflict` entries that it cites (SPEC §5). `--keep <revHash>` is
+required: without it, `resolve` exits 2. You can repeat `--supersede`.
+`--text <string>` gives a replacement body.
+
+`undelete` restores a tombstoned concept, and apply writes the
+`flag/undelete` audit record (SPEC §8).
+
+On success, each command prints one of these lines:
+
+```
+resolved <id>: head := <revHash>; <n> conflict flag(s) still open on this concept
+undeleted <id>: concept restored (audit flag/undelete recorded, §8)
+```
+
+Each command exits 1 when apply rejects its op, and prints the reason.
+`undelete` also exits 1 when no concept has that `<id>`.
 
 ## Joining a vault
 
-`join` prints this peer's own writer key and swarm key. The store refuses
-every append of the peer until autobee adds that key as a writer
-(`okf/store/lib/bundle.js:915-923`). The ops of the peer take effect only
-once an indexer admits the key with `add-writer`
-(`okf/core/lib/apply.js:426`, `:554-575`):
+`join` prints the keys of this peer, and the next step:
 
 ```sh
 $ auto-okf join ./peer <vault-key> --metadata okf-vault.json
@@ -100,101 +341,101 @@ swarm key:   9e41d2a7…
 hand both keys to an indexer (`auto-okf add-writer <dir> <writer-key> --swarm-key <swarm-key>`),
 then replicate with `auto-okf watch <dir> <bundle-dir> --swarm --bootstrap <host:port>`
 
-# on an indexer's replica
+# on the replica of an indexer
 $ auto-okf add-writer ./vault 0cf03548… --swarm-key 9e41d2a7…
 ```
 
-Until the peer has replicated an `add-writer` op that names its key, the
-store refuses every append on it (`VAULT_NOT_WRITABLE`,
-`okf/store/lib/bundle.js:915-923`), and nothing is appended. `ingest`,
-`add-writer`, `remove-writer`, `resolve` and `undelete` then exit 1 when
-they would append an op. `watch` exits 1 the same way when its first scan
-finds an edit. After that it prints each refusal as a `watch error:` line
-and keeps watching. The CLI names the step:
+The store refuses every append of the peer (`VAULT_NOT_WRITABLE`) until
+autobee adds its key as a writer. That needs a replicated `add-writer`
+op that names the key. Until then, nothing is appended:
+
+- `ingest`, `add-writer`, `remove-writer`, `resolve` and `undelete` exit
+  1 when they would append an op.
+- `watch` exits 1 the same way when its first scan finds an edit. After
+  that scan, it prints each refusal as a `watch error:` line and keeps
+  watching.
+
+The CLI names the step:
 
 ```
 auto-okf ingest: Not writable: autobee has not added this peer as a writer yet. Hand its writer key 0cf03548… to an indexer (`auto-okf add-writer`), then replicate and try again
 ```
 
-The store gate reads substrate admission, not okf membership. Core grants
-the key of every `add-writer` op that it folds, a rejected one too
-(`okf/core/lib/apply.js:375`). So a writer that is not an indexer can make
-the peer writable. The appends of the peer then go through, but apply
-rejects each of its ops until an indexer admits it
-(`okf/core/lib/apply.js:407-412`, `:426`).
+Writable is not the same as admitted. The ops of the peer take effect
+only once an indexer admits its key with `add-writer`. Core grants the
+key of every `add-writer` op that it folds, a rejected one too. So a
+writer that is not an indexer can make the peer writable, and apply then
+rejects each op of the peer. See SPEC §8, "The grant, and admission
+before effect".
 
 ## Private swarm
 
-`watch --swarm` replicates over a private hyperswarm. The vault key is not
-a capability to connect. Each peer has a persistent swarm key (`keys`),
-and the swarm firewall of each peer rejects every remote key except:
+`watch --swarm` replicates over a private hyperswarm. The vault key is
+not a capability to connect. Each peer has a persistent swarm key
+(`keys`), and the firewall of each peer rejects every remote key except
+these:
 
-- the keys of the invite, `metadata.swarm.allow`,
-- the swarm key on each `gov/writer` record that has no `gov/removed`
-  record (`add-writer --swarm-key`), and
-- the keys of this peer's local list (`join --swarm-allow`), which no
-  other peer admits.
+- The keys of the invite (`init --swarm-allow`).
+- The swarm key of each live writer (`add-writer --swarm-key`).
+- The keys of this peer's local list (`join --swarm-allow`).
 
-The bound swarm key of a removed writer leaves the allowlist when a peer
-folds the `remove-writer`, also after a reopen, also when the invite or
-the local list names the key, and also when another, live `gov/writer`
-record carries it. Its open connections close. The bound key is the key
-on the writer's record (`add-writer --swarm-key`), and for the creator
-the key that the invite binds to the vault key (`metadata.swarm.genesis`,
-which `init` writes). So a removal of the creator cuts it too. A peer that holds the vault key and the invite, but no
-admitted swarm key, never connects (`okf/store/test/swarm.test.js`).
+A peer that holds the vault key and the invite, but no admitted swarm
+key, never connects. See [okf/store/README.md](../store/README.md),
+"Replication", for the rules of the allowlist.
 
-**A private DHT.** One `auto-okf bootstrap` node is the hub. Every peer
-passes its address to `--bootstrap`:
+### A private DHT
+
+One `auto-okf bootstrap` node is the hub. Every peer passes its address
+to `--bootstrap`:
 
 ```sh
 $ auto-okf bootstrap --port 49737
 bootstrap node: 127.0.0.1:49737 (foreground; Ctrl-C to stop)
+peers replicate with: auto-okf watch <dir> <bundle-dir> --swarm --bootstrap 127.0.0.1:49737
 
 $ auto-okf watch ./vault ./bundle --swarm --bootstrap 127.0.0.1:49737
 ```
 
 For peers on more than one machine, run the node with
-`--host <its IPv4 address>`. `--public-dht` uses hyperdht's default
-bootstrap nodes instead: the public DHT, which hyperdht describes as
-"publicly served on behalf of the commons". It is explicit opt-in.
+`--host <its IPv4 address>`. `--public-dht` uses the default bootstrap
+nodes of hyperdht instead: the public DHT. You must ask for it by name.
 
-**A late joiner.** The joiner runs `join --metadata okf-vault.json` and
-hands its writer key and swarm key to an indexer, who runs
-`add-writer <dir> <writer-key> --swarm-key <swarm-key>`. Each peer admits
-the joiner when it folds the `add-writer`, and finds it on the vault's
-`auto-okf/2` topic. The joiner holds no `gov/writer` record before it
-connects, so its firewall admits only the keys of the invite. The
-creator's swarm key is always there. So the joiner needs a peer of the
-invite online, or it never learns its admission.
+### A late joiner
 
-When no peer of the invite is online, for example when the creator is
-offline and another indexer admits the joiner, the recovery is this: the
-admitting indexer hands the joiner its swarm key with the invite, and the
-joiner lists that key with `--swarm-allow`. `watch --swarm` then admits and
-dials it, on this peer only:
+[Joining a vault](#joining-a-vault) shows the commands. The joiner needs
+a peer of the invite online, or it never learns its admission. The swarm
+key of the creator is always in the invite.
+
+When no peer of the invite is online, the indexer that admits the joiner
+hands it its own swarm key, with the invite. The joiner lists that key
+with `--swarm-allow`:
 
 ```sh
-# on the joiner: join, and hand both keys to the indexer
-$ auto-okf join ./peer <vault-key> --metadata okf-vault.json
-writer key:  0cf03548…
-swarm key:   9e41d2a7…
-
-# on the admitting indexer: admit the joiner, and read its own swarm key
+# on the indexer: admit the joiner, and read the indexer's own swarm key
 $ auto-okf add-writer ./indexer 0cf03548… --swarm-key 9e41d2a7…
 $ auto-okf keys ./indexer
+vault key:   6671cacb…
+writer key:  b81e44d0…
 swarm key:   7d3a90b4…
 
-# on the joiner: list the indexer's swarm key, then replicate
+# on the joiner: list the swarm key of the indexer, then replicate
 $ auto-okf join ./peer --swarm-allow 7d3a90b4…
+vault key:   6671cacb…
+writer key:  0cf03548…
+swarm key:   9e41d2a7…
 local allow:  7d3a90b4…
+(this peer alone admits these keys: peer/okf-swarm-allow.json, never the invite)
 $ auto-okf watch ./peer ./bundle --swarm --bootstrap 127.0.0.1:49737
 ```
 
-Take the key only from the indexer, by the channel that carries the
-invite. Never list a key that a discovery alone names.
+`join` also prints the two lines of the next step, which this example
+leaves out. Take the key only from the indexer, by the channel that
+carries the invite. Never list a key that a discovery alone names.
 
-**A pre-provisioned fleet.** A pre-provisioned fleet needs no topic:
+### A pre-provisioned fleet
+
+A pre-provisioned fleet needs no topic, because each peer dials every
+key of the invite directly:
 
 ```sh
 # on each peer of the fleet: the swarm key exists before the vault
@@ -208,76 +449,52 @@ $ auto-okf init ./vault --swarm-allow 9e41d2a7… --swarm-allow 52c0f1e8…
 $ auto-okf join ./peer-1 <vault-key> --metadata ./vault/okf-vault.json
 ```
 
-Each peer then dials every listed key directly (hyperswarm `joinPeer`), so
-the fleet connects without a topic announcement. `watch --swarm` still
-joins the topic for writers that join later. The invite binds only the
-creator's key to a writer key, so `add-writer` needs `--swarm-key` for
-each writer of the fleet too. A later `remove-writer` then takes its
-swarm key out of every allowlist.
-
-## Per-file state: `status`
-
-`auto-okf status ./vault ./bundle` answers the per-file state question
-*before* you run anything — one `<state>\t<path>` line per file, sorted by
-path, strictly read-only (it appends no ops, writes no files, touches no
-manifest; ADR-002). Five states:
-
-- `in-log` — on-disk bytes match the log's canonical projection (hash match)
-- `pending-ingest` — hand-authored, not yet in the log; `ingest` would fold
-  it in as a new concept
-- `dirty` — in the log but on-disk bytes diverge from the projection (a hand
-  edit `ingest` folds in as diffs, or a log that moved past the last
-  `materialize`)
-- `absent` — in the log, missing from disk (`materialize` would restore it)
-- `foreign` — not in the log, not manifest-tracked, and not (yet) ingestable
-  (e.g. another writer's mid-write WIP without a parseable `type`)
-
-`--json` emits the same rows as a stable array of `{ path, state }` objects —
-byte-identical across runs with no intervening ops (the schema is contract).
+The invite binds only the creator's key to a writer key. So `add-writer`
+needs `--swarm-key` for each writer of the fleet too. A later
+`remove-writer` then takes its swarm key out of every allowlist.
 
 ## Verifying content is in the log
 
-`status` is the quick check: `in-log` means the on-disk bytes hash-match the
-log's projection. For proof *from* the log, materialize to a scratch
-directory — a vault has no privileged bundle directory; the emission manifest
-(`.okf-manifest.json`) lives in each target directory, so materializing to
-a scratch directory never disturbs another bundle:
+`status` is the fast answer: `in-log` says that the bytes on disk match
+the log. For proof from the log, materialize to an empty directory:
 
 ```sh
 $ mkdir ./scratch && auto-okf materialize ./vault ./scratch
 ```
 
-An empty scratch dir that fills on materialize is proof the content is in
-the log — everything that appears came from it.
+Every file that appears there came from the log. A vault has no
+privileged bundle directory. The emission manifest (`.okf-manifest.json`)
+lives in each target directory, so this run never disturbs another
+bundle.
 
 ## Encryption and plaintext
 
-A vault made with `--encryption-key` is encrypted at rest. Two rules make
-sure that its contents never become plaintext without a word:
+A vault made with `--encryption-key` is encrypted at rest. Two rules
+make sure that its contents never become plaintext without a word. SPEC
+§10 states both.
 
-- **A generation never drops encryption.** The import of a generation of
-  an encrypted vault needs `--encryption-key <hex64>` for the new vault.
-  `materialize` marks the face of an encrypted vault: before its first
-  plaintext write, it writes the file `.okf-encrypted` at the root of
-  `<bundle-dir>`. `import` of a marked face without a key refuses with
-  `IMPORT_ENCRYPTION_KEY_REQUIRED` and exits 1, before it creates or
-  writes anything, also without `--metadata`. With `--metadata` of an
-  encrypted predecessor and no key, it refuses the same way. No flag makes
-  an unencrypted copy. A key is never carried over, so you name the key of
-  the new generation: the same key or a new one.
-- **A plaintext write is announced.** `materialize` is the plaintext export.
-  For an encrypted vault it prints this line on stderr, where `<dir>` is the
-  bundle directory. The exit code does not change.
+1. `materialize` is the plaintext export. For an encrypted vault it
+   prints this line on stderr, and the exit code does not change:
 
-  ```
-  warning: <dir>: now holds the contents of an encrypted vault as plaintext
-  ```
+   ```
+   warning: <bundle-dir>: now holds the contents of an encrypted vault as plaintext
+   ```
 
-The face of a generation is that plaintext export: it holds the live
-contents of the vault as plaintext. Keep it as safe as the key, or
-destroy it out-of-band once the import succeeded. `import` reads the face
-and writes no plaintext: no stage, no verification copy and no side file
-in `<dir>`, so it prints no warning.
+   It also writes the file `.okf-encrypted` at the root of
+   `<bundle-dir>`.
+2. `import` of a bundle that holds `.okf-encrypted` needs
+   `--encryption-key <hex64>` for the new vault. Without a key it refuses
+   with `IMPORT_ENCRYPTION_KEY_REQUIRED` and exits 1, before it creates
+   or writes anything, also without `--metadata`. With `--metadata` of an
+   encrypted predecessor and no key, it refuses the same way.
+
+A key is never carried over, so you name the key of the new generation:
+the same key or a new one. `init`, `join` and `import` take the key. A
+reopen needs no key.
+
+That bundle holds the live contents of the vault as plaintext. Keep it as
+safe as the key, or destroy it out-of-band after the import succeeds.
+`import` writes no plaintext, so it prints no warning.
 
 ## Generations: materialize, then import
 
@@ -286,97 +503,129 @@ vault is never touched:
 
 ```sh
 auto-okf flags ./vault conflict            # resolve open body conflicts first
-auto-okf materialize ./vault ./face        # 1. the face of the live vault
-#    (exit 1 names each value that the face cannot hold: fix it in
+auto-okf materialize ./vault ./face        # 1. the bundle of the live vault
+#    (exit 1 names each value that the bundle cannot hold: fix it in
 #    ./vault, then materialize again)
 # 2. resolve in ./face what must not cross: give each conflicted copy
 #    (*.conflict-<hex>.md) a path of its own, or merge it and remove it
 auto-okf import ./face ./vault-e1 \
   --metadata ./vault/okf-vault.json \
   --predecessor <vault key of ./vault>      # 3. the new vault
-#    (add --encryption-key <hex64> for the face of an encrypted vault:
-#    import refuses that face without a key)
+#    (add --encryption-key <hex64> for the bundle of an encrypted vault:
+#    import refuses that bundle without a key)
 ```
 
-`import` refuses, by name and before it writes anything (exit 1):
+The bundle holds only the head body of each concept. So resolve each open
+`flag/conflict` in the vault first, or the losing body stays behind in
+the old vault.
 
-- `IMPORT_DIR_NOT_EMPTY`: `<dir>` is a vault (`okf-vault.json` exists), is
-  not empty, or is not a directory. Give a new `<dir>`.
-- `IMPORT_CONFLICT_COPY`: the face holds a `.conflict-<hex>` note, so a
-  path collision is still open. Resolve it in the face.
-- `IMPORT_RESERVED_NAME`: the face holds a note at a reserved `.okf-` name,
-  or under a directory with one, in any case.
-- `IMPORT_MISSING_ID`: the face holds a note whose frontmatter holds no
-  `_id`. A generation keeps each `_id`: give the note its `_id`, or remove
-  it.
-- `IMPORT_FACE_ENTRY`: the face holds an entry that is not a regular file
-  or a directory, such as a symlink.
-- `IMPORT_ENCRYPTION_KEY_REQUIRED`: the face holds `.okf-encrypted`, or
-  `--metadata` says encrypted, and no `--encryption-key` was given (see
-  [Encryption and plaintext](#encryption-and-plaintext)).
-- `IMPORT_DIR_CLAIMED`: another `import` holds `<dir>`. Before it creates
-  the vault, `import` creates the claim file `okf-import-claim` in `<dir>`
-  with an exclusive open. When the store creates the vault, it moves the
-  claim into `<dir>/db/`, and from then on the files of the new vault
-  hold `<dir>` (`IMPORT_DIR_NOT_EMPTY`). A successful `import` removes the
-  claim at both places. So two imports into one `<dir>` never both run:
-  the second refuses, and it removes nothing that the first wrote.
+- `<dir>` must be new or empty. `import` never writes to the bundle.
+- `--metadata <okf-vault.json>` carries `limits`, `rate` and
+  `schemaVersion` from the metadata of the predecessor. The file must be
+  an `okf-vault.json` of this release, else `import` exits 1, by name.
+- `--predecessor <vault-key>` records the key of the predecessor.
+- `--encryption-key <hex64>` encrypts the new vault.
+- A bad key or predecessor key is a usage error (exit 2).
 
-A bad key or predecessor key is a usage error (exit 2). `--metadata` must
-be an `okf-vault.json` of this release, else exit 1, by name.
+On success, `import` prints the three key lines of `init`, and then:
 
-Then `import` reads every `.md` note of the face, dot paths included, and
-imports it with `_id` adoption. It ignores the emission manifest and every
-`_rev` line. An op larger than `maxOpBytes` when encoded fails with
-`IMPORT_OVERSIZE`, and an op that apply rejects fails with
-`IMPORT_REJECTED`. After the import, the notes of the new vault must equal
-the notes of the face, byte for byte, without `_rev` lines (`index.md` and
-`log.md` are not compared). A difference exits 1 with `IMPORT_FIDELITY`,
-which names each difference. A note that does not import, such as one
-without `type`, is a `warning:` line and a difference, so a successful
-`import` prints no warning. On each failure, `import` removes only what
-it created while it held the claim: the entries that it wrote in `<dir>`,
-the claim, and `<dir>` itself when `import` made it. An existing empty
-`<dir>` stays, empty. On success it prints
-the note counts
-(`notes: <n> read, <n> imported`), a `fidelity:` line, and the file that a
-joiner passes as `--metadata`: a joiner of the new vault needs it to derive
-the same generation namespace.
+```
+storage:     <dir>
+generation:  <generation namespace>
+predecessor: <vault-key>
+notes:       <n> read, <n> imported
+fidelity:    every note of the new vault matches the face (_rev lines excluded; index.md and log.md not compared)
+invite:      a joiner needs the vault key and <dir>/okf-vault.json (auto-okf join <dir> <vault-key> --metadata <that file>)
+```
 
-The face holds the head body of each concept only. So resolve each open
-`flag/conflict` in the vault before you materialize the face, or the
-losing body stays behind in the old vault.
+Without `--predecessor`, the `predecessor:` line reads
+`(none: a root vault)`.
+
+### What `import` refuses
+
+A refusal prints `auto-okf import: <CODE>: <text>` on stderr and exits 1.
+`import` refuses each of these by name, before it writes anything:
+
+| Code | Cause |
+| --- | --- |
+| `IMPORT_DIR_NOT_EMPTY` | `<dir>` holds a vault, is not empty, or is not a directory |
+| `IMPORT_DIR_CLAIMED` | another `import` holds `<dir>`, with the claim file `okf-import-claim` |
+| `IMPORT_CONFLICT_COPY` | a `.conflict-<hex>` note: a path collision is still open |
+| `IMPORT_RESERVED_NAME` | a note at a reserved `.okf-` name, or under such a directory |
+| `IMPORT_MISSING_ID` | a note with no `_id`: give the note its `_id`, or remove it |
+| `IMPORT_FACE_ENTRY` | an entry that is not a regular file or a directory, such as a symlink |
+| `IMPORT_ENCRYPTION_KEY_REQUIRED` | an encrypted predecessor, and no `--encryption-key` |
+
+Two imports into one `<dir>` never both run. The second refuses, and it
+removes nothing that the first wrote.
+
+`import` fails with one of these codes after it created the new vault:
+
+| Code | Cause |
+| --- | --- |
+| `IMPORT_OVERSIZE` | an op is larger than `maxOpBytes` when encoded |
+| `IMPORT_REJECTED` | apply rejected an op |
+| `IMPORT_FIDELITY` | a note of the new vault is not equal to the note of the bundle |
+
+`IMPORT_FIDELITY` names each difference. Before it, `import` prints a
+`warning: <path>: <message>` line for each note that did not import, such
+as one without `type`. So a successful `import` prints no warning.
+
+On each failure, `import` removes what it created. A `<dir>` that existed
+stays, empty. See SPEC §10, "Rules of import", for the claim file, the
+fidelity check and the cleanup.
+
+### After a signal
+
+A signal such as Ctrl-C stops `import` before its cleanup.
+
+- A signal before the store creates the vault leaves only the claim file
+  in `<dir>`. A rerun refuses that `<dir>` with `IMPORT_DIR_CLAIMED`.
+- A signal after it leaves a partial vault, with the claim file in
+  `<dir>/db/`. A rerun refuses that `<dir>` with `IMPORT_DIR_NOT_EMPTY`.
+- When no `import` runs, remove `<dir>` and run `import` again.
+
+The bundle is never written. With `--encryption-key`, the partial vault
+is encrypted too.
+
+### The writers of the new vault
 
 A generation is the eviction point, so `--metadata` never carries the
-swarm allowlist (`metadata.swarm.allow`) into the new vault
-(`okf/faces/lib/import.js:44`). The invite of the new vault lists only
-the swarm key of the peer that ran `import`. Admit each writer of the new
-vault with `add-writer <dir> <writer-key> --swarm-key <hex64>`, and leave
-out each key that you evict. Each joiner needs the new `okf-vault.json`
-as its `--metadata`.
+swarm allowlist (`metadata.swarm.allow`) into the new vault. The invite
+of the new vault lists only the swarm key of the peer that ran `import`.
 
-A signal such as Ctrl-C stops `import` before its cleanup. A signal
-before the store creates the vault leaves only the claim in `<dir>`. A
-signal after it leaves a partial vault, with the claim in `<dir>/db/`. A
-rerun refuses that `<dir>` by name (`IMPORT_DIR_CLAIMED` when only the
-claim stays, else `IMPORT_DIR_NOT_EMPTY`): when no `import` runs, remove
-`<dir>` and run `import` again. The
-face is never written, and with `--encryption-key` the partial vault is
-encrypted too.
+1. Admit each writer of the new vault with
+   `add-writer <dir> <writer-key> --swarm-key <hex64>`.
+2. Leave out each key that you evict.
+3. Give each joiner the new `okf-vault.json` as its `--metadata`. The
+   joiner needs it to derive the same generation namespace.
+
+See [SECURITY_MODEL.md](../SECURITY_MODEL.md), "The eviction ladder".
 
 ## Exit codes
 
-`0` success · `1` operational error (including a governance op that apply
-rejected, an op of `ingest` that core rejected, an unsafe path skipped
-during `materialize`, or a value that the face cannot hold, reported by
-`materialize`) · `2` usage
-error — unknown flags and commands, missing or extra arguments, and malformed
-values all exit 2 (paparam parses strictly; the wrapper maps every parse
-failure to 2) · `3` (`materialize` only) everything owned was projected but
-human-authored file(s) were left in place pending ingest — a normal
-multi-writer state, listed as `notice:` lines on stderr, not a failure
-(ADR-004). `-h`/`--help` prints the paparam-generated help (top-level and
-per command) and exits 0.
+| Code | Meaning |
+| --- | --- |
+| `0` | success |
+| `1` | operational error |
+| `2` | usage error |
+| `3` | `materialize` only: pending ingest |
+
+- Exit 1 includes a governance op that apply rejected, an op of `ingest`
+  that core rejected, and an unsafe path that `materialize` skipped. It
+  also includes a value that the bundle cannot hold, which `materialize`
+  reports.
+- Exit 2 covers unknown flags and commands, missing or extra arguments,
+  and malformed values. paparam parses strictly, and the wrapper maps
+  every parse failure to 2. `auto-okf` with no command prints the help
+  and exits 2.
+- Exit 3 says that `materialize` wrote all that it owns, and left in
+  place the files that a person wrote and nobody ingested yet. That is a
+  normal state with several writers, not a failure (ADR-004).
+  `materialize` lists those files as `notice:` lines on stderr.
+- `-h` and `--help` print the help that paparam generates, for the top
+  level and for each command, and exit 0. `auto-okf help` prints the
+  top-level help and exits 0.
 
 ## Notes
 
@@ -384,43 +633,20 @@ per command) and exits 0.
   in `okf-vault.json`). Any other version exits 1 with
   `unsupported vault metadata version: <n>`. Vaults of an earlier release
   are not carried over.
-- All commands operate on the local replica and return; only `watch` and
-  `bootstrap` stay in the foreground (with `--swarm`, `watch` is also the
-  replication process).
-- `watch --swarm` announces the vault on the `auto-okf/2` topic of the DHT
-  that `--bootstrap` or `--public-dht` chooses. The firewall admits only
-  the keys of its allowlist, so an outsider with the vault key gets no connection
-  and cannot reach autobee's wakeup protocol (G44 in
-  [SECURITY_MODEL.md](../SECURITY_MODEL.md)). On the public DHT, a peer
-  that knows the vault key can still look up the topic announcement. It
-  names the swarm keys of the announcing peers and the DHT nodes that
-  relay to them. Each attempt of a rejected peer also costs a member one
-  handshake message, hyperdht's record of the attempt for 10 s, and a ban
-  record that the store bounds at 64 (the oldest ban is lifted first, and
-  the firewall still rejects that key).
-- Governance commands verify their effect in the view after appending: if the
-  issuing peer is not a confirmed indexer, apply rejects the op
-  (`flag/rejected`, reason `policy-governance`) and the command exits 1 with
-  the reason.
-- The encryption key is needed at `init`/`join`, and at `import` of a
-  generation of an encrypted vault, for the new vault. The store pins the
-  encrypted bit in vault metadata, and autobee keeps the key in the local
-  core's user data, so a reopen needs no key.
-- A body travels in one `set-body` op, and the encoded op may not exceed
-  `maxOpBytes` (65,536 bytes by default). The op is the body plus its
-  `_id`, its base and its clock, and the clock grows with each admitted
-  writer (SPEC §8). `ingest` encodes the op before it appends anything
-  (`okf/faces/lib/ingest.js:355-359`), and
-  refuses an oversize file by name (exit 1, siblings unaffected), with the
-  size of the encoded op: `error: drafts/big.md: its set-body op is 71,290
-  bytes encoded; maxOpBytes is 65,536`. Split
-  the document into smaller linked concepts. Test: "the oversize preflight
-  encodes the set-body op: a body just below maxOpBytes whose op is over
-  it appends nothing and stays pending".
-- `auto-okf` refuses vault-ld storage by marker file (`vault-ld.json`),
-  naming the right tool (exit 1, storage untouched); `autovault-ld` refuses
-  `okf-vault.json` symmetrically — the twin CLIs never open each other's
-  vaults (ADR-006).
+- With `--swarm`, `watch` is also the replication process.
+- `watch --swarm` announces the vault on the `auto-okf/2` topic of the
+  DHT that `--bootstrap` or `--public-dht` chooses. The firewall admits
+  only the keys of its allowlist. So an outsider with the vault key gets
+  no connection, and cannot start the writer-core flood.
+- On the public DHT, a peer that knows the vault key can still look up
+  the topic announcement. Each attempt of a rejected peer also costs a
+  member a bounded amount of state. See
+  [SECURITY_MODEL.md](../SECURITY_MODEL.md), "What the substrate decides,
+  and what okf decides", point (b).
+- `auto-okf` refuses vault-ld storage by its marker file
+  (`vault-ld.json`). It names the right tool, exits 1 and leaves the
+  storage untouched. `autovault-ld` refuses `okf-vault.json` the same
+  way, so the two CLIs never open each other's vaults (ADR-006).
 
 ## Tests
 
